@@ -1,0 +1,14 @@
+diff --git a/Scripts/raycast-runtime/src/buffer.js b/Scripts/raycast-runtime/src/buffer.js
+index d5ba6b7..4a8c32b 100644
+--- a/Scripts/raycast-runtime/src/buffer.js
++++ b/Scripts/raycast-runtime/src/buffer.js
+@@ -608,4 +608,9 @@ export const bufferModule = {
+   kMaxLength: 0x7fffffff,
+   isEncoding: (encoding) => Buffer.isEncoding(encoding),
+   isBuffer: (value) => Buffer.isBuffer(value),
++  // tinycast-space: Node's buffer module re-exports the Web Blob and File; undici subclasses
++  // them (`class File extends require("buffer").Blob`), so without these it cannot even load.
++  // Getters, because polyfills.js installs the globals after this module is evaluated.
++  get Blob() { return globalThis.Blob; },
++  get File() { return globalThis.File; },
+ };

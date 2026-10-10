@@ -176,7 +176,9 @@ enum ExtensionImage {
 
     private static func color(named raw: String) -> Color? {
         // Extensions also pass raw CSS, in every notation `ColorValue` reads.
-        palette[raw]
+        // tinycast-space: under a Raycast theme, `Color.Red` and friends are the theme's own.
+        SpaceTheme.namedColor(raw, fallback: palette[raw])
+            ?? palette[raw]
             ?? ColorValue.parse(raw).map {
                 Color(.sRGB, red: $0.red, green: $0.green, blue: $0.blue, opacity: $0.alpha)
             }

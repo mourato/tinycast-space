@@ -8,6 +8,7 @@ final class ExtensionMenuBarHost: ExtensionHostContext {
     private var isInteractive: Bool
     private weak var manager: ExtensionManager?
     private weak var coordinator: ExtensionCoordinator?
+    private let oauth = ExtensionOAuthSession()
 
     init(
         owner: InstalledExtension, command: ExtensionCommand, launchType: ExtensionLaunchType,
@@ -27,6 +28,7 @@ final class ExtensionMenuBarHost: ExtensionHostContext {
     var pasteTarget: NSRunningApplication? { NSWorkspace.shared.frontmostApplication }
     var applicationURLs: [URL] { coordinator?.applicationURLs ?? [] }
 
+    func stop() { oauth.cancel() }
     func enableInteraction() { isInteractive = true }
     func closeMainWindow(clearRootSearch: Bool) {}
     func reopenPalette() { coordinator?.reopenPalette(hasRunningCommand: false) }
@@ -62,4 +64,22 @@ final class ExtensionMenuBarHost: ExtensionHostContext {
     }
 
     func launch(_ link: ExtensionDeepLink) throws { try manager?.launch(link) }
+
+    func authorizeOAuth(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult
+    {
+        guard isInteractive else { throw ExtensionHostError.unsupported("Background authorization") }
+        return try await oauth.authorize(options: options)
+    }
+
+    func getOAuthTokens(providerId: String) -> String? {
+        ExtensionOAuthKeychain.getTokens(extensionName: owner.manifest.name, providerId: providerId)
+    }
+
+    func setOAuthTokens(providerId: String, tokens: String) {
+        ExtensionOAuthKeychain.setTokens(tokens, extensionName: owner.manifest.name, providerId: providerId)
+    }
+
+    func removeOAuthTokens(providerId: String) {
+        ExtensionOAuthKeychain.removeTokens(extensionName: owner.manifest.name, providerId: providerId)
+    }
 }

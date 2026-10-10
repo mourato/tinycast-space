@@ -30,6 +30,10 @@ struct PopoverMenuItem {
     var detail: String?
     /// Destructive rows (delete) tint their icon + label red, matching the native menu convention.
     var isDestructive: Bool = false
+    /// tinycast-space: a control drawn where the shortcut caps would be — an inline editor.
+    var trailingAccessory: (@MainActor @Sendable () -> AnyView)?
+    /// tinycast-space: activating the row edits it in place instead of closing the menu.
+    var keepsMenuOpen = false
     let action: () -> Void
 
     /// What the keyboard and pointer may land on; a loading or disabled row only states itself.
@@ -132,7 +136,7 @@ struct PopoverMenu: View {
             attachedRadius: metrics.size.menuButton / 2)
         surfaceContent
             .frame(width: width ?? metrics.size.actionMenuWidth)
-            .glassEffect(.regular, in: shape)
+            .glassEffect(SpaceTheme.tinted(.regular), in: shape)  // tinycast-space
     }
 
     private var surfaceContent: some View {
@@ -390,6 +394,7 @@ private struct PopoverMenuRow: View {
                     .foregroundStyle(item.isDestructive ? Color.red : Color.primary)
                     .lineLimit(1)
                 Spacer(minLength: metrics.spacing.sm)
+                if let accessory = item.trailingAccessory { accessory() }  // tinycast-space
                 if let detail = item.detail {
                     Text(detail)
                         // Smaller than the title it trails: a stated value, not a second label.

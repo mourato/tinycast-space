@@ -1,0 +1,161 @@
+name: "Space · release"
+
+# Every upstream stable release is rebuilt with .space/patches, signed with this fork's own
+# identity and published here under the same tag — the in-app updater reads these releases.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to (re)release, e.g. v0.10.23; empty = latest stable"
+        type: string
+        required: false
+
+concurrency:
+  group: space-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: abue-ammar/tinycast
+  UPSTREAM: https://github.com/abue-ammar/tinycast.git
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${INPUT_TAG:-$(gh release view -R "$UPSTREAM_REPO" --json tagName -q .tagName)}"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a stable tag: $TAG"; exit 1; }
+          HEAD=$(gh api "repos/$REPO/commits/main" -q .sha)
+          if [ -z "$INPUT_TAG" ] && gh release view "$TAG" -R "$REPO" > /dev/null 2>&1; then TAG=""; fi
+          if [ -n "$TAG" ] && [ -z "$INPUT_TAG" ] && gh issue list --label space-release --state open \
+               --json title -q '.[].title' | grep -qxF "Release blocked: $TAG + main ${HEAD:0:7}"; then TAG=""; fi
+          echo "tag=$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: check
+    if: needs.check.outputs.tag != ''
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SPACE_PUSH_TOKEN }}
+
+      - name: Select Xcode 26
+        run: |
+          XCODE_PATH="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1)"
+          [ -n "$XCODE_PATH" ] || { ls /Applications | grep -i xcode; exit 1; }
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Apply the patch to the upstream tag
+        run: |
+          git config user.name "sermelipharo"
+          git config user.email "9950381+sermelipharo@users.noreply.github.com"
+          git fetch --no-tags "$UPSTREAM" "refs/tags/$TAG"
+          UP=$(git rev-parse "FETCH_HEAD^{commit}")
+          KEEP="$RUNNER_TEMP/keep"; mkdir -p "$KEEP/wf"
+          cp -R .space "$KEEP/"; cp .github/workflows/space-*.yml "$KEEP/wf/"
+          git checkout -q --detach "$UP"
+          rm -rf .space; cp -R "$KEEP/.space" .; cp "$KEEP"/wf/* .github/workflows/
+          echo "$UP" > .space/UPSTREAM
+          .space/apply.sh
+          git add -A
+          git commit -q -m "tinycast-space: ${TAG#v} (upstream ${UP:0:7}, Space Edition)"
+          { echo "UP=$UP"; echo "VERSION=${TAG#v}"; } >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: .space/gate.sh "$UP"
+
+      - name: Import signing certificate
+        env:
+          P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KPW="$(openssl rand -base64 24)"
+          echo "${P12_BASE64}" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPW" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "${P12_PASSWORD}" -A -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KPW" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build signed app
+        run: |
+          xcodebuild -project Tinycast.xcodeproj -scheme Tinycast -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Tinycast Self-Signed" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp=none" \
+            PRODUCT_NAME="Tinycast" PRODUCT_BUNDLE_IDENTIFIER="com.tinycast.app" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            build
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release/Tinycast.app"
+          ./Scripts/verify-signature.sh "$APP"
+          codesign -dvvv "$APP" 2>&1 | grep -qx "Authority=Tinycast Self-Signed"
+
+      - name: Package DMG and ZIP
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release/Tinycast.app"
+          STAGE="$(mktemp -d)"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          mkdir -p dist
+          diskutil image create from "$STAGE" --format UDZO --volumeName "Tinycast" "dist/Tinycast-$VERSION.dmg"
+          ditto -c -k --keepParent --sequesterRsrc "$APP" "dist/Tinycast-$VERSION.zip"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Upstream's changelog, cut at the marker the update window stops at, then our own install text.
+          # Bare #123 would resolve against this fork, so they become explicit links to upstream.
+          gh release view "$TAG" -R "$UPSTREAM_REPO" --json body -q .body \
+            | sed '/<!-- tinycast:install -->/,$d' \
+            | perl -pe 's{(^|[\s(])#(\d+)\b}{$1\[#$2\](https://github.com/abue-ammar/tinycast/pull/$2)}g' \
+            > "$RUNNER_TEMP/upstream.md"
+          {
+            echo "Upstream [Tinycast $VERSION](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG) rebuilt as **Tinycast Space Edition** ([\`.space/patches\`](https://github.com/$GITHUB_REPOSITORY/tree/main/.space/patches))."
+            echo
+            cat "$RUNNER_TEMP/upstream.md"
+            echo
+            echo "<!-- tinycast:install -->"
+            echo "Download \`Tinycast-$VERSION.dmg\`, drag Tinycast to Applications, then run \`xattr -dr com.apple.quarantine /Applications/Tinycast.app\` once — the build is self-signed. Installed copies update themselves from this repository."
+          } > "$RUNNER_TEMP/notes.md"
+          git tag -f "$TAG"
+          git push -f origin "refs/tags/$TAG"
+          gh release delete "$TAG" -y > /dev/null 2>&1 || true
+          gh release create "$TAG" "dist/Tinycast-$VERSION.dmg" "dist/Tinycast-$VERSION.zip" \
+            --verify-tag --latest --title "Tinycast $VERSION · Space Edition" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Close blocked issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .space/report.sh close release
+
+      - name: Report blocked release
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .space/report.sh open release "Release blocked: $TAG + main $(git rev-parse --short=7 origin/main)"

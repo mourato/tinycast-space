@@ -1,0 +1,1871 @@
+diff --git a/Scripts/raycast-runtime/src/api/components.js b/Scripts/raycast-runtime/src/api/components.js
+index fa051dea..4718b36c 100644
+--- a/Scripts/raycast-runtime/src/api/components.js
++++ b/Scripts/raycast-runtime/src/api/components.js
+@@ -390,6 +390,8 @@ Action.OpenInBrowser = convenience("Action.OpenInBrowser", (props) => ({
+ 
+ Action.Open = convenience("Action.Open", (props) => ({
+   title: props.title,
++  // tinycast-space: the host previews a raycast://theme target while its row is highlighted.
++  target: typeof props.target === "string" ? props.target : undefined,
+   icon: props.icon ?? Icon.Document,
+   shortcut: props.shortcut,
+   style: props.style,
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index ef794c31..e3e6e1f8 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -275,6 +275,7 @@ final class AppCore {
+ 
+     func start() {
+         Signposts.interval("AppCore.start") {
++            SpaceTheme.start()  // tinycast-space: before the extension scan, which must see the Theme command
+             // Shorten AppKit's ~2–3s tooltip delay; registration domain, so a user default wins.
+             UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
+             NSApp.setActivationPolicy(.accessory)
+@@ -472,6 +473,8 @@ final class AppCore {
+     func handleOpenURL(_ url: URL) {
+         // tinycast-space: the link extensions fire when a timer or task finishes.
+         if ConfettiOverlay.claims(url) { return ConfettiOverlay.fire() }
++        // tinycast-space: a theme link — ray.so, Raycast's Theme Studio, or the Theme command.
++        if SpaceTheme.handle(url, in: self) { return }
+         guard ExtensionDeepLink.claims(url) else { return }
+         guard let route = ExtensionDeepLink.route(url: url) else {
+             paletteCoordinator.showPalette(mode: .launcher, restoreAnyMode: true)
+diff --git a/Tinycast/DesignSystem/PopoverMenu.swift b/Tinycast/DesignSystem/PopoverMenu.swift
+index 8243b718..f3fe1024 100644
+--- a/Tinycast/DesignSystem/PopoverMenu.swift
++++ b/Tinycast/DesignSystem/PopoverMenu.swift
+@@ -134,7 +134,7 @@ struct PopoverMenu: View {
+             attachedRadius: metrics.size.menuButton / 2)
+         surfaceContent
+             .frame(width: width ?? metrics.size.actionMenuWidth)
+-            .glassEffect(.regular, in: shape)
++            .glassEffect(SpaceTheme.tinted(.regular), in: shape)  // tinycast-space
+     }
+ 
+     private var surfaceContent: some View {
+diff --git a/Tinycast/DesignSystem/Theme.swift b/Tinycast/DesignSystem/Theme.swift
+index 94ff4168..b2999519 100644
+--- a/Tinycast/DesignSystem/Theme.swift
++++ b/Tinycast/DesignSystem/Theme.swift
+@@ -419,12 +419,25 @@ enum Theme {
+         }
+ 
+         /// The alpha ramp, inverted: white ink over the dark surface, black ink over the light one.
+-        static func ramp(dark: Double, light: Double) -> Color {
+-            adaptive(dark: .srgbInk(1, alpha: dark), light: .srgbInk(0, alpha: light))
++        static func ramp(dark: Double, light: Double, spaceRole: SpaceTheme.Role = .text) -> Color {
++            // tinycast-space: a Raycast theme keeps the ramp's alphas and swaps its ink. Reading its
++            // revision lets a view drawing the token redraw in place when the theme changes.
++            SpaceTheme.observe()
++            return Color(nsColor: NSColor(name: nil) {
++                SpaceTheme.ink(spaceRole, in: $0, dark: dark, light: light)
++                    ?? ($0.isDark ? .srgbInk(1, alpha: dark) : .srgbInk(0, alpha: light))
++            })
+         }
+ 
+         /// The ramp's inverse: the scrim darkens the dark surface and lightens the light one.
+-        static let panelScrim = adaptive(dark: .srgbInk(0, alpha: 0.40), light: .srgbInk(1, alpha: 0.55))
++        static var panelScrim: Color {
++            // tinycast-space: a Raycast theme lays its background over the glass instead.
++            SpaceTheme.observe()
++            return Color(nsColor: NSColor(name: nil) {
++                SpaceTheme.ink(.background, in: $0, dark: 0.40, light: 0.55)
++                    ?? ($0.isDark ? .srgbInk(0, alpha: 0.40) : .srgbInk(1, alpha: 0.55))
++            })
++        }
+         /// Modal separation inside Tinycast: the launcher recedes while its dialog is in front.
+         static let dialogDimming = adaptive(
+             dark: .srgbInk(0, alpha: 0.34), light: .srgbInk(0, alpha: 0.34))
+@@ -442,7 +455,7 @@ enum Theme {
+             dark: .srgbInk(0, alpha: 0.18), light: .srgbInk(0, alpha: 0.18))
+ 
+         /// Selection fill, shared by every list so they look identical.
+-        static let selection = ramp(dark: 0.10, light: 0.09)
++        static let selection = ramp(dark: 0.10, light: 0.09, spaceRole: .selection)
+         /// Mouse hover: a fainter layer, visually distinct from selection.
+         static let rowHover = ramp(dark: 0.05, light: 0.045)
+         /// Emoji grid chrome: a quiet tile at rest, with two legible rings on interaction.
+@@ -529,6 +542,6 @@ enum Theme {
+ extension View {
+     /// A floating glass control surface: regular, interactive Liquid Glass.
+     func frosted(in shape: some Shape) -> some View {
+-        glassEffect(.regular.interactive(), in: shape)
++        glassEffect(SpaceTheme.tinted(.regular).interactive(), in: shape)  // tinycast-space
+     }
+ }
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift b/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift
+index 28b0504f..c0222b32 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift
+@@ -121,6 +121,9 @@ enum ExtensionHostError: LocalizedError {
+ 
+ @MainActor
+ final class ExtensionHostBridge: ExtensionHostAPI {
++    /// tinycast-space: Raycast Explorer closes the window right after opening a theme link, but the
++    /// link now asks first, in a dialog over the window, so the close that follows is skipped.
++    private var keepsWindowUntil = Date.distantPast
+     weak var context: ExtensionHostContext?
+     private let clipboardStore: ClipboardStore
+     private let fetcher: ExtensionFetcher
+@@ -317,6 +320,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
+         guard context?.activeLaunchType != .background else { return nil }
+         switch method {
+         case "close":
++            guard Date.now > keepsWindowUntil else { return nil }  // tinycast-space
+             let options = arguments.first?.objectValue ?? [:]
+             context?.closeMainWindow(clearRootSearch: options["clearRootSearch"]?.boolValue ?? false)
+         case "popToRoot":
+@@ -474,6 +478,12 @@ final class ExtensionHostBridge: ExtensionHostAPI {
+ 
+     /// A command URL runs it when installed; every other Raycast URL just brings the palette back.
+     private func openRaycastURL(_ url: URL) {
++        // tinycast-space: a theme or confetti link goes where an outside `open` lands, in AppCore.
++        if ["theme", "confetti"].contains(url.host()?.lowercased() ?? "") {
++            if RaycastThemeLink(url: url)?.applies == false { keepsWindowUntil = .now + 1 }
++            NSApp.delegate?.application?(NSApp, open: [url])
++            return
++        }
+         if let link = ExtensionDeepLink.parse(url: url), (try? context?.launch(link)) != nil {
+             return
+         }
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionActionsPanel.swift b/Tinycast/Features/Extensions/UI/ExtensionActionsPanel.swift
+index 279933d8..3ae2ead4 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionActionsPanel.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionActionsPanel.swift
+@@ -90,7 +90,7 @@ struct ExtensionActionsPanel: View {
+             return .handled
+         }
+         .frame(width: panel.width)
+-        .glassEffect(.regular, in: shape)
++        .glassEffect(SpaceTheme.tinted(.regular), in: shape)  // tinycast-space
+     }
+ 
+     @ViewBuilder
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionImage.swift b/Tinycast/Features/Extensions/UI/ExtensionImage.swift
+index 98b87f59..ec7ba8a2 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionImage.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionImage.swift
+@@ -176,7 +176,9 @@ enum ExtensionImage {
+ 
+     private static func color(named raw: String) -> Color? {
+         // Extensions also pass raw CSS, in every notation `ColorValue` reads.
+-        palette[raw]
++        // tinycast-space: under a Raycast theme, `Color.Red` and friends are the theme's own.
++        SpaceTheme.namedColor(raw, fallback: palette[raw])
++            ?? palette[raw]
+             ?? ColorValue.parse(raw).map {
+                 Color(.sRGB, red: $0.red, green: $0.green, blue: $0.blue, opacity: $0.alpha)
+             }
+diff --git a/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift b/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift
+index 5c386207..420dda5a 100644
+--- a/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift
++++ b/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift
+@@ -95,6 +95,7 @@ struct GeneralSettingsView: View {
+                 } label: {
+                     SettingsRowTitle(.generalAppearance, "Theme")
+                 }
++                RaycastThemeRows()  // tinycast-space
+                 InterfaceSizeRow()
+                 WindowModeRow()
+                 Toggle(isOn: $settings.showFavoritesInCompactMode) {
+diff --git a/Tinycast/Features/Settings/Panes/RaycastThemeRows.swift b/Tinycast/Features/Settings/Panes/RaycastThemeRows.swift
+new file mode 100644
+index 00000000..8a09451f
+--- /dev/null
++++ b/Tinycast/Features/Settings/Panes/RaycastThemeRows.swift
+@@ -0,0 +1,350 @@
++import SwiftUI
++
++/// tinycast-space: Settings → General → Appearance rows for Raycast themes — a light and a dark
++/// slot, as in Raycast, each chosen in a browser that previews whatever the pointer rests on.
++struct RaycastThemeRows: View {
++    @State private var light = SpaceTheme.theme(for: .light)
++    @State private var dark = SpaceTheme.theme(for: .dark)
++    @State private var imported = SpaceTheme.imported
++    @State private var importNote: String?
++    @AppStorage(SpaceTheme.opacityKey) private var opacity = SpaceTheme.defaultOpacity
++
++    private static let gallery = URL(string: "https://www.ray.so/themes")!
++
++    var body: some View {
++        RaycastThemeSlotRow(slot: .light, selected: $light, imported: $imported, opacity: opacity)
++        RaycastThemeSlotRow(slot: .dark, selected: $dark, imported: $imported, opacity: opacity)
++
++        if light != nil || dark != nil {
++            LabeledContent {
++                Slider(value: $opacity, in: 0.2...1) { editing in
++                    if !editing { SpaceTheme.repaint() }
++                }
++                .frame(maxWidth: 220)
++            } label: {
++                SettingsRowTitle(.generalAppearance, "Theme background")
++                Text("How much of the glass the theme's background covers.")
++            }
++        }
++
++        HStack {
++            Button("Import Link from Clipboard", action: importFromClipboard)
++                .help("Paste a raycast://theme link from ray.so or Raycast's Theme Studio.")
++            Link("Browse Themes", destination: Self.gallery)
++            Spacer()
++            if let importNote {
++                Text(importNote).foregroundStyle(Theme.Colors.textSecondary)
++            }
++        }
++    }
++
++    private func importFromClipboard() {
++        let text = NSPasteboard.general.string(forType: .string)?
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++        guard let theme = text.flatMap(URL.init(string:)).flatMap(RaycastTheme.init(url:)) else {
++            importNote = "No theme link on the clipboard."
++            return
++        }
++        SpaceTheme.install(theme)
++        imported = SpaceTheme.imported
++        if theme.appearance == .dark { dark = theme } else { light = theme }
++        importNote = "\(theme.name) is now the \(theme.appearance.rawValue) theme."
++    }
++}
++
++/// One slot: the chosen theme's swatch and name, opening the browser.
++private struct RaycastThemeSlotRow: View {
++    let slot: RaycastTheme.Appearance
++    @Binding var selected: RaycastTheme?
++    @Binding var imported: [RaycastTheme]
++    let opacity: Double
++    @State private var browsing = false
++
++    var body: some View {
++        LabeledContent {
++            Button {
++                browsing = true
++            } label: {
++                HStack(spacing: 6) {
++                    RaycastThemeSwatch(theme: selected, slot: slot)
++                    Text(selected?.name ?? "Tinycast")
++                    Image(systemName: "chevron.up.chevron.down")
++                        .imageScale(.small)
++                        .foregroundStyle(Theme.Colors.textSecondary)
++                }
++            }
++            .popover(isPresented: $browsing, arrowEdge: .trailing) {
++                RaycastThemeBrowser(
++                    slot: slot, selected: $selected, imported: $imported, opacity: opacity,
++                    dismiss: { browsing = false })
++            }
++        } label: {
++            if slot == .dark {
++                SettingsRowTitle(.generalAppearance, "Dark theme")
++                Text("While Tinycast is dark.")
++            } else {
++                SettingsRowTitle(.generalAppearance, "Light theme")
++                Text("While Tinycast is light.")
++            }
++        }
++    }
++}
++
++/// The slot's themes under a live preview of the hovered one, or of the chosen one at rest.
++private struct RaycastThemeBrowser: View {
++    let slot: RaycastTheme.Appearance
++    @Binding var selected: RaycastTheme?
++    @Binding var imported: [RaycastTheme]
++    let opacity: Double
++    let dismiss: () -> Void
++
++    /// Hovering Tinycast's own row previews no theme, which `nil` alone can't tell from no hover.
++    private enum Hover: Equatable {
++        case tinycast
++        case theme(RaycastTheme)
++    }
++
++    @State private var hover: Hover?
++    @State private var query = ""
++
++    private var previewed: RaycastTheme? {
++        switch hover {
++        case .none: selected
++        case .tinycast: nil
++        case .theme(let theme): theme
++        }
++    }
++
++    private func matching(_ themes: [RaycastTheme]) -> [RaycastTheme] {
++        themes.filter {
++            $0.appearance == slot
++                && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)
++                    || $0.author.localizedCaseInsensitiveContains(query))
++        }
++    }
++
++    private var mine: [RaycastTheme] { matching(imported) }
++
++    /// An imported copy of a bundled theme replaces it, so no theme is listed twice.
++    private var bundled: [RaycastTheme] {
++        let importedIDs = Set(imported.map(\.id))
++        return matching(RaycastThemeCatalog.all).filter { !importedIDs.contains($0.id) }
++    }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            RaycastThemePreview(theme: previewed, slot: slot, opacity: opacity)
++            TextField("Search \(slot.rawValue) themes", text: $query)
++                .textFieldStyle(.roundedBorder)
++            ScrollView {
++                LazyVStack(alignment: .leading, spacing: 1) {
++                    if query.isEmpty {
++                        row(nil, title: "Tinycast", subtitle: "No theme", hoverKey: .tinycast)
++                    }
++                    section("Imported", mine)
++                    section("ray.so", bundled)
++                }
++            }
++            .frame(height: 260)
++            .onHover { inside in if !inside { hover = nil } }
++        }
++        .padding(12)
++        .frame(width: 400)
++    }
++
++    @ViewBuilder
++    private func section(_ title: String, _ themes: [RaycastTheme]) -> some View {
++        if !themes.isEmpty {
++            Text(title)
++                .font(.caption.weight(.medium))
++                .foregroundStyle(Theme.Colors.textSecondary)
++                .padding(.horizontal, 8)
++                .padding(.top, 8)
++            ForEach(themes) { theme in
++                row(theme, title: theme.name, subtitle: theme.author, hoverKey: .theme(theme))
++                    .contextMenu {
++                        if imported.contains(theme) {
++                            Button("Remove Imported Theme") {
++                                SpaceTheme.remove(theme)
++                                imported = SpaceTheme.imported
++                                selected = SpaceTheme.theme(for: slot)
++                            }
++                        }
++                    }
++            }
++        }
++    }
++
++    private func row(_ theme: RaycastTheme?, title: String, subtitle: String, hoverKey: Hover) -> some View {
++        HStack(spacing: 8) {
++            RaycastThemeSwatch(theme: theme, slot: slot)
++            VStack(alignment: .leading, spacing: 0) {
++                Text(title)
++                if !subtitle.isEmpty {
++                    Text(subtitle).font(.caption).foregroundStyle(Theme.Colors.textSecondary)
++                }
++            }
++            Spacer()
++            if theme?.id == selected?.id {
++                Image(systemName: "checkmark").foregroundStyle(Theme.Colors.textSecondary)
++            }
++        }
++        .padding(.horizontal, 8)
++        .frame(height: 34)
++        .background(
++            hover == hoverKey ? Theme.Colors.rowHover : .clear,
++            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
++        )
++        .contentShape(Rectangle())
++        .onHover { inside in if inside { hover = hoverKey } }
++        .onTapGesture {
++            SpaceTheme.select(theme, for: slot)
++            selected = theme
++            dismiss()
++        }
++    }
++}
++
++/// A theme at a glance: its background, with its text and selection colors on it.
++private struct RaycastThemeSwatch: View {
++    let theme: RaycastTheme?
++    let slot: RaycastTheme.Appearance
++
++    var body: some View {
++        let colors = RaycastThemePreview.Colors(theme: theme, slot: slot, opacity: 1)
++        RoundedRectangle(cornerRadius: 4, style: .continuous)
++            .fill(colors.background)
++            .overlay {
++                HStack(spacing: 2) {
++                    Circle().fill(colors.ink(1)).frame(width: 5, height: 5)
++                    Circle().fill(colors.selection(1)).frame(width: 5, height: 5)
++                    Circle().fill(colors.accent(9, .blue)).frame(width: 5, height: 5)
++                }
++            }
++            .overlay {
++                RoundedRectangle(cornerRadius: 4, style: .continuous)
++                    .strokeBorder(Theme.Colors.cardStroke)
++            }
++            .frame(width: 28, height: 18)
++    }
++}
++
++/// A small launcher drawn with a theme's colors at the alphas Tinycast's own tokens use.
++private struct RaycastThemePreview: View {
++    let theme: RaycastTheme?
++    let slot: RaycastTheme.Appearance
++    let opacity: Double
++
++    struct Colors {
++        let theme: RaycastTheme?
++        let slot: RaycastTheme.Appearance
++        let opacity: Double
++
++        var isDark: Bool { slot == .dark }
++
++        private func color(_ index: Int) -> Color? {
++            guard let theme, theme.colors.indices.contains(index) else { return nil }
++            return Color(nsColor: RaycastThemePalette.color(theme.colors[index]))
++        }
++
++        func ink(_ alpha: Double) -> Color { (color(2) ?? (isDark ? .white : .black)).opacity(alpha) }
++
++        func selection(_ alpha: Double) -> Color { color(3)?.opacity(alpha) ?? ink(alpha) }
++
++        func accent(_ index: Int, _ fallback: Color) -> Color { color(index) ?? fallback }
++
++        /// Tinycast's own scrim when there is no theme, as `Theme.Colors.panelScrim` draws it.
++        var background: Color {
++            color(0)?.opacity(opacity) ?? (isDark ? Color.black.opacity(0.40) : Color.white.opacity(0.55))
++        }
++
++        /// `SpaceTheme.backdrop` for this one theme: the gradient Raycast draws.
++        var backdrop: LinearGradient {
++            LinearGradient(
++                stops: [
++                    .init(color: background, location: 0),
++                    .init(color: color(1)?.opacity(opacity) ?? background, location: 0.7)
++                ],
++                startPoint: .top, endPoint: .bottom)
++        }
++    }
++
++    var body: some View {
++        let colors = Colors(theme: theme, slot: slot, opacity: opacity)
++        VStack(alignment: .leading, spacing: 0) {
++            HStack(spacing: 8) {
++                Image(systemName: "magnifyingglass").foregroundStyle(colors.ink(0.6))
++                Text("Search for apps and commands…").foregroundStyle(colors.ink(0.4))
++                Spacer()
++            }
++            .font(.system(size: 14))
++            .padding(.horizontal, 14)
++            .frame(height: 40)
++            Rectangle().fill(colors.ink(colors.isDark ? 0.10 : 0.12)).frame(height: 1)
++            VStack(alignment: .leading, spacing: 1) {
++                Text("Suggestions")
++                    .font(.system(size: 11, weight: .medium))
++                    .foregroundStyle(colors.ink(0.6))
++                    .padding(.horizontal, 8)
++                    .padding(.vertical, 4)
++                previewRow(colors, "Clipboard History", "Command", "doc.on.clipboard", 9, .blue, true)
++                previewRow(colors, "Calendar", "Command", "calendar", 5, .red, false)
++                previewRow(colors, "Search Files", "Command", "folder", 8, .green, false)
++                previewRow(colors, "Start Timer", "Timers", "timer", 6, .orange, false)
++            }
++            .padding(6)
++            Spacer(minLength: 0)
++            HStack(spacing: 6) {
++                Spacer()
++                Text("Open Command").foregroundStyle(colors.ink(1))
++                Text("↵")
++                    .foregroundStyle(colors.ink(0.6))
++                    .padding(.horizontal, 5)
++                    .background(
++                        colors.ink(colors.isDark ? 0.10 : 0.08), in: RoundedRectangle(cornerRadius: 4))
++            }
++            .font(.system(size: 11))
++            .padding(.horizontal, 12)
++            .frame(height: 30)
++        }
++        .frame(height: 236)
++        .background(colors.backdrop)
++        .background(PreviewGlass(isDark: colors.isDark))
++        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
++        .environment(\.colorScheme, colors.isDark ? .dark : .light)
++        .animation(.easeOut(duration: 0.12), value: theme)
++    }
++
++    // swiftlint:disable:next function_parameter_count
++    private func previewRow(
++        _ colors: Colors, _ title: String, _ kind: String, _ symbol: String, _ tint: Int,
++        _ fallback: Color, _ selected: Bool
++    ) -> some View {
++        HStack(spacing: 10) {
++            RoundedRectangle(cornerRadius: 5, style: .continuous)
++                .fill(colors.accent(tint, fallback))
++                .overlay { Image(systemName: symbol).font(.system(size: 10)).foregroundStyle(.white) }
++                .frame(width: 20, height: 20)
++            Text(title).foregroundStyle(colors.ink(1))
++            Spacer()
++            Text(kind).foregroundStyle(colors.ink(colors.isDark ? 0.40 : 0.42))
++        }
++        .font(.system(size: 13))
++        .padding(.horizontal, 8)
++        .frame(height: 34)
++        .background(
++            selected ? colors.selection(colors.isDark ? 0.10 : 0.09) : .clear,
++            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
++    }
++}
++
++/// The palette's glass, pinned to the previewed slot's appearance whatever Settings is drawn in.
++private struct PreviewGlass: NSViewRepresentable {
++    let isDark: Bool
++
++    func makeNSView(context: Context) -> NSGlassEffectView { NSGlassEffectView() }
++
++    func updateNSView(_ view: NSGlassEffectView, context: Context) {
++        view.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
++    }
++}
+diff --git a/Tinycast/Features/Settings/RaycastThemeCatalog.swift b/Tinycast/Features/Settings/RaycastThemeCatalog.swift
+new file mode 100644
+index 00000000..c740982b
+--- /dev/null
++++ b/Tinycast/Features/Settings/RaycastThemeCatalog.swift
+@@ -0,0 +1,666 @@
++// tinycast-space: generated by .space/tools/raycast-themes.py from
++// github.com/raycast/ray-so at 168f9aa9c2c4, app/(navigation)/themes/themes. Do not edit.
++// The themes are ray.so's and their authors', under ray.so's license:
++//
++// MIT License
++//
++// Copyright (c) 2024 Raycast Technologies Ltd
++//
++// Permission is hereby granted, free of charge, to any person obtaining a copy
++// of this software and associated documentation files (the "Software"), to deal
++// in the Software without restriction, including without limitation the rights
++// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++// copies of the Software, and to permit persons to whom the Software is
++// furnished to do so, subject to the following conditions:
++//
++// The above copyright notice and this permission notice shall be included in all
++// copies or substantial portions of the Software.
++//
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++// SOFTWARE.
++
++enum RaycastThemeCatalog {
++    static let all: [RaycastTheme] = [
++        RaycastTheme(
++            name: "Alex's Dark Blue 600", author: "Alex", appearance: .dark,
++            colors: [
++                "#0086C9", "#0B4A6F", "#E3E8EF", "#F8FAFC", "#F8FAFC", "#F99266",
++                "#E05316", "#CA8504", "#039855", "#0BA5EC", "#6938EF", "#DD2590"
++            ]),
++        RaycastTheme(
++            name: "Almost Cyan", author: "Chris", appearance: .dark,
++            colors: [
++                "#000A42", "#004282", "#FFFFFF", "#A8C1FF", "#00E2FF", "#F84141",
++                "#FF6B17", "#FEFF7F", "#63BA89", "#6AB7FB", "#C58AFA", "#FF5DB3"
++            ]),
++        RaycastTheme(
++            name: "Alpenglow", author: "Danny Seidel", appearance: .dark,
++            colors: [
++                "#003F71", "#9E0000", "#EEEEEE", "#FF7C43", "#5751A1", "#FF1111",
++                "#F86D1C", "#FFC839", "#23F893", "#1686F6", "#7546F8", "#F847BA"
++            ]),
++        RaycastTheme(
++            name: "Alucard", author: "Lucas de França", appearance: .light,
++            colors: [
++                "#FFFBEB", "#FFFBEB", "#1F1F1F", "#CFCFDE", "#6C664B", "#CB5A2A",
++                "#A34D14", "#846E15", "#14710A", "#036A96", "#644AC9", "#A3144D"
++            ]),
++        RaycastTheme(
++            name: "Arc", author: "Drew Andersen", appearance: .dark,
++            colors: [
++                "#520081", "#000026", "#DF87C5", "#FF13BB", "#DFBCD5", "#FF7F7F",
++                "#DFB162", "#DFC320", "#9AFC00", "#086CFB", "#9940E0", "#FF00CE"
++            ]),
++        RaycastTheme(
++            name: "Atom One Dark", author: "Macko++", appearance: .dark,
++            colors: [
++                "#282C34", "#282C34", "#C0C7D6", "#528BFF", "#528BFF", "#BE6A46",
++                "#D19A66", "#E5C07B", "#98C379", "#61AFEF", "#C678DD", "#56B6C2"
++            ]),
++        RaycastTheme(
++            name: "Atom One Light", author: "Daniel Hollick", appearance: .light,
++            colors: [
++                "#FAFAFA", "#E4E4E4", "#3E4047", "#457CEF", "#457CEF", "#E24343",
++                "#E2612A", "#CAC235", "#56A156", "#1485BA", "#642EA4", "#A42EA2"
++            ]),
++        RaycastTheme(
++            name: "Aura", author: "Shubh Porwal", appearance: .dark,
++            colors: [
++                "#15141B", "#15141B", "#EDECEE", "#A277FF", "#61FFCA", "#FF6767",
++                "#FFCA85", "#FFD700", "#61FFCA", "#82E2FF", "#A277FF", "#F694FF"
++            ]),
++        RaycastTheme(
++            name: "Ayu Mirage Owl 🦉", author: "Abhi Mehrotra", appearance: .dark,
++            colors: [
++                "#1F2430", "#FFAE57", "#A8D96E", "#C7A6FF", "#5CCFE6", "#FFA27A",
++                "#FFAE57", "#FFCC66", "#A8D96E", "#5CCFE6", "#C7A6FF", "#FF9FD4"
++            ]),
++        RaycastTheme(
++            name: "Barcelona Sky", author: "Chris", appearance: .light,
++            colors: [
++                "#C8D8FF", "#82A6FF", "#001958", "#2151C8", "#900DE2", "#EE3232",
++                "#FA7E37", "#EBA200", "#30B475", "#0E3DD8", "#960EEB", "#DD0F95"
++            ]),
++        RaycastTheme(
++            name: "Black Opal", author: "Sean Rose", appearance: .dark,
++            colors: [
++                "#000015", "#003399", "#FFFFFF", "#AE0DFF", "#00FAFF", "#FF0000",
++                "#FF7F00", "#FFFF00", "#00FF00", "#0064FF", "#9932CD", "#EE82EE"
++            ]),
++        RaycastTheme(
++            name: "Blossom", author: "Thomas Novaro", appearance: .light,
++            colors: [
++                "#F9EBE0", "#DFD0F7", "#0D0D0D", "#22A3A3", "#D56062", "#F56B6B",
++                "#F59C69", "#FDCF57", "#57D499", "#4E85BC", "#8F6CF5", "#F56AC5"
++            ]),
++        RaycastTheme(
++            name: "Blue Boy", author: "Pedro Duarte", appearance: .light,
++            colors: [
++                "#FFFFFF", "#FFFFFF", "#0000FF", "#004DFF", "#0000FF", "#E14848",
++                "#E5753C", "#B7B400", "#00AC5D", "#4F80FF", "#9454FF", "#D756BF"
++            ]),
++        RaycastTheme(
++            name: "Brutalist Dark", author: "Mathieu de Gouville", appearance: .dark,
++            colors: [
++                "#000000", "#000000", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FF0000",
++                "#FFA500", "#FFFF00", "#00FF00", "#0000FF", "#800080", "#FF00FF"
++            ]),
++        RaycastTheme(
++            name: "Brutalist Light", author: "Mathieu de Gouville", appearance: .light,
++            colors: [
++                "#FFFFFF", "#FFFFFF", "#000000", "#000000", "#000000", "#FF0000",
++                "#FFA500", "#FFFF00", "#00FF00", "#0000FF", "#800080", "#FF00FF"
++            ]),
++        RaycastTheme(
++            name: "Catppuccin Frappe", author: "Catppuccin", appearance: .dark,
++            colors: [
++                "#303446", "#303446", "#C6D0F5", "#737994", "#838BA7", "#E78284",
++                "#EF9F76", "#E5C890", "#A6D189", "#8CAAEE", "#BABBF1", "#CA9EE6"
++            ]),
++        RaycastTheme(
++            name: "Catppuccin Latte", author: "Catppuccin", appearance: .light,
++            colors: [
++                "#EFF1F5", "#EFF1F5", "#4C4F69", "#9CA0B0", "#8C8FA1", "#D20F39",
++                "#FE640B", "#DF8E1D", "#40A02B", "#1E66F5", "#7287FD", "#8839EF"
++            ]),
++        RaycastTheme(
++            name: "Catppuccin Macchiato", author: "Catppuccin", appearance: .dark,
++            colors: [
++                "#24273A", "#24273A", "#CAD3F5", "#6E738D", "#8087A2", "#ED8796",
++                "#F5A97F", "#EED49F", "#A6DA95", "#8AADF4", "#B7BDF8", "#C6A0F6"
++            ]),
++        RaycastTheme(
++            name: "Catppuccin Mocha", author: "Catppuccin", appearance: .dark,
++            colors: [
++                "#1E1E2E", "#1E1E2E", "#CDD6F4", "#6C7086", "#7F849C", "#F38BA8",
++                "#FAB387", "#F9E2AF", "#A6E3A1", "#89B4FA", "#B4BEFE", "#CBA6F7"
++            ]),
++        RaycastTheme(
++            name: "Catppuccin x Gruvbox", author: "Raf", appearance: .dark,
++            colors: [
++                "#000B12", "#000B12", "#D4BE98", "#BDAE8B", "#E84141", "#EA6262",
++                "#BD6F3E", "#D8A657", "#A9B665", "#7DAEA3", "#7B4EF8", "#D3869B"
++            ]),
++        RaycastTheme(
++            name: "Christmas Dark", author: "Ian Spryn", appearance: .dark,
++            colors: [
++                "#287E54", "#007E40", "#D5FFEA", "#F84E4E", "#F84E4E", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Christmas Light", author: "Ian Spryn", appearance: .light,
++            colors: [
++                "#3CBC7D", "#007E40", "#004321", "#FF5F5F", "#F84E4E", "#F50A0A",
++                "#F5600A", "#E0A200", "#07BA65", "#007FFF", "#3107A8", "#F50AA3"
++            ]),
++        RaycastTheme(
++            name: "Cobalt 2", author: "Wes Bos", appearance: .dark,
++            colors: [
++                "#065085", "#065085", "#FFFEFA", "#FFFFFF", "#FFC600", "#FF5757",
++                "#FF9D00", "#FFC600", "#ACF4A5", "#83C7FB", "#A496FF", "#FF5AB2"
++            ]),
++        RaycastTheme(
++            name: "Comfy", author: "Drew Andersen", appearance: .light,
++            colors: [
++                "#FEECDD", "#FEECDD", "#B03D0B", "#FF8500", "#8E9BFF", "#E82A90",
++                "#FF6F31", "#FFD600", "#10FF33", "#1034FF", "#5906FF", "#FF277D"
++            ]),
++        RaycastTheme(
++            name: "Dark+Cyan", author: "Chris", appearance: .dark,
++            colors: [
++                "#001728", "#002C4D", "#FFFFFF", "#A8C1FF", "#00E2FF", "#F84141",
++                "#FF6B17", "#FEFF7F", "#63BA89", "#6AB7FB", "#C58AFA", "#FF5DB3"
++            ]),
++        RaycastTheme(
++            name: "Darkstar", author: "stelo", appearance: .dark,
++            colors: [
++                "#000000", "#000527", "#FFE5E5", "#FFCACA", "#FFA2A2", "#E54F57",
++                "#EC875C", "#DAAA3F", "#58AB5A", "#539BF5", "#786EF8", "#F85FD7"
++            ]),
++        RaycastTheme(
++            name: "Doom One Dark", author: "Simon", appearance: .dark,
++            colors: [
++                "#282C34", "#282C34", "#BBC2CF", "#BBC2CF", "#BBC2CF", "#FF5458",
++                "#F88D4E", "#ECBE7B", "#98BE65", "#51AFEF", "#C678DD", "#C678DD"
++            ]),
++        RaycastTheme(
++            name: "Dracula", author: "Per Tikær", appearance: .dark,
++            colors: [
++                "#282A36", "#282A36", "#F8F8F2", "#BD93F9", "#BD93F9", "#FF5555",
++                "#FFB86C", "#F1FA8C", "#50FA7B", "#8BE9FD", "#BD93F9", "#FF79C6"
++            ]),
++        RaycastTheme(
++            name: "Dragon Fire", author: "Rúben Gomes", appearance: .dark,
++            colors: [
++                "#000000", "#910000", "#F2F2F2", "#FF0000", "#FF0000", "#F82D2D",
++                "#F8762A", "#FFC93B", "#26F894", "#3394F6", "#6834F8", "#F839B6"
++            ]),
++        RaycastTheme(
++            name: "Dusk", author: "Daniel Hollick", appearance: .light,
++            colors: [
++                "#FFF6E4", "#FFD7FB", "#000966", "#DA69FF", "#9F00FF", "#F87B7B",
++                "#FFAC7E", "#FFF7A2", "#65BD96", "#768DFF", "#B385EC", "#FF82C5"
++            ]),
++        RaycastTheme(
++            name: "Dusk", author: "Thomas Novaro", appearance: .dark,
++            colors: [
++                "#545E75", "#2A2A2A", "#F2F2F2", "#4DE1E0", "#FF6B6B", "#E44848",
++                "#DB7C45", "#DDB13E", "#59D298", "#4B98E4", "#6C45DA", "#D643A3"
++            ]),
++        RaycastTheme(
++            name: "Ember", author: "Stephen Kaplan", appearance: .dark,
++            colors: [
++                "#D23F00", "#A80000", "#F2F2F2", "#F84E4E", "#FFFFFF", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Everforest", author: "Sam-Ashley", appearance: .dark,
++            colors: [
++                "#272E33", "#272E33", "#D3C6AA", "#FFFFFF", "#FFFFFF", "#E67E80",
++                "#E69875", "#DBBC7F", "#A7C080", "#7FBBB3", "#D699B6", "#CF2F98"
++            ]),
++        RaycastTheme(
++            name: "Forest", author: "Michael Schultz", appearance: .dark,
++            colors: [
++                "#00241E", "#00241E", "#C8F2DB", "#C8F2DB", "#83B198", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Fresh Ocean", author: "Per Tikær", appearance: .light,
++            colors: [
++                "#FFFFFF", "#3CA3B4", "#002547", "#123237", "#3CA3B4", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "GitHub Dark", author: "Marlon", appearance: .dark,
++            colors: [
++                "#0C1116", "#0C1116", "#E6EDF4", "#A5ADB8", "#4E91FC", "#E54F57",
++                "#EC875C", "#DAAA3F", "#58AB5A", "#539BF5", "#786EF8", "#F85FD7"
++            ]),
++        RaycastTheme(
++            name: "GitHub Dark Dimmed", author: "Marlon", appearance: .dark,
++            colors: [
++                "#22272E", "#22272E", "#AEBAC7", "#B7BEC7", "#4E91FC", "#E54F57",
++                "#EC875C", "#DAAA3F", "#58AB5A", "#539BF5", "#786EF8", "#F85FD7"
++            ]),
++        RaycastTheme(
++            name: "GitHub Light", author: "Robert", appearance: .light,
++            colors: [
++                "#F6F8FA", "#F6F8FA", "#1F2328", "#0969DA", "#D0D7DE", "#CF222E",
++                "#BC4C00", "#D4A72C", "#1A7F37", "#0969DA", "#8250DF", "#BF3989"
++            ]),
++        RaycastTheme(
++            name: "Gradient Solarised", author: "Daniel", appearance: .light,
++            colors: [
++                "#FDFF73", "#E99C40", "#000000", "#000000", "#000000", "#FD3131",
++                "#F2894C", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Greenish", author: "Daniel Hollick", appearance: .light,
++            colors: [
++                "#B9FCEC", "#77FFCB", "#034E7C", "#00A4D3", "#030303", "#EC3A3A",
++                "#FF833C", "#FFB000", "#16B544", "#4668D8", "#B56CE3", "#F50AA3"
++            ]),
++        RaycastTheme(
++            name: "Gruvbox", author: "Per Tikær", appearance: .dark,
++            colors: [
++                "#282828", "#282828", "#EBDBB2", "#A89984", "#EBDBB2", "#CC241D",
++                "#D65D0E", "#D79921", "#98971A", "#458588", "#D3869B", "#B16286"
++            ]),
++        RaycastTheme(
++            name: "Guava", author: "Lex", appearance: .dark,
++            colors: [
++                "#825C84", "#6996A6", "#B7D7C5", "#B7D7C5", "#FFFFFF", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Jahir Light", author: "Jahir", appearance: .light,
++            colors: [
++                "#EBF0FB", "#D7E1F7", "#0B152B", "#3867D6", "#3867D6", "#EB3B5A",
++                "#FA8231", "#E29C09", "#20BF6B", "#2D98DA", "#6C5CE7", "#F368E0"
++            ]),
++        RaycastTheme(
++            name: "Kanagawa", author: "Steve Simkins", appearance: .dark,
++            colors: [
++                "#1F1F27", "#1F1F27", "#F2F2F2", "#FFFFFF", "#FFFFFF", "#C34043",
++                "#FFA066", "#DCA561", "#76946A", "#7FB4CA", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Knight Rider", author: "Thomas Paul Mann", appearance: .dark,
++            colors: [
++                "#030303", "#030303", "#F2F2F2", "#FFFFFF", "#F84E4E", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "La Rosa (Light)", author: "Noah Raskin", appearance: .light,
++            colors: [
++                "#E7F3FE", "#FFEBF5", "#1F2331", "#D14890", "#FFFFFF", "#E77575",
++                "#E8864D", "#D7B20E", "#63C093", "#6581CA", "#7E64C8", "#F881CF"
++            ]),
++        RaycastTheme(
++            name: "Lakers", author: "Marlon", appearance: .dark,
++            colors: [
++                "#150128", "#474323", "#C4B7D0", "#BFA2DD", "#FFC995", "#E53C71",
++                "#F8A26F", "#FFD25B", "#68CF9E", "#438ED6", "#926DF8", "#FF70CD"
++            ]),
++        RaycastTheme(
++            name: "Light Owl", author: "Vyacheslav Pukhanov", appearance: .light,
++            colors: [
++                "#FBFBFB", "#FBFBFB", "#403F53", "#4B4B4B", "#4B4B4B", "#DE3B3B",
++                "#DA6C01", "#E1C502", "#08916A", "#288ED7", "#A143D6", "#D6438A"
++            ]),
++        RaycastTheme(
++            name: "Linear Theme", author: "Noah Raskin", appearance: .dark,
++            colors: [
++                "#080A1D", "#080A1D", "#F2F2F2", "#767AF2", "#575BC7", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Martinique", author: "Mathieu de Gouville", appearance: .dark,
++            colors: [
++                "#00160A", "#23201E", "#E7FFF2", "#EF1923", "#EF1923", "#EF1923",
++                "#F26522", "#FFC20E", "#00DB6A", "#0072BC", "#92278F", "#E6007E"
++            ]),
++        RaycastTheme(
++            name: "Mistallic", author: "Noah Raskin", appearance: .dark,
++            colors: [
++                "#1E1E1E", "#4C4C4C", "#F2F2F2", "#D5D5D5", "#CDD0E2", "#FF6868",
++                "#CDD0E2", "#CDD0E2", "#CDD0E2", "#CDD0E2", "#CDD0E2", "#D1D7F8"
++            ]),
++        RaycastTheme(
++            name: "Modus Operandi", author: "Ivan Tomica", appearance: .light,
++            colors: [
++                "#FFFFFF", "#FFFFFF", "#000000", "#BDBDBD", "#0031A9", "#A60000",
++                "#884900", "#6F5500", "#006800", "#0031A9", "#531AB6", "#721045"
++            ]),
++        RaycastTheme(
++            name: "Modus Vivendi", author: "Ivan Tomica", appearance: .dark,
++            colors: [
++                "#000000", "#000000", "#FFFFFF", "#5A5A5A", "#2FAFFF", "#FF5F59",
++                "#FEC43F", "#D0BC00", "#44BC44", "#2FAFFF", "#B6A0FF", "#FEACD0"
++            ]),
++        RaycastTheme(
++            name: "Monochrome", author: "Astrit", appearance: .dark,
++            colors: [
++                "#000000", "#000000", "#F2F2F2", "#FFFFFF", "#FFFFFF", "#FFFFFF",
++                "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"
++            ]),
++        RaycastTheme(
++            name: "Monokai Spectrum", author: "Izak Jackson", appearance: .dark,
++            colors: [
++                "#000000", "#111111", "#F7F1FF", "#FC618D", "#FCE566", "#FC618D",
++                "#FD9353", "#FCE566", "#7BD88F", "#5AD4E6", "#948AE3", "#FC618D"
++            ]),
++        RaycastTheme(
++            name: "Monokai Sun", author: "Tony Keiser", appearance: .light,
++            colors: [
++                "#F8EFE7", "#EEE5DE", "#111111", "#92898A", "#00C7BE", "#CE4770",
++                "#D45E2B", "#B16803", "#218871", "#2473B6", "#6851A2", "#00C7BE"
++            ]),
++        RaycastTheme(
++            name: "Nadeshiko", author: "M.Y.", appearance: .light,
++            colors: [
++                "#DC9FB4", "#DC9FB4", "#000000", "#DC2F6A", "#000000", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Night Owl", author: "Vyacheslav Pukhanov", appearance: .dark,
++            colors: [
++                "#011627", "#011627", "#D6DEEB", "#99B7B7", "#99B7B7", "#EF5050",
++                "#F77D49", "#FFE98A", "#6FDA9B", "#50A2E4", "#9A6AED", "#C07FEA"
++            ]),
++        RaycastTheme(
++            name: "Night Rose", author: "Rúben Gomes", appearance: .dark,
++            colors: [
++                "#000000", "#190013", "#F2F2F2", "#FF4081", "#F992D3", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Nord Dark", author: "Joshua Burri", appearance: .dark,
++            colors: [
++                "#2E3440", "#3B4252", "#ECEFF4", "#ECEFF4", "#ECEFF4", "#BF616A",
++                "#D08D70", "#EBCB8B", "#A3BE8C", "#5E81AC", "#CD97C3", "#C766A5"
++            ]),
++        RaycastTheme(
++            name: "Nord Light", author: "Joshua Burri", appearance: .light,
++            colors: [
++                "#ECEFF4", "#D8DEE9", "#2E3440", "#2E3440", "#2E3440", "#BF616A",
++                "#D08D70", "#EBCB8B", "#A3BE8C", "#5E81AC", "#CD97C3", "#C766A5"
++            ]),
++        RaycastTheme(
++            name: "Oceanic Bliss", author: "Thomas Lombart", appearance: .dark,
++            colors: [
++                "#0C519B", "#000F20", "#E0EFFF", "#60A7E6", "#60A7E6", "#FF6B6B",
++                "#FFE66D", "#96E6B3", "#7FD1B9", "#80A1C1", "#A89AC1", "#FFA3D1"
++            ]),
++        RaycastTheme(
++            name: "Palenight", author: "Barry", appearance: .dark,
++            colors: [
++                "#2A2D3D", "#2A2D3D", "#C0C7D4", "#856ACF", "#89DDFF", "#F07178",
++                "#DD9373", "#FFCB6B", "#C3E88D", "#82AAFF", "#856ACF", "#C792EA"
++            ]),
++        RaycastTheme(
++            name: "Poimandres", author: "Izak Jackson", appearance: .dark,
++            colors: [
++                "#1B1E28", "#303340", "#FFFFFF", "#ADD7FF", "#5DE4C7", "#FF8181",
++                "#FFBE6F", "#FFFBC2", "#5DE4C6", "#89DDFF", "#D0679D", "#FDC5E9"
++            ]),
++        RaycastTheme(
++            name: "Polar Night", author: "Luis Filipe", appearance: .dark,
++            colors: [
++                "#4C566A", "#4C566A", "#EDEFF4", "#92BBCB", "#D8DEE9", "#BF616A",
++                "#D08D70", "#EBCB8B", "#A3BE8C", "#228CF6", "#B48EAD", "#F8AFDF"
++            ]),
++        RaycastTheme(
++            name: "Purple Mist", author: "Tarik", appearance: .dark,
++            colors: [
++                "#553B90", "#25193E", "#FAF6DC", "#FFBC9F", "#ECFB23", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Purple Puke", author: "Daniel", appearance: .dark,
++            colors: [
++                "#000000", "#2B1F36", "#E4C6FF", "#E0ABFF", "#9430FF", "#F50A0A",
++                "#F5600A", "#E0A200", "#07BA65", "#0A7FF5", "#B00AFF", "#F50AA3"
++            ]),
++        RaycastTheme(
++            name: "RAIcast", author: "Rob Hewitt", appearance: .dark,
++            colors: [
++                "#000000", "#7D3030", "#F2F2F2", "#FFAEAE", "#FF6363", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Raycast Dark - Purple", author: "Vatsal Sanjay", appearance: .dark,
++            colors: [
++                "#68246D", "#030303", "#F2F2F2", "#FFFFFF", "#FFFFFF", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Raycast Total Grey", author: "Jag_k", appearance: .dark,
++            colors: [
++                "#030303", "#030303", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#868686",
++                "#9B9B9B", "#B0B0B0", "#A4A4A4", "#8C8C8C", "#959595", "#ABABAB"
++            ]),
++        RaycastTheme(
++            name: "Red Boy", author: "Pedro Duarte", appearance: .light,
++            colors: [
++                "#FFFFFF", "#FFFFFF", "#FF0000", "#FF0000", "#FF0000", "#E14848",
++                "#E5753C", "#B7B400", "#00AC5D", "#4F80FF", "#9454FF", "#D756BF"
++            ]),
++        RaycastTheme(
++            name: "Rikyucha", author: "M Yano", appearance: .light,
++            colors: [
++                "#6D5400", "#6D5400", "#000000", "#896900", "#000000", "#F84E4E",
++                "#F88D4E", "#FFCC47", "#4EF8A7", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Rosé Pine Moon", author: "Zander", appearance: .dark,
++            colors: [
++                "#232136", "#232136", "#E0DEF4", "#908CAA", "#6E6A86", "#EB6F7F",
++                "#F88D4E", "#F6C177", "#9CCFD8", "#3E8FB0", "#B286E7", "#EB6FB9"
++            ]),
++        RaycastTheme(
++            name: "Sequoia Monochrome Dark", author: "Micheal Andreuzza", appearance: .dark,
++            colors: [
++                "#0F1014", "#111216", "#868690", "#B6BAC8", "#B6BAC8", "#999EB2",
++                "#B6BAC8", "#D3D5DE", "#626983", "#7C829D", "#D3D5DE", "#E2E4ED"
++            ]),
++        RaycastTheme(
++            name: "Sequoia Monochrome Light", author: "Micheal Andreuzza", appearance: .light,
++            colors: [
++                "#EDEEF2", "#E2E3E8", "#282930", "#454752", "#454752", "#525666",
++                "#454752", "#50535E", "#2E3038", "#5F6370", "#50535E", "#25262D"
++            ]),
++        RaycastTheme(
++            name: "Sequoia Moonlight Dark", author: "Micheal Andreuzza", appearance: .dark,
++            colors: [
++                "#0F1014", "#111216", "#868690", "#FFBB88", "#FFBB88", "#F58EE0",
++                "#FFBB88", "#9898A6", "#8EB6F5", "#C58FFF", "#9898A6", "#FDFDFE"
++            ]),
++        RaycastTheme(
++            name: "Sequoia Moonlight Light", author: "Micheal Andreuzza", appearance: .light,
++            colors: [
++                "#EDEEF2", "#E2E3E8", "#282930", "#D9884A", "#D9884A", "#C94DA8",
++                "#D9884A", "#6A6A78", "#4A85D4", "#9A5FD9", "#6A6A78", "#282930"
++            ]),
++        RaycastTheme(
++            name: "Sequoia Retro Dark", author: "Micheal Andreuzza", appearance: .dark,
++            colors: [
++                "#0F1014", "#111216", "#868690", "#A27E57", "#A27E57", "#829FA7",
++                "#A27E57", "#DA674B", "#648F68", "#5C87A4", "#DA674B", "#E8B246"
++            ]),
++        RaycastTheme(
++            name: "Sequoia Retro Light", author: "Micheal Andreuzza", appearance: .light,
++            colors: [
++                "#EDEEF2", "#E2E3E8", "#282930", "#8A6539", "#8A6539", "#5F7982",
++                "#8A6539", "#BF5238", "#4A704E", "#456A82", "#BF5238", "#C99730"
++            ]),
++        RaycastTheme(
++            name: "Serendipity Midnight", author: "Micheal Andreuzza", appearance: .dark,
++            colors: [
++                "#151726", "#1C1E2D", "#DEE0EF", "#F8D2C9", "#F8D2C9", "#EE8679",
++                "#F8D2C9", "#A78BFA", "#5BA2D0", "#94B8FF", "#A78BFA", "#9CCFD8"
++            ]),
++        RaycastTheme(
++            name: "Serendipity Morning", author: "Micheal Andreuzza", appearance: .light,
++            colors: [
++                "#F6F7FB", "#EAEBEE", "#3F4363", "#E58678", "#E58678", "#C25A4D",
++                "#E58678", "#785FD0", "#2F7AAB", "#6288D8", "#785FD0", "#629AA5"
++            ]),
++        RaycastTheme(
++            name: "Serendipity Sunset", author: "Micheal Andreuzza", appearance: .dark,
++            colors: [
++                "#202231", "#272938", "#DEE0EF", "#D6B4B4", "#D6B4B4", "#D1918F",
++                "#D6B4B4", "#A392DC", "#709BBD", "#A0B6E8", "#A392DC", "#AAC9D4"
++            ]),
++        RaycastTheme(
++            name: "Shades of Purple", author: "Kevin Batdorf", appearance: .dark,
++            colors: [
++                "#2D2B56", "#2D2B56", "#E1EFFF", "#FB94FF", "#FB94FF", "#FF628C",
++                "#FF9D00", "#FAD000", "#A5FF90", "#9EFFFF", "#FB94FF", "#FF628C"
++            ]),
++        RaycastTheme(
++            name: "Slatewave", author: "Kevin Langley Jr", appearance: .dark,
++            colors: [
++                "#282C34", "#1E293B", "#E2E8F0", "#5EEAD4", "#5EEAD4", "#FB7185",
++                "#FF4500", "#FBBF24", "#5EEAD4", "#38BDF8", "#B388FF", "#F472B6"
++            ]),
++        RaycastTheme(
++            name: "Snow Storm", author: "Luis Filipe", appearance: .light,
++            colors: [
++                "#ECEFF4", "#ECEFF4", "#4E5568", "#6680A9", "#4C566A", "#BF616A",
++                "#D08D70", "#EBCB8B", "#A3BE8C", "#228CF6", "#B48EAD", "#F8AFDF"
++            ]),
++        RaycastTheme(
++            name: "Solarised", author: "Daniel Hollick", appearance: .light,
++            colors: [
++                "#F0ECCF", "#F0F0F0", "#000000", "#5B5000", "#F1F400", "#DA404C",
++                "#D98F26", "#E4C900", "#6CD04D", "#0059C8", "#8B25FF", "#B624C8"
++            ]),
++        RaycastTheme(
++            name: "Sonoma Dark", author: "Iliyan Kupenov", appearance: .dark,
++            colors: [
++                "#272727", "#272727", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#EB7745",
++                "#F2A33C", "#F9D84A", "#6BD45F", "#3B82F7", "#B260EA", "#EB4B63"
++            ]),
++        RaycastTheme(
++            name: "Sonoma Light", author: "Iliyan Kupenov", appearance: .light,
++            colors: [
++                "#E6E6E6", "#E6E6E6", "#333333", "#333333", "#333333", "#EB713D",
++                "#F19A37", "#F7CE46", "#63CA56", "#3478F6", "#A357D7", "#EB4B63"
++            ]),
++        RaycastTheme(
++            name: "Spotify", author: "Pedro Duarte", appearance: .dark,
++            colors: [
++                "#121212", "#121212", "#FFFFFF", "#00FF5A", "#28FF74", "#F50A0A",
++                "#F5600A", "#E0A200", "#07BA65", "#0A7FF5", "#470AF5", "#F50AA3"
++            ]),
++        RaycastTheme(
++            name: "Submarine", author: "Daniel Hollick", appearance: .dark,
++            colors: [
++                "#001068", "#00685E", "#EAFBFF", "#00FFEA", "#D6AEFF", "#F87E7E",
++                "#FFB765", "#FEFF7F", "#7EECAE", "#72BAFB", "#CE9DFA", "#FFA2D4"
++            ]),
++        RaycastTheme(
++            name: "SynthGreen '86", author: "Kevin Ridgway", appearance: .dark,
++            colors: [
++                "#262335", "#262335", "#BBBBBB", "#00FF61", "#D6FCB9", "#FF9C72",
++                "#FF8B39", "#FEFDC2", "#B4FA72", "#A5D5FE", "#A788FF", "#FF8FFD"
++            ]),
++        RaycastTheme(
++            name: "SynthGreen '86 Light", author: "Kevin Ridgway", appearance: .light,
++            colors: [
++                "#F6F6F6", "#F6F6F6", "#646464", "#00FF61", "#42E622", "#FF9C72",
++                "#FF8B39", "#D2CF38", "#85B954", "#7597B4", "#7C65BD", "#C770C6"
++            ]),
++        RaycastTheme(
++            name: "Synthwave '84 Neon", author: "Kevin Batdorf", appearance: .dark,
++            colors: [
++                "#262335", "#262335", "#BBBBBB", "#F92AAD", "#F92AAD", "#FC1F2C",
++                "#FF8B39", "#F39F05", "#72F1B8", "#03EDF9", "#7447F5", "#F92AAD"
++            ]),
++        RaycastTheme(
++            name: "Terminal", author: "Per Tikær", appearance: .dark,
++            colors: [
++                "#000000", "#000000", "#4AF626", "#4AF626", "#4AF626", "#4AF626",
++                "#4AF626", "#4AF626", "#4AF626", "#4AF626", "#4AF626", "#4AF626"
++            ]),
++        RaycastTheme(
++            name: "Tokyo Neon", author: "Sean Rose", appearance: .dark,
++            colors: [
++                "#000000", "#340087", "#FFFFFF", "#FF4081", "#00E5FF", "#FF1744",
++                "#FF9100", "#FFEA00", "#69F0AE", "#00B0FF", "#5C6BC0", "#F50057"
++            ]),
++        RaycastTheme(
++            name: "Tokyo Night", author: "Folke", appearance: .dark,
++            colors: [
++                "#292E42", "#0C0E14", "#C0CAF5", "#7AA2F7", "#FF9E64", "#F7768E",
++                "#FF9E64", "#E0AF68", "#9ECE6A", "#7AA2F7", "#9D7CD8", "#FF007C"
++            ]),
++        RaycastTheme(
++            name: "Tokyo Night Storm", author: "Locke", appearance: .dark,
++            colors: [
++                "#24283B", "#1D202F", "#C0CAF5", "#7AA2F7", "#FF9E64", "#F7768E",
++                "#FF9E64", "#E0AF68", "#9ECE6A", "#7AA2F7", "#7DCFFF", "#BB9AF7"
++            ]),
++        RaycastTheme(
++            name: "Toothpaste", author: "Juan Banchero", appearance: .dark,
++            colors: [
++                "#222E33", "#222E33", "#DAE3E8", "#739AAB", "#FFFFFF", "#CC6666",
++                "#C88E4B", "#DBCD7F", "#9DC777", "#769EB3", "#9B82C9", "#C5487A"
++            ]),
++        RaycastTheme(
++            name: "Turtley Awesome", author: "Lepidox", appearance: .dark,
++            colors: [
++                "#003C5D", "#006755", "#E0EAF5", "#E0EAF5", "#00E1BA", "#ED5959",
++                "#ED8659", "#EDD559", "#47FF91", "#1A9FFF", "#7759ED", "#ED59B2"
++            ]),
++        RaycastTheme(
++            name: "Vesper", author: "Dmytro Ulianov", appearance: .dark,
++            colors: [
++                "#101010", "#101010", "#FFFFFF", "#FFC799", "#FFC799", "#FF8282",
++                "#FFC799", "#FFF499", "#99FFE4", "#99BDFF", "#E899FF", "#FF83CE"
++            ]),
++        RaycastTheme(
++            name: "Vesper dark", author: "Igor Bedesqui", appearance: .dark,
++            colors: [
++                "#101010", "#101010", "#F2F2F2", "#FFFFFF", "#FFFFFF", "#F84E4E",
++                "#FFC799", "#FFCC47", "#99FFE4", "#228CF6", "#7B4EF8", "#F84EBD"
++            ]),
++        RaycastTheme(
++            name: "Vesper dark orange only", author: "Igor Bedesqui", appearance: .dark,
++            colors: [
++                "#101010", "#101010", "#F2F2F2", "#FFFFFF", "#FFFFFF", "#FFC799",
++                "#FFC799", "#FFC799", "#FFC799", "#FFC799", "#FFC799", "#FFC799"
++            ]),
++        RaycastTheme(
++            name: "xgeeks Dark", author: "Joana Santos", appearance: .dark,
++            colors: [
++                "#5151E5", "#43CBFF", "#F5F5F5", "#92BBCB", "#43CBFF", "#E14848",
++                "#E5753C", "#B7B400", "#00AC5D", "#4F80FF", "#9454FF", "#D756BF"
++            ]),
++        RaycastTheme(
++            name: "xgeeks Light", author: "Joana Santos", appearance: .light,
++            colors: [
++                "#43CBFF", "#5151E5", "#000000", "#9191A5", "#5151E5", "#E14848",
++                "#E5753C", "#FFCC47", "#00AC5D", "#4F80FF", "#9454FF", "#D756BF"
++            ]),
++        RaycastTheme(
++            name: "Yankees Blue", author: "Thiago Holanda", appearance: .dark,
++            colors: [
++                "#4462AF", "#223344", "#D7F0F4", "#6688FF", "#47FFFF", "#ED5959",
++                "#ED8659", "#EDD559", "#47FF91", "#1A9FFF", "#7759ED", "#ED59B2"
++            ]),
++        RaycastTheme(
++            name: "Yellow Plastic MI", author: "Tarik", appearance: .light,
++            colors: [
++                "#DCE0B8", "#DCE0B8", "#0D0D0D", "#777A64", "#A862CD", "#F50A0A",
++                "#F5600A", "#E0A200", "#07BA65", "#0A7FF5", "#470AF5", "#F50AA3"
++            ]),
++    ]
++}
+diff --git a/Tinycast/Features/Settings/RaycastThemeCommand.swift b/Tinycast/Features/Settings/RaycastThemeCommand.swift
+new file mode 100644
+index 00000000..b568e94e
+--- /dev/null
++++ b/Tinycast/Features/Settings/RaycastThemeCommand.swift
+@@ -0,0 +1,196 @@
++import AppKit
++
++/// tinycast-space: the Theme command — a small extension Tinycast writes into its own extensions
++/// folder, so picking a theme needs no new palette mode. Its rows offer `tinycast://theme` links,
++/// so the palette previews each one as it is highlighted (`RaycastThemeLinkPreview`), and their
++/// `apply=1` makes ↵ switch at once. The installed themes reach it as `assets/themes.json`.
++enum RaycastThemeCommand {
++    static let folderName = "tinycast-space-themes"
++
++    private static var folder: URL {
++        ExtensionCatalog.extensionsDirectory().appendingPathComponent(folderName, isDirectory: true)
++    }
++
++    /// Writes the extension when it is missing or older than this build's, then the theme list.
++    @MainActor static func install() {
++        let fm = FileManager.default
++        let assets = folder.appendingPathComponent("assets", isDirectory: true)
++        try? fm.createDirectory(at: assets, withIntermediateDirectories: true)
++        write(manifest, to: folder.appendingPathComponent("package.json"))
++        write(script, to: folder.appendingPathComponent("theme.js"))
++        let icon = assets.appendingPathComponent("icon.png")
++        if !fm.fileExists(atPath: icon.path), let png = renderIcon() { try? png.write(to: icon) }
++        publish()
++    }
++
++    /// The installed themes and what each slot holds, for the command to list.
++    @MainActor static func publish() {
++        let slots = RaycastTheme.Appearance.allCases.map { SpaceTheme.theme(for: $0) }.compactMap { $0 }
++        var themes = SpaceTheme.imported
++        for theme in slots where !themes.contains(where: { $0.id == theme.id }) { themes.append(theme) }
++        let payload: [String: Any] = [
++            "light": SpaceTheme.theme(for: .light)?.id as Any,
++            "dark": SpaceTheme.theme(for: .dark)?.id as Any,
++            "themes": themes.map {
++                [
++                    "name": $0.name, "author": $0.author, "appearance": $0.appearance.rawValue,
++                    "colors": $0.colors
++                ]
++            }
++        ]
++        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
++            return
++        }
++        let url = folder.appendingPathComponent("assets/themes.json")
++        guard (try? Data(contentsOf: url)) != data else { return }
++        try? data.write(to: url, options: .atomic)
++    }
++
++    private static func write(_ text: String, to url: URL) {
++        let data = Data(text.utf8)
++        guard (try? Data(contentsOf: url)) != data else { return }
++        try? data.write(to: url, options: .atomic)
++    }
++
++    private static func renderIcon() -> Data? {
++        let side: CGFloat = 128
++        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
++            let tile = NSBezierPath(roundedRect: rect.insetBy(dx: 4, dy: 4), xRadius: 28, yRadius: 28)
++            NSGradient(
++                colors: [
++                    NSColor(srgbRed: 0.55, green: 0.36, blue: 0.96, alpha: 1),
++                    NSColor(srgbRed: 0.93, green: 0.36, blue: 0.62, alpha: 1)
++                ])?
++                .draw(in: tile, angle: -60)
++            let config = NSImage.SymbolConfiguration(pointSize: 64, weight: .semibold)
++                .applying(.init(paletteColors: [.white]))
++            guard
++                let symbol = NSImage(systemSymbolName: "paintpalette.fill", accessibilityDescription: nil)?
++                    .withSymbolConfiguration(config)
++            else { return true }
++            let size = symbol.size
++            symbol.draw(in: NSRect(
++                x: (side - size.width) / 2, y: (side - size.height) / 2,
++                width: size.width, height: size.height))
++            return true
++        }
++        guard let tiff = image.tiffRepresentation else { return nil }
++        return NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
++    }
++
++    private static let manifest = """
++        {
++          "name": "tinycast-space-themes",
++          "title": "Themes",
++          "description": "Switch between your installed Raycast themes. Part of Tinycast Space Edition.",
++          "icon": "icon.png",
++          "author": "tinycast-space",
++          "categories": ["System"],
++          "license": "AGPL-3.0",
++          "platforms": ["macOS"],
++          "commands": [
++            {
++              "name": "theme",
++              "title": "Theme",
++              "subtitle": "Themes",
++              "description": "Pick a light or dark theme; the window previews each one as you move.",
++              "mode": "view"
++            }
++          ]
++        }
++
++        """
++
++    private static let script = """
++        "use strict";
++        // Written by Tinycast Space Edition (RaycastThemeCommand.swift) on every launch; edits are lost.
++        Object.defineProperty(exports, "__esModule", { value: true });
++        const { List, ActionPanel, Action, Icon, environment, closeMainWindow } = require("@raycast/api");
++        const { jsx } = require("react/jsx-runtime");
++        const fs = require("fs");
++        const path = require("path");
++
++        function load() {
++          const files = [
++            path.join(environment.assetsPath || "", "themes.json"),
++            path.join(__dirname, "assets", "themes.json"),
++          ];
++          for (const file of files) {
++            try {
++              return JSON.parse(fs.readFileSync(file, "utf8"));
++            } catch {}
++          }
++          return { light: null, dark: null, themes: [] };
++        }
++
++        const q = encodeURIComponent;
++        const capital = (s) => s[0].toUpperCase() + s.slice(1);
++        const themeID = (t) => (t.author ? `${t.name} · ${t.author}` : t.name);
++        const link = (t) =>
++          `tinycast://theme?apply=1&version=1&name=${q(t.name)}&author=${q(t.author)}` +
++          `&appearance=${t.appearance}&colors=${t.colors.map(q).join(",")}`;
++        const swatch = (t) =>
++          "data:image/svg+xml," +
++          q(
++            `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><defs>` +
++              `<linearGradient id="g" x1="0" x2="0" y1="0" y2="1">` +
++              `<stop offset="0%" stop-color="${t.colors[0]}"/>` +
++              `<stop offset="100%" stop-color="${t.colors[1]}"/></linearGradient></defs>` +
++              `<circle cx="12" cy="12" r="10" fill="url(#g)"` +
++              ` stroke="${t.colors[2]}" stroke-opacity="0.35"/>` +
++              `<circle cx="12" cy="12" r="3.5" fill="${t.colors[3]}"/></svg>`,
++          );
++
++        function row(slot, current, theme) {
++          const id = theme ? themeID(theme) : null;
++          const inUse = current === id;
++          return jsx(
++            List.Item,
++            {
++              id: `${slot}:${id ?? "tinycast"}`,
++              title: theme ? theme.name : "Tinycast",
++              subtitle: theme ? theme.author : "No theme",
++              icon: theme ? swatch(theme) : Icon.Circle,
++              keywords: [slot, ...(theme ? [theme.author] : [])],
++              accessories: inUse ? [{ icon: Icon.Checkmark, tooltip: "In use" }] : [],
++              actions: jsx(ActionPanel, {
++                children: jsx(Action.Open, {
++                  title: `Use as ${capital(slot)} Theme`,
++                  icon: Icon.Brush,
++                  target: theme ? link(theme) : `tinycast://theme?apply=1&none=${slot}`,
++                  onOpen: () => closeMainWindow(),
++                }),
++              }),
++            },
++            `${slot}:${id ?? "tinycast"}`,
++          );
++        }
++
++        function Command() {
++          const data = load();
++          const now = environment.appearance === "dark" ? "dark" : "light";
++          const slots = now === "dark" ? ["dark", "light"] : ["light", "dark"];
++          return jsx(List, {
++            searchBarPlaceholder: "Search installed themes",
++            selectedItemId: `${now}:${data[now] ?? "tinycast"}`,
++            // Tinycast seeds selectedItemId only for a list that also reports selection changes.
++            onSelectionChange: () => {},
++            children: slots.map((slot) =>
++              jsx(
++                List.Section,
++                {
++                  title: `${capital(slot)} Themes`,
++                  children: [null, ...data.themes.filter((t) => t.appearance === slot)].map((theme) =>
++                    row(slot, data[slot] ?? null, theme),
++                  ),
++                },
++                slot,
++              ),
++            ),
++          });
++        }
++
++        exports.default = Command;
++
++        """
++}
+diff --git a/Tinycast/Features/Settings/RaycastThemeCore.swift b/Tinycast/Features/Settings/RaycastThemeCore.swift
+new file mode 100644
+index 00000000..acc2485e
+--- /dev/null
++++ b/Tinycast/Features/Settings/RaycastThemeCore.swift
+@@ -0,0 +1,260 @@
++import AppKit
++import Observation
++import SwiftUI
++import Synchronization
++
++/// tinycast-space: a Raycast theme, in ray.so's format, recoloring Tinycast's own tokens.
++///
++/// A theme changes hues, never alphas. Every ramp token keeps the opacity Tinycast designed it with
++/// and takes the theme's `text` as its ink, the selection fill takes `selection`, and the scrim over
++/// the glass takes `background` — ray.so previews a theme the same way, over a blur. As in Raycast,
++/// there is a light slot and a dark slot, and the appearance Tinycast draws in picks between them.
++struct RaycastTheme: Codable, Hashable, Identifiable, Sendable {
++    enum Appearance: String, Codable, Sendable, CaseIterable {
++        case light, dark
++    }
++
++    var name: String
++    var author: String
++    var appearance: Appearance
++    /// ray.so's order, which is also a `raycast://theme` link's: background, backgroundSecondary,
++    /// text, selection, loader, red, orange, yellow, green, blue, purple, magenta.
++    var colors: [String]
++
++    var id: String { author.isEmpty ? name : "\(name) · \(author)" }
++
++    /// The link ray.so's *Add to Raycast* opens and Raycast's Theme Studio copies; `tinycast://` too.
++    init?(url: URL) {
++        guard ["raycast", "tinycast"].contains(url.scheme?.lowercased() ?? ""),
++            url.host()?.lowercased() == "theme",
++            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
++        else { return nil }
++        func value(_ key: String) -> String? { items.first { $0.name == key }?.value }
++        let colors = (value("colors") ?? "").split(separator: ",").compactMap { Self.hex6(String($0)) }
++        guard let name = value("name"), !name.isEmpty, colors.count == 12,
++            let appearance = value("appearance").flatMap(Appearance.init(rawValue:))
++        else { return nil }
++        self.init(
++            name: name, author: value("author") ?? value("authorUsername") ?? "",
++            appearance: appearance, colors: colors)
++    }
++
++    init(name: String, author: String, appearance: Appearance, colors: [String]) {
++        self.name = name
++        self.author = author
++        self.appearance = appearance
++        self.colors = colors
++    }
++
++    /// `#RRGGBB`. Older Theme Studio links carry an alpha pair, which ray.so drops too.
++    static func hex6(_ raw: String) -> String? {
++        let trimmed = raw.trimmingCharacters(in: .whitespaces)
++        guard trimmed.hasPrefix("#") else { return nil }
++        let digits = trimmed.dropFirst()
++        guard digits.count == 6 || digits.count == 8, digits.allSatisfy(\.isHexDigit) else { return nil }
++        return "#" + digits.prefix(6).uppercased()
++    }
++}
++
++/// A `raycast://theme` or `tinycast://theme` link: a theme, or Tinycast's own colors for a slot
++/// (`none=light|dark`). `apply=1` — the Theme command's links — skips the dialog.
++struct RaycastThemeLink: Equatable, Sendable {
++    enum Target: Equatable, Sendable {
++        case theme(RaycastTheme)
++        case tinycast(RaycastTheme.Appearance)
++
++        var appearance: RaycastTheme.Appearance {
++            switch self {
++            case .theme(let theme): theme.appearance
++            case .tinycast(let slot): slot
++            }
++        }
++    }
++
++    let target: Target
++    let applies: Bool
++
++    init?(url: URL) {
++        guard ["raycast", "tinycast"].contains(url.scheme?.lowercased() ?? ""),
++            url.host()?.lowercased() == "theme"
++        else { return nil }
++        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
++        applies = items.contains { $0.name == "apply" && $0.value == "1" }
++        if let slot = items.first(where: { $0.name == "none" })?.value
++            .flatMap(RaycastTheme.Appearance.init(rawValue:))
++        {
++            target = .tinycast(slot)
++        } else if let theme = RaycastTheme(url: url) {
++            target = .theme(theme)
++        } else {
++            return nil
++        }
++    }
++}
++
++/// A theme's colors, parsed once per change rather than once per draw.
++struct RaycastThemePalette: Sendable {
++    /// The names extensions pass for `Color.Red` and friends, in the theme's color order from red.
++    static let namedColors = [
++        "raycast-red", "raycast-orange", "raycast-yellow", "raycast-green", "raycast-blue",
++        "raycast-purple", "raycast-magenta"
++    ]
++
++    let background: NSColor
++    let backgroundSecondary: NSColor
++    let text: NSColor
++    let selection: NSColor
++    let named: [String: NSColor]
++
++    init(_ theme: RaycastTheme) {
++        let colors = theme.colors.map(Self.color)
++        func at(_ index: Int) -> NSColor { colors.indices.contains(index) ? colors[index] : .gray }
++        background = at(0)
++        backgroundSecondary = at(1)
++        text = at(2)
++        selection = at(3)
++        var named = ["raycast-primary-text": at(2)]
++        for (offset, name) in Self.namedColors.enumerated() { named[name] = at(5 + offset) }
++        self.named = named
++    }
++
++    static func color(_ hex: String) -> NSColor {
++        guard let value = UInt32(hex.dropFirst(), radix: 16) else { return .gray }
++        return NSColor(
++            srgbRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255,
++            blue: CGFloat(value & 0xFF) / 255, alpha: 1)
++    }
++}
++
++/// tinycast-space: the light and dark Raycast themes. Color providers run wherever AppKit resolves
++/// them, so the palettes sit behind a lock rather than on the main actor. Only AppKit and SwiftUI
++/// here: the harnesses compile this file beside `Theme.swift` (`apply.sh` adds it), so switching
++/// lives in `RaycastThemeSwitching.swift`.
++enum SpaceTheme {
++    enum Role: Sendable {
++        case text, selection, background
++    }
++
++    struct Palettes: Sendable {
++        var light: RaycastThemePalette?
++        var dark: RaycastThemePalette?
++        /// What the palette shows while an extension row offering a theme link is highlighted; a
++        /// nil palette there previews Tinycast's own colors.
++        var previewing = false
++        var preview: RaycastThemePalette?
++        var previewIsDark = false
++
++        func callAsFunction(_ appearance: NSAppearance) -> RaycastThemePalette? {
++            let isDark = appearance.isDark
++            if previewing, previewIsDark == isDark { return preview }
++            return isDark ? dark : light
++        }
++
++        var isEmpty: Bool { light == nil && dark == nil && preview == nil }
++    }
++
++    static let importedKey = "spaceRaycastThemesImported"
++    static let opacityKey = "spaceRaycastThemeBackgroundOpacity"
++    /// Above ray.so's 40 %: its preview blurs 72 px, and Tinycast's glass lets far more through.
++    static let defaultOpacity = 0.7
++
++    static func key(for slot: RaycastTheme.Appearance) -> String {
++        slot == .dark ? "spaceRaycastThemeDark" : "spaceRaycastThemeLight"
++    }
++
++    /// Bumped on every palette change. Tokens read it as they are drawn, so SwiftUI redraws exactly
++    /// the views showing a themed color — in place, state kept — rather than on an appearance flip.
++    @Observable final class Revision: @unchecked Sendable {
++        var value = 0
++    }
++
++    static let revision = Revision()
++
++    static func observe() { _ = revision.value }
++
++    static let state = Mutex(
++        Palettes(
++            light: theme(for: .light).map(RaycastThemePalette.init),
++            dark: theme(for: .dark).map(RaycastThemePalette.init)))
++
++    static func theme(for slot: RaycastTheme.Appearance) -> RaycastTheme? {
++        decode(RaycastTheme.self, forKey: key(for: slot))
++    }
++
++    static var imported: [RaycastTheme] { decode([RaycastTheme].self, forKey: importedKey) ?? [] }
++
++    static var backgroundOpacity: Double {
++        UserDefaults.standard.object(forKey: opacityKey) as? Double ?? defaultOpacity
++    }
++
++    /// The theme's color for `role` at the alpha the token asks for; nil leaves Tinycast's own.
++    static func ink(_ role: Role, in appearance: NSAppearance, dark: Double, light: Double) -> NSColor? {
++        guard let palette = state.withLock({ $0(appearance) }) else { return nil }
++        let alpha = appearance.isDark ? dark : light
++        switch role {
++        case .text: return palette.text.withAlphaComponent(alpha)
++        case .selection: return palette.selection.withAlphaComponent(alpha)
++        case .background: return palette.background.withAlphaComponent(backgroundOpacity)
++        }
++    }
++
++    /// The palette's backdrop: Raycast's gradient, `background` fading into `backgroundSecondary`
++    /// by 70 % of the height as ray.so draws it, or Tinycast's own scrim when there is no theme.
++    static var backdrop: LinearGradient {
++        observe()
++        return LinearGradient(
++            stops: [
++                .init(color: backdropColor(\.background), location: 0),
++                .init(color: backdropColor(\.backgroundSecondary), location: 0.7)
++            ],
++            startPoint: .top, endPoint: .bottom)
++    }
++
++    private static func backdropColor(_ keyPath: KeyPath<RaycastThemePalette, NSColor> & Sendable) -> Color {
++        Color(
++            nsColor: NSColor(name: nil) { appearance in
++                guard let palette = state.withLock({ $0(appearance) }) else {
++                    // `Theme.Colors.panelScrim`'s own values.
++                    return appearance.isDark ? .srgbInk(0, alpha: 0.40) : .srgbInk(1, alpha: 0.55)
++                }
++                return palette[keyPath: keyPath].withAlphaComponent(backgroundOpacity)
++            })
++    }
++
++    /// Floating glass — menus, the action capsule — tinted with the theme's background.
++    static func tinted(_ glass: Glass) -> Glass {
++        observe()
++        return state.withLock { $0.isEmpty } ? glass : glass.tint(glassTint)
++    }
++
++    private static var glassTint: Color {
++        Color(
++            nsColor: NSColor(name: nil) { appearance in
++                state.withLock { $0(appearance) }?.background.withAlphaComponent(backgroundOpacity)
++                    ?? .clear
++            })
++    }
++
++    /// An extension's named color, following whichever slot the surface is drawn in.
++    static func namedColor(_ name: String, fallback: Color?) -> Color? {
++        guard name.hasPrefix("raycast-"), !state.withLock({ $0.isEmpty }) else {
++            return nil
++        }
++        let base = fallback.map { NSColor($0) }
++        return Color(
++            nsColor: NSColor(name: nil) { appearance in
++                state.withLock { $0(appearance)?.named[name] } ?? base ?? .labelColor
++            })
++    }
++
++    static func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
++        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(type, from: $0) }
++    }
++
++    static func encode<T: Encodable>(_ value: T?, forKey key: String) {
++        guard let value, let data = try? JSONEncoder().encode(value) else {
++            return UserDefaults.standard.removeObject(forKey: key)
++        }
++        UserDefaults.standard.set(data, forKey: key)
++    }
++}
+diff --git a/Tinycast/Features/Settings/RaycastThemeSwitching.swift b/Tinycast/Features/Settings/RaycastThemeSwitching.swift
+new file mode 100644
+index 00000000..0abcb5a3
+--- /dev/null
++++ b/Tinycast/Features/Settings/RaycastThemeSwitching.swift
+@@ -0,0 +1,146 @@
++import AppKit
++import SwiftUI
++
++/// tinycast-space: putting a Raycast theme in its slot, previewing one on the palette, and
++/// repainting what is already on screen.
++extension SpaceTheme {
++    /// At launch: the Theme command's extension.
++    @MainActor static func start() {
++        RaycastThemeCommand.install()
++    }
++
++    /// `nil` empties the slot, handing that appearance back to Tinycast's own colors.
++    @MainActor static func select(_ theme: RaycastTheme?, for slot: RaycastTheme.Appearance) {
++        encode(theme, forKey: key(for: slot))
++        let palette = theme.map(RaycastThemePalette.init)
++        state.withLock {
++            if slot == .dark { $0.dark = palette } else { $0.light = palette }
++        }
++        RaycastThemeCommand.publish()
++        repaint()
++    }
++
++    /// Kept in the imported list, newest first, without touching either slot.
++    @MainActor static func add(_ theme: RaycastTheme) {
++        encode([theme] + imported.filter { $0.id != theme.id }, forKey: importedKey)
++        RaycastThemeCommand.publish()
++    }
++
++    /// A theme from a link: kept in the imported list and put in its slot.
++    @MainActor static func install(_ theme: RaycastTheme) {
++        add(theme)
++        select(theme, for: theme.appearance)
++    }
++
++    @MainActor static func remove(_ theme: RaycastTheme) {
++        encode(imported.filter { $0.id != theme.id }, forKey: importedKey)
++        RaycastThemeCommand.publish()
++        if self.theme(for: theme.appearance)?.id == theme.id { select(nil, for: theme.appearance) }
++    }
++
++    /// A theme link from anywhere. The Theme command's own links apply at once; any other asks.
++    @MainActor static func handle(_ url: URL, in core: AppCore) -> Bool {
++        guard let link = RaycastThemeLink(url: url) else { return false }
++        let slot = link.target.appearance.rawValue
++        switch (link.target, link.applies) {
++        case (.tinycast(let appearance), _):
++            select(nil, for: appearance)
++            core.showMessage("\(slot.capitalized) theme: Tinycast")
++        case (.theme(let theme), true):
++            install(theme)
++            core.showMessage("\(slot.capitalized) theme: \(theme.name)")
++        case (.theme(let theme), false):
++            offer(theme, in: core)
++        }
++        return true
++    }
++
++    /// A link asks before it changes anything; the palette stays open behind the dialog.
++    @MainActor private static func offer(_ theme: RaycastTheme, in core: AppCore) {
++        let slot = theme.appearance.rawValue
++        Task {
++            let choice = await core.choose(
++                title: "Use “\(theme.name)” as your \(slot) theme?",
++                message: "Just Add keeps it for the Theme command and Settings → General.",
++                symbol: "paintpalette",
++                options: [
++                    DialogAction(title: "Use Theme"),
++                    DialogAction(title: "Just Add"),
++                    DialogAction(title: "Cancel", role: .cancel)
++                ],
++                defaultIndex: 0)
++            switch choice {
++            case 0:
++                install(theme)
++                core.showMessage("\(slot.capitalized) theme: \(theme.name)")
++            case 1:
++                add(theme)
++                core.showMessage("Added \(theme.name)")
++            default:
++                break
++            }
++        }
++    }
++
++    // MARK: - Previewing on the palette
++
++    @MainActor private static var previewed: (target: RaycastThemeLink.Target, window: NSWindow)?
++
++    /// Shows `target` on `window` alone, appearance included, until it is asked for `nil`.
++    @MainActor static func preview(_ target: RaycastThemeLink.Target?, in window: NSWindow?) {
++        let next: (target: RaycastThemeLink.Target, window: NSWindow)? =
++            target.flatMap { target in window.map { (target: target, window: $0) } }
++        guard next?.target != previewed?.target || next?.window !== previewed?.window else { return }
++        let ending = previewed?.window
++        previewed = next
++        state.withLock {
++            $0.previewing = next != nil
++            if case .theme(let theme) = next?.target {
++                $0.preview = RaycastThemePalette(theme)
++            } else {
++                $0.preview = nil
++            }
++            $0.previewIsDark = next?.target.appearance == .dark
++        }
++        // Only a light/dark the window doesn't already have is a real switch; the hue is a redraw.
++        if let ending, ending !== next?.window { ending.appearance = nil }
++        if let next {
++            next.window.appearance = NSAppearance(
++                named: next.target.appearance == .dark ? .darkAqua : .aqua)
++        }
++        repaint()
++    }
++
++    /// Every view drawing a themed color redraws in place, hidden ones as they next appear.
++    @MainActor static func repaint() {
++        revision.value += 1
++    }
++}
++
++/// tinycast-space: previews the theme an extension row offers — Raycast Explorer's *Add to
++/// Raycast* is an `Action.Open` on a `raycast://theme` link — on the palette while it is highlighted.
++struct RaycastThemeLinkPreview: ViewModifier {
++    let screen: ExtensionScreen
++    let selection: Int
++
++    func body(content: Content) -> some View {
++        content
++            .onChange(of: target(at: selection), initial: true) { _, target in
++                SpaceTheme.preview(target, in: NSApp.keyWindow)
++            }
++            .onDisappear { SpaceTheme.preview(nil, in: nil) }
++    }
++
++    private func target(at index: Int) -> RaycastThemeLink.Target? {
++        screen.actionPanel(forItemAt: index).flatMap(Self.themeLink)?.target
++    }
++
++    private static func themeLink(in node: RenderNode) -> RaycastThemeLink? {
++        if let target = node.props["target"]?.stringValue, let url = URL(string: target),
++            let link = RaycastThemeLink(url: url)
++        {
++            return link
++        }
++        return node.children.lazy.compactMap(themeLink).first
++    }
++}
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 1f63e7e9..e0ad9f75 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -139,6 +139,15 @@ enum SettingsSearchCatalog {
+         .init(
+             .generalAppearance, "Theme",
+             keywords: ["dark", "light", "mode", "appearance"]),
++        .init(
++            .generalAppearance, "Light theme",
++            keywords: ["raycast theme", "ray.so", "colors", "palette", "import"]),
++        .init(
++            .generalAppearance, "Dark theme",
++            keywords: ["raycast theme", "ray.so", "colors", "palette", "import"]),
++        .init(
++            .generalAppearance, "Theme background",
++            keywords: ["opacity", "transparency", "raycast theme"]),
+         .init(
+             .generalAppearance, "Interface size",
+             keywords: ["text size", "font size", "scale", "zoom", "bigger", "larger", "legible"]),
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 3c5a2996..59f953cb 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -196,7 +196,7 @@ struct RootPaletteView: View {
+                     title: "Changelog",
+                     systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90"
+                 ) {
+-                    if let url = URL(string: "https://github.com/abue-ammar/tinycast/releases") {
++                    if let url = URL(string: "https://github.com/sermelipharo/tinycast-space/releases") {
+                         openURL(url)
+                     }
+                 },
+@@ -318,7 +318,7 @@ struct RootPaletteView: View {
+                 )
+                 // The window's frame is the size source, so the glass and clip stay matched.
+                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+-                .background(Theme.Colors.panelScrim)
++                .background(SpaceTheme.backdrop)  // tinycast-space: a Raycast theme's gradient
+                 .background(GlassEffectView())
+                 .overlay {
+                     Theme.Colors.dialogDimming
+@@ -390,6 +390,8 @@ struct RootPaletteView: View {
+                 extensions.dispatch(handler: handler, arguments: [vm.query])
+             }
+             .modifier(ExtensionSelectionForwarder(screen: extensionScreen, selection: vm.selection))
++            // tinycast-space: a highlighted row offering a raycast://theme link previews it.
++            .modifier(RaycastThemeLinkPreview(screen: extensionScreen, selection: vm.selection))
+             // A narrower list means the old index points at a different row, or at none.
+             .onChange(of: vm.clipboardFilter) { land() }
+             // The filter is part of the query, so narrowing re-runs it rather than thinning rows.

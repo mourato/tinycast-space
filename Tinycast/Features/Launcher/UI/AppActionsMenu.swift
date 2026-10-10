@@ -58,6 +58,7 @@ enum AppActionsMenu {
                 PopoverMenuItem(
                     title: title, systemImage: "eye.slash", shortcut: "⇧⌘H", action: onHideFromSearch))
         }
+        items += InlineEntryEditor.menuItems(for: app, core: core)  // tinycast-space
         if running, app.kind == .application {
             items.append(
                 PopoverMenuItem(

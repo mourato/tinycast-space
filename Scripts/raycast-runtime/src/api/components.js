@@ -390,6 +390,8 @@ Action.OpenInBrowser = convenience("Action.OpenInBrowser", (props) => ({
 
 Action.Open = convenience("Action.Open", (props) => ({
   title: props.title,
+  // tinycast-space: the host previews a raycast://theme target while its row is highlighted.
+  target: typeof props.target === "string" ? props.target : undefined,
   icon: props.icon ?? Icon.Document,
   shortcut: props.shortcut,
   style: props.style,

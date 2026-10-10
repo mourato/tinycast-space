@@ -135,11 +135,14 @@ struct AppEntry: Identifiable, Hashable, Sendable {
     var ownerName: String?
     /// When it landed on disk, so a fresh install can be suggested before its first open.
     var installedAt: Date?
+    /// tinycast-space: a further copy of an already-indexed bundle ID, shown because "Show every
+    /// copy of an app" is on. Keyed by path, so hiding or aliasing it leaves the first copy alone.
+    var keyedByPath = false
     /// The searchable form of every field above, built at publish by `buildSearchProfile`.
     var search = SearchProfile.unnamed
 
     /// Stable identity for learned ranking, favorites, and other per-entry preferences.
-    var preferenceKey: String { bundleID ?? id }
+    var preferenceKey: String { keyedByPath ? id : bundleID ?? id }
 
     /// What this entry is called, in the shape `EntryNaming` reads.
     var naming: EntryNaming.Sources {
@@ -176,6 +179,8 @@ struct AppEntry: Identifiable, Hashable, Sendable {
             if let command = CommandCatalog.command(for: self) { return command.hotKeyAction }
             return CustomQuickAction.id(fromEntryID: id).map { .quickAction(id: $0) }
         case .application:
+            // tinycast-space: an app hotkey launches by bundle ID, which can't single out a copy.
+            guard !keyedByPath else { return nil }
             return bundleID.map { .app(bundleID: $0) }
         case .systemSettings:
             return bundleID.map { .settingsPane(bundleID: $0) }
@@ -619,12 +624,15 @@ final class AppIndex {
             var cache = cache
             var indexByBundleID: [String: Int] = [:]
             var result: [AppEntry] = []
+            // tinycast-space: Spotlight-style, every bundle gets a row, even one sharing a bundle ID.
+            let showsEveryCopy = UserDefaults.standard.bool(forKey: "spaceShowsEveryAppCopy")
             for url in SearchScopes.appBundles(in: scopes) {
                 let bundle = Bundle(url: url)
                 let bundleID = bundle?.bundleIdentifier
                 let fileName = EntryNaming.strippingAppExtension(url.lastPathComponent)
                 // Dedup by bundle id; the first scope wins, but a renamed copy lends its name.
-                if let bundleID, let first = indexByBundleID[bundleID] {
+                let firstCopy = bundleID.flatMap { indexByBundleID[$0] }
+                if !showsEveryCopy, let first = firstCopy {
                     result[first].addAlternateTitle(fileName)
                     continue
                 }
@@ -643,7 +651,17 @@ final class AppIndex {
                     installedAt: try? url.resourceValues(forKeys: [.addedToDirectoryDateKey])
                         .addedToDirectoryDate)
                 entry.addAlternateTitle(fileName)
-                if let bundleID { indexByBundleID[bundleID] = result.count }
+                if let first = firstCopy {
+                    entry.keyedByPath = true
+                    // Two rows reading the same name say where each one lives.
+                    let sameName =
+                        FuzzyMatch.normalized(entry.name) == FuzzyMatch.normalized(result[first].name)
+                    if sameName {
+                        entry.subtitle = SearchScopes.abbreviate(url.deletingLastPathComponent().path)
+                    }
+                } else if let bundleID {
+                    indexByBundleID[bundleID] = result.count
+                }
                 result.append(entry)
             }
             // Slice order is section order, so the flat selection maps 1:1 onto rows.

@@ -6,6 +6,8 @@ struct SearchScopesSection: View {
     @Environment(AppSettings.self) private var settings
     /// Recomputed only on change: a `fileExists` per row is too much per body render.
     @State private var missing: Set<String> = []
+    /// tinycast-space: read by `AppIndex.scan`, which re-runs on the next palette open.
+    @AppStorage("spaceShowsEveryAppCopy") private var showsEveryCopy = false
 
     private var isDefault: Bool { settings.searchScopes == SearchScopes.defaults }
 
@@ -26,6 +28,13 @@ struct SearchScopesSection: View {
                 if !isDefault {
                     Button("Restore Defaults") { settings.searchScopes = SearchScopes.defaults }
                 }
+            }
+
+            Toggle(isOn: $showsEveryCopy) {
+                SettingsRowTitle(.applicationsSearchScopes, "Show every copy of an app")
+                Text(
+                    "Like Spotlight: apps sharing a bundle ID each get a row instead of folding into "
+                        + "the first one found.")
             }
         } header: {
             SettingsSectionHeader(.applicationsSearchScopes)

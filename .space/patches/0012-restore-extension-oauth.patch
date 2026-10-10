@@ -1,0 +1,847 @@
+diff --git a/Scripts/raycast-runtime/src/api/enums.generated.js b/Scripts/raycast-runtime/src/api/enums.generated.js
+index cfd3cc8f..892bcc0e 100644
+--- a/Scripts/raycast-runtime/src/api/enums.generated.js
++++ b/Scripts/raycast-runtime/src/api/enums.generated.js
+@@ -567,6 +567,14 @@ export const nestedEnums = {
+       "RoundedRectangle": "roundedRectangle",
+     }),
+   },
++  "OAuth": {
++    "RedirectMethod": Object.freeze({
++      "Web": "web",
++      "App": "app",
++      "AppURI": "appURI",
++      "ClientIdMetadataDocument": "clientIdMetadataDocument",
++    }),
++  },
+   "Toast": {
+     "Style": Object.freeze({
+       "Success": "SUCCESS",
+diff --git a/Scripts/raycast-runtime/src/api/index.js b/Scripts/raycast-runtime/src/api/index.js
+index 56313ec3..2f5c6fed 100644
+--- a/Scripts/raycast-runtime/src/api/index.js
++++ b/Scripts/raycast-runtime/src/api/index.js
+@@ -3,6 +3,7 @@
+ import { Action, ActionPanel, Detail, Form, Grid, List, MenuBarExtra, Navigation, setActionEffects, useNavigation } from "./components.js";
+ import * as enums from "./enums.generated.js";
+ import * as system from "./system.js";
++import { PKCEClient, TokenSet } from "./oauth.js";
+ 
+ const { nestedEnums, ...flatEnums } = enums;
+ 
+@@ -86,6 +87,12 @@ const AI = {
+   Creativity: Object.freeze({}),
+ };
+ 
++const OAuth = {
++  RedirectMethod: nestedEnums.OAuth.RedirectMethod,
++  PKCEClient,
++  TokenSet,
++};
++
+ const BrowserExtension = rejectingNamespace("BrowserExtension", ["getContent", "getTabs"]);
+ 
+ const WindowManagement = {
+@@ -144,6 +151,8 @@ export const raycastApi = {
+   launchCommand: system.launchCommand,
+   updateCommandMetadata: system.updateCommandMetadata,
+ 
++  OAuth,
++
+   // Unimplemented namespaces
+   AI,
+   BrowserExtension,
+diff --git a/Scripts/raycast-runtime/src/api/oauth.js b/Scripts/raycast-runtime/src/api/oauth.js
+new file mode 100644
+index 00000000..db458679
+--- /dev/null
++++ b/Scripts/raycast-runtime/src/api/oauth.js
+@@ -0,0 +1,177 @@
++import { base64ToBytes, bytesToBase64, utf8Encode } from "../polyfills.js";
++import { hostCall, hostCallSync } from "../host.js";
++import { nestedEnums } from "./enums.generated.js";
++
++function generateRandomBytes(length) {
++  const base64 = hostCallSync("crypto", "random", [length]);
++  return base64ToBytes(base64);
++}
++
++function base64UrlEncode(bytes) {
++  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
++}
++
++function generateCodeVerifier() {
++  const bytes = generateRandomBytes(32);
++  return base64UrlEncode(bytes);
++}
++
++function computeCodeChallenge(verifier) {
++  const verifierBytes = utf8Encode(verifier);
++  const hashBase64 = hostCallSync("crypto", "hash", ["sha256", bytesToBase64(verifierBytes), null]);
++  const hashBytes = base64ToBytes(hashBase64);
++  return base64UrlEncode(hashBytes);
++}
++
++function generateRandomString(length = 16) {
++  const bytes = generateRandomBytes(length);
++  return base64UrlEncode(bytes);
++}
++
++function generateState(client) {
++  // raycast.com/redirect expects state to be a JSON object (base64url-encoded)
++  // containing providerName and scheme ("tinycast") so it redirects to tinycast://oauth
++  const payload = {
++    token: generateRandomString(16),
++    providerName: client?.providerName || "",
++    providerId: client?.providerId || "",
++    scheme: "tinycast",
++  };
++  const json = JSON.stringify(payload);
++  const bytes = utf8Encode(json);
++  return base64UrlEncode(bytes);
++}
++
++export class TokenSet {
++  constructor(options = {}) {
++    this.accessToken = options.accessToken ?? options.access_token ?? "";
++    this.refreshToken = options.refreshToken ?? options.refresh_token;
++    this.idToken = options.idToken ?? options.id_token;
++    this.tokenType = options.tokenType ?? options.token_type ?? "Bearer";
++    this.scope = options.scope;
++    this.expiresIn = options.expiresIn ?? options.expires_in;
++    this.updatedAt = new Date(options.updatedAt ?? Date.now());
++  }
++
++  isExpired() {
++    if (this.expiresIn == null) return false;
++    const expiresAt = this.updatedAt.getTime() + (this.expiresIn - 30) * 1000;
++    return Date.now() >= expiresAt;
++  }
++}
++
++export class PKCEClient {
++  constructor(options = {}) {
++    this.redirectMethod = options.redirectMethod || nestedEnums.OAuth.RedirectMethod.Web;
++    this.providerName = options.providerName || "";
++    this.providerIcon = options.providerIcon;
++    this.providerId = options.providerId || "";
++    this.description = options.description || "";
++  }
++
++  async authorizationRequest(options) {
++    if (!options || !options.endpoint || !options.clientId) {
++      throw new Error("authorizationRequest requires endpoint and clientId");
++    }
++
++    const codeVerifier = generateCodeVerifier();
++    const codeChallenge = computeCodeChallenge(codeVerifier);
++    const codeChallengeMethod = "S256";
++    const state = options.state || generateState(this);
++
++    let redirectURI = options.extraParameters?.redirect_uri;
++    if (!redirectURI) {
++      if (this.redirectMethod === nestedEnums.OAuth.RedirectMethod.App) {
++        redirectURI = "raycast://oauth?package_name=Extension";
++      } else if (this.redirectMethod === nestedEnums.OAuth.RedirectMethod.AppURI) {
++        redirectURI = "com.raycast:/oauth?package_name=Extension";
++      } else {
++        redirectURI = "https://raycast.com/redirect?packageName=Extension";
++      }
++    }
++
++    const url = new URL(options.endpoint);
++    url.searchParams.set("response_type", "code");
++    url.searchParams.set("client_id", options.clientId);
++    if (options.scope) {
++      url.searchParams.set("scope", options.scope);
++    }
++    url.searchParams.set("redirect_uri", redirectURI);
++    url.searchParams.set("code_challenge", codeChallenge);
++    url.searchParams.set("code_challenge_method", codeChallengeMethod);
++    url.searchParams.set("state", state);
++
++    if (options.extraParameters) {
++      for (const [key, value] of Object.entries(options.extraParameters)) {
++        if (value !== undefined && value !== null) {
++          url.searchParams.set(key, String(value));
++        }
++      }
++    }
++
++    return {
++      endpoint: options.endpoint,
++      clientId: options.clientId,
++      scope: options.scope,
++      codeVerifier,
++      codeChallenge,
++      codeChallengeMethod,
++      state,
++      redirectURI,
++      toURL() {
++        return url.toString();
++      },
++    };
++  }
++
++  async authorize(request) {
++    const url =
++      typeof request === "string"
++        ? request
++        : request?.toURL
++        ? request.toURL()
++        : request?.url || request?.endpoint;
++    if (!url) {
++      throw new Error("authorize requires a valid authorization URL");
++    }
++    const state = typeof request === "object" ? request?.state : undefined;
++
++    let res = await hostCall("oauth", "authorize", [url, state]);
++
++    if (typeof res === "string") {
++      try {
++        res = JSON.parse(res);
++      } catch {}
++    }
++
++    return {
++      authorizationCode: res?.authorizationCode ?? res?.code ?? "",
++      accessToken: res?.accessToken,
++      state: res?.state,
++    };
++  }
++
++  async getTokens() {
++    let raw = await hostCall("oauth", "getTokens", [this.providerId]);
++    if (!raw) return undefined;
++    if (typeof raw === "string") {
++      try {
++        raw = JSON.parse(raw);
++      } catch {
++        return undefined;
++      }
++    }
++    // A token stored without a time can't be dated, so it counts as expired and gets refreshed.
++    return new TokenSet({ ...raw, updatedAt: raw.updatedAt ?? 0 });
++  }
++
++  async setTokens(tokens) {
++    const set = typeof tokens === "string" ? JSON.parse(tokens) : tokens;
++    const stamped = JSON.stringify({ ...set, updatedAt: new Date().toISOString() });
++    await hostCall("oauth", "setTokens", [this.providerId, stamped]);
++  }
++
++  async removeTokens() {
++    await hostCall("oauth", "removeTokens", [this.providerId]);
++  }
++}
+diff --git a/Scripts/raycast-runtime/src/polyfills.js b/Scripts/raycast-runtime/src/polyfills.js
+index 4a90ff29..9bd7139f 100644
+--- a/Scripts/raycast-runtime/src/polyfills.js
++++ b/Scripts/raycast-runtime/src/polyfills.js
+@@ -433,6 +433,7 @@ function bodyToBytes(body) {
+   return utf8Encode(String(body));
+ }
+ 
++// Fetch spec: a body implies a Content-Type, which an OAuth token POST relies on rather than sets.
+ function bodyContentType(body) {
+   if (typeof body === "string") return "text/plain;charset=UTF-8";
+   if (body instanceof URLSearchParams) return "application/x-www-form-urlencoded;charset=UTF-8";
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 2f0dba51..7b2c2d44 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -374,6 +374,8 @@ run ext-icon-test          Tinycast/Platform/Appearance.swift \
+                            Tinycast/Features/Extensions/Service/ExtensionFetcher.swift \
+                            Tinycast/Platform/ProcessExit.swift \
+                            Tinycast/Features/Extensions/Service/ExtensionNodeShims.swift \
++                           Tinycast/Features/Extensions/Service/ExtensionOAuthKeychain.swift \
++                           Tinycast/Features/Extensions/Service/ExtensionOAuthSession.swift \
+                            Tinycast/Features/Extensions/Service/ExtensionRuntime.swift \
+                            Tinycast/Features/Extensions/Service/ExtensionIconCache.swift \
+                            Tinycast/Features/Extensions/UI/ExtensionAnimatedImage.swift \
+@@ -620,6 +622,8 @@ run slow ext-test          -parse-as-library \
+                            Tinycast/Platform/ProcessExit.swift \
+                            $E/Service/ExtensionIconCache.swift \
+                            $E/Service/ExtensionNodeShims.swift \
++                           $E/Service/ExtensionOAuthKeychain.swift \
++                           $E/Service/ExtensionOAuthSession.swift \
+                            $E/Service/ExtensionRuntime.swift \
+                            $E/Service/ExtensionNameResolver.swift \
+                            $E/Service/ExtensionWebSocketBridge.swift \
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index e3e6e1f8..a35c10ce 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -475,6 +475,16 @@ final class AppCore {
+         if ConfettiOverlay.claims(url) { return ConfettiOverlay.fire() }
+         // tinycast-space: a theme link — ray.so, Raycast's Theme Studio, or the Theme command.
+         if SpaceTheme.handle(url, in: self) { return }
++        switch ExtensionOAuthSession.handleCallbackURL(url) {
++        case .delivered:
++            paletteCoordinator.showPalette(mode: .extensionCommand, restoreAnyMode: true)
++            return
++        case .expired:
++            showMessage("Sign-in expired — run the command again", tone: .danger)
++            return
++        case .ignored:
++            break
++        }
+         guard ExtensionDeepLink.claims(url) else { return }
+         guard let route = ExtensionDeepLink.route(url: url) else {
+             paletteCoordinator.showPalette(mode: .launcher, restoreAnyMode: true)
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift b/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift
+index c0222b32..b52ab427 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionHostBridge.swift
+@@ -33,6 +33,10 @@ protocol ExtensionHostContext: AnyObject {
+         fallbackText: String?, launchType: ExtensionLaunchType, launchContext: [String: RenderValue]
+     ) throws
+     func launch(_ link: ExtensionDeepLink) throws
++    func authorizeOAuth(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult
++    func getOAuthTokens(providerId: String) -> String?
++    func setOAuthTokens(providerId: String, tokens: String)
++    func removeOAuthTokens(providerId: String)
+ }
+ 
+ /// A toast as the palette shows it.
+@@ -159,6 +163,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
+         case "dns": return await ExtensionNameResolver.resolve(arguments.first)
+         case "proc" where method == "read": return try await ExtensionAsyncProcess.read(arguments)
+         case "proc": return try await ExtensionAsyncProcess.wait(arguments.first)
++        case "oauth": return try await oauth(method: method, arguments: arguments)
+         default: throw ExtensionHostError.unknown("\(api).\(method)")
+         }
+     }
+@@ -544,4 +549,42 @@ final class ExtensionHostBridge: ExtensionHostAPI {
+             .split(separator: "\n")
+             .map { ["path": String($0)] } ?? []
+     }
++
++    // MARK: - OAuth
++
++    private func oauth(method: String, arguments: [RenderValue]) async throws -> Any? {
++        guard let context else { throw ExtensionHostError.noActiveExtension }
++        switch method {
++        case "authorize":
++            guard let urlString = arguments.first?.stringValue, let url = URL(string: urlString) else {
++                throw ExtensionHostError.unsupported("authorize requires url")
++            }
++            let options = ExtensionOAuthAuthorizeOptions(
++                url: url, state: arguments[safe: 1]?.stringValue)
++            let result = try await context.authorizeOAuth(options: options)
++            var dict: [String: Any] = ["authorizationCode": result.authorizationCode]
++            if let token = result.accessToken { dict["accessToken"] = token }
++            if let state = result.state { dict["state"] = state }
++            return dict
++
++        case "getTokens":
++            let providerId = arguments.first?.stringValue ?? ""
++            guard let tokens = context.getOAuthTokens(providerId: providerId) else { return nil }
++            return tokens
++
++        case "setTokens":
++            let providerId = arguments.first?.stringValue ?? ""
++            let tokens = arguments[safe: 1]?.stringValue ?? ""
++            context.setOAuthTokens(providerId: providerId, tokens: tokens)
++            return nil
++
++        case "removeTokens":
++            let providerId = arguments.first?.stringValue ?? ""
++            context.removeOAuthTokens(providerId: providerId)
++            return nil
++
++        default:
++            throw ExtensionHostError.unknown("oauth.\(method)")
++        }
++    }
+ }
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionManager.swift b/Tinycast/Features/Extensions/Service/ExtensionManager.swift
+index 13d699ad..bd1cdc9c 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionManager.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionManager.swift
+@@ -35,6 +35,8 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+     /// Whether the commands reach the launcher at all; independent of `isEnabled`.
+     private(set) var showsInLauncher = true
+ 
++    var isAuthorizing: Bool { oauthSession.isAuthorizing }
++
+     let storage: ExtensionStorage
+     /// Extension-scoped state the launcher and Settings read through here, like `storage`.
+     let appearances = ExtensionAppearanceStore()
+@@ -43,6 +45,7 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+     private let storeVersions = ExtensionVersionStore(fileURL: ExtensionCatalog.storeVersionsFile())
+     @ObservationIgnored private let runtime: ExtensionRuntime
+     @ObservationIgnored private let bridge: ExtensionHostBridge
++    @ObservationIgnored private let oauthSession = ExtensionOAuthSession()
+     @ObservationIgnored private weak var appIndex: AppIndex?
+     @ObservationIgnored private weak var coordinator: ExtensionCoordinator?
+ 
+@@ -56,6 +59,7 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+     @ObservationIgnored private var backgroundFailure: String?
+     @ObservationIgnored private var backgroundTask: Task<Void, Never>?
+     @ObservationIgnored private var nextToastID = 1
++    @ObservationIgnored private var lastOAuthExtensionName: String?
+     @ObservationIgnored private var searchState = ExtensionSearchState()
+ 
+     init(clipboardStore: ClipboardStore) {
+@@ -107,6 +111,7 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+                             hostAPI: bridge,
+                             priority: type == .background ? .utility : .userInitiated),
+                         stop: {
++                            host.stop()
+                             bridge.context = nil
+                         }, enableInteraction: { host.enableInteraction() })
+                 },
+@@ -346,6 +351,7 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+                 extensionName: installedExtension.manifest.name, commandName: $0.name
+             ).entryID
+         }
++        ExtensionOAuthKeychain.removeAllTokens(extensionName: installedExtension.manifest.name)
+         try? ExtensionCatalog.uninstall(installedExtension)
+         storage.removeAll(extension: installedExtension.manifest.name)
+         commandMetadata.removeAll(extension: installedExtension.manifest.name)
+@@ -487,6 +493,7 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+     }
+ 
+     func stop() async {
++        oauthSession.cancel()
+         guard let sessionID else {
+             resetSessionState()
+             return
+@@ -1012,4 +1019,25 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+             entry(for: command, in: owner), arguments: link.arguments,
+             fallbackText: link.fallbackText, launchType: link.launchType)
+     }
++
++    func authorizeOAuth(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult
++    {
++        lastOAuthExtensionName = running?.extensionName
++        return try await oauthSession.authorize(options: options)
++    }
++
++    func getOAuthTokens(providerId: String) -> String? {
++        guard let extName = running?.extensionName ?? lastOAuthExtensionName else { return nil }
++        return ExtensionOAuthKeychain.getTokens(extensionName: extName, providerId: providerId)
++    }
++
++    func setOAuthTokens(providerId: String, tokens: String) {
++        guard let extName = running?.extensionName ?? lastOAuthExtensionName else { return }
++        ExtensionOAuthKeychain.setTokens(tokens, extensionName: extName, providerId: providerId)
++    }
++
++    func removeOAuthTokens(providerId: String) {
++        guard let extName = running?.extensionName ?? lastOAuthExtensionName else { return }
++        ExtensionOAuthKeychain.removeTokens(extensionName: extName, providerId: providerId)
++    }
+ }
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionMenuBarHost.swift b/Tinycast/Features/Extensions/Service/ExtensionMenuBarHost.swift
+index 46a9b5e8..b5d90af7 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionMenuBarHost.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionMenuBarHost.swift
+@@ -8,6 +8,7 @@ final class ExtensionMenuBarHost: ExtensionHostContext {
+     private var isInteractive: Bool
+     private weak var manager: ExtensionManager?
+     private weak var coordinator: ExtensionCoordinator?
++    private let oauth = ExtensionOAuthSession()
+ 
+     init(
+         owner: InstalledExtension, command: ExtensionCommand, launchType: ExtensionLaunchType,
+@@ -27,6 +28,7 @@ final class ExtensionMenuBarHost: ExtensionHostContext {
+     var pasteTarget: NSRunningApplication? { NSWorkspace.shared.frontmostApplication }
+     var applicationURLs: [URL] { coordinator?.applicationURLs ?? [] }
+ 
++    func stop() { oauth.cancel() }
+     func enableInteraction() { isInteractive = true }
+     func closeMainWindow(clearRootSearch: Bool) {}
+     func reopenPalette() { coordinator?.reopenPalette(hasRunningCommand: false) }
+@@ -62,4 +64,22 @@ final class ExtensionMenuBarHost: ExtensionHostContext {
+     }
+ 
+     func launch(_ link: ExtensionDeepLink) throws { try manager?.launch(link) }
++
++    func authorizeOAuth(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult
++    {
++        guard isInteractive else { throw ExtensionHostError.unsupported("Background authorization") }
++        return try await oauth.authorize(options: options)
++    }
++
++    func getOAuthTokens(providerId: String) -> String? {
++        ExtensionOAuthKeychain.getTokens(extensionName: owner.manifest.name, providerId: providerId)
++    }
++
++    func setOAuthTokens(providerId: String, tokens: String) {
++        ExtensionOAuthKeychain.setTokens(tokens, extensionName: owner.manifest.name, providerId: providerId)
++    }
++
++    func removeOAuthTokens(providerId: String) {
++        ExtensionOAuthKeychain.removeTokens(extensionName: owner.manifest.name, providerId: providerId)
++    }
+ }
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionOAuthKeychain.swift b/Tinycast/Features/Extensions/Service/ExtensionOAuthKeychain.swift
+new file mode 100644
+index 00000000..a7dee702
+--- /dev/null
++++ b/Tinycast/Features/Extensions/Service/ExtensionOAuthKeychain.swift
+@@ -0,0 +1,123 @@
++import Foundation
++import Security
++
++/// Injected so a harness can hold tokens without touching the real Keychain.
++protocol ExtensionOAuthTokenStore: Sendable {
++    func get(account: String) -> String?
++    func set(_ value: String, account: String) -> Bool
++    func remove(account: String) -> Bool
++    func removeAll(prefix: String, exactMatch: String)
++}
++
++struct KeychainOAuthTokenStore: ExtensionOAuthTokenStore {
++    private let serviceName = "com.tinycast.extensions.oauth"
++
++    func get(account: String) -> String? {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: serviceName,
++            kSecAttrAccount as String: account,
++            kSecReturnData as String: true,
++            kSecMatchLimit as String: kSecMatchLimitOne
++        ]
++
++        var item: CFTypeRef?
++        let status = SecItemCopyMatching(query as CFDictionary, &item)
++        guard status == errSecSuccess, let data = item as? Data else {
++            return nil
++        }
++        return String(data: data, encoding: .utf8)
++    }
++
++    func set(_ value: String, account: String) -> Bool {
++        guard let data = value.data(using: .utf8) else { return false }
++
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: serviceName,
++            kSecAttrAccount as String: account
++        ]
++
++        let attributes: [String: Any] = [
++            kSecValueData as String: data,
++            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
++        ]
++
++        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
++        if status == errSecItemNotFound {
++            var newQuery = query
++            newQuery[kSecValueData as String] = data
++            newQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
++            return SecItemAdd(newQuery as CFDictionary, nil) == errSecSuccess
++        }
++        return status == errSecSuccess
++    }
++
++    func remove(account: String) -> Bool {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: serviceName,
++            kSecAttrAccount as String: account
++        ]
++        let status = SecItemDelete(query as CFDictionary)
++        return status == errSecSuccess || status == errSecItemNotFound
++    }
++
++    func removeAll(prefix: String, exactMatch: String) {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: serviceName,
++            kSecReturnAttributes as String: true,
++            kSecMatchLimit as String: kSecMatchLimitAll
++        ]
++
++        var item: CFTypeRef?
++        let status = SecItemCopyMatching(query as CFDictionary, &item)
++        guard status == errSecSuccess, let items = item as? [[String: Any]] else { return }
++
++        for attributes in items {
++            guard let account = attributes[kSecAttrAccount as String] as? String else { continue }
++            if account == exactMatch || account.hasPrefix(prefix) {
++                let deleteQuery: [String: Any] = [
++                    kSecClass as String: kSecClassGenericPassword,
++                    kSecAttrService as String: serviceName,
++                    kSecAttrAccount as String: account
++                ]
++                SecItemDelete(deleteQuery as CFDictionary)
++            }
++        }
++    }
++}
++
++/// Secure storage for extension OAuth tokens, keyed by extension name and provider.
++enum ExtensionOAuthKeychain {
++    nonisolated(unsafe) static var store: ExtensionOAuthTokenStore = KeychainOAuthTokenStore()
++
++    static func accountKey(extensionName: String, providerId: String?) -> String {
++        if let providerId, !providerId.isEmpty {
++            return "\(extensionName):\(providerId)"
++        }
++        return extensionName
++    }
++
++    static func getTokens(extensionName: String, providerId: String?) -> String? {
++        let account = accountKey(extensionName: extensionName, providerId: providerId)
++        return store.get(account: account)
++    }
++
++    @discardableResult
++    static func setTokens(_ jsonString: String, extensionName: String, providerId: String?) -> Bool {
++        let account = accountKey(extensionName: extensionName, providerId: providerId)
++        return store.set(jsonString, account: account)
++    }
++
++    @discardableResult
++    static func removeTokens(extensionName: String, providerId: String?) -> Bool {
++        let account = accountKey(extensionName: extensionName, providerId: providerId)
++        return store.remove(account: account)
++    }
++
++    static func removeAllTokens(extensionName: String) {
++        store.removeAll(prefix: "\(extensionName):", exactMatch: extensionName)
++    }
++}
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionOAuthSession.swift b/Tinycast/Features/Extensions/Service/ExtensionOAuthSession.swift
+new file mode 100644
+index 00000000..bbd77130
+--- /dev/null
++++ b/Tinycast/Features/Extensions/Service/ExtensionOAuthSession.swift
+@@ -0,0 +1,176 @@
++import AppKit
++import Foundation
++
++struct ExtensionOAuthAuthorizeOptions: Sendable {
++    let url: URL
++    let state: String?
++}
++
++struct ExtensionOAuthAuthorizeResult: Sendable {
++    let authorizationCode: String
++    let accessToken: String?
++    let state: String?
++}
++
++/// An OAuth 2.0 PKCE session: the browser authorizes and an `oauth` callback completes it.
++@MainActor
++final class ExtensionOAuthSession {
++    private var continuation: CheckedContinuation<[String: String], Error>?
++    private var expectedState: String?
++    private var timeoutTimer: Timer?
++
++    private static weak var activeSession: ExtensionOAuthSession?
++
++    /// True while this session is waiting for the browser to come back.
++    var isAuthorizing: Bool {
++        continuation != nil
++    }
++
++    enum OAuthError: LocalizedError {
++        case canceled
++        case failed(String)
++        case stateMismatch
++
++        var errorDescription: String? {
++            switch self {
++            case .canceled: return "Authentication was canceled."
++            case .failed(let message): return message
++            case .stateMismatch: return "OAuth state mismatch. Please try authenticating again."
++            }
++        }
++    }
++
++    /// What a deep link turned out to be, so the caller can tell "not ours" from "too late".
++    enum Callback {
++        case delivered
++        case expired
++        case ignored
++    }
++
++    /// Deep links from the app delegate, such as `raycast://oauth?code=…`.
++    static func handleCallbackURL(_ url: URL) -> Callback {
++        guard let scheme = url.scheme?.lowercased(),
++            scheme == "raycast" || scheme == "tinycast" || scheme == "com.raycast"
++        else { return .ignored }
++
++        let host = url.host?.lowercased() ?? ""
++        let path = url.path.lowercased()
++        guard
++            host == "oauth" || host == "redirect"
++                || path == "/oauth" || path == "/redirect"
++                || path.hasPrefix("/oauth/") || path.hasPrefix("/redirect/")
++        else {
++            return .ignored
++        }
++
++        // The browser can come back after the session is gone: quit, timed out, or torn down.
++        guard let active = activeSession else { return .expired }
++        active.receiveCallback(url: url)
++        return .delivered
++    }
++
++    func authorize(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult {
++        let params = try await authorize(url: options.url, expectedState: options.state)
++        let code = params["code"] ?? ""
++        let token = params["access_token"]
++        let state = params["state"]
++        return ExtensionOAuthAuthorizeResult(authorizationCode: code, accessToken: token, state: state)
++    }
++
++    func authorize(
++        url: URL,
++        expectedState: String? = nil
++    ) async throws -> [String: String] {
++        if continuation != nil {
++            cancel()
++        }
++
++        self.expectedState = expectedState
++        Self.activeSession = self
++
++        return try await withCheckedThrowingContinuation { continuation in
++            self.continuation = continuation
++
++            self.timeoutTimer?.invalidate()
++            self.timeoutTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: false) { [weak self] _ in
++                Task { @MainActor [weak self] in
++                    self?.finish(error: OAuthError.failed("Authentication timed out."))
++                }
++            }
++
++            let opened = NSWorkspace.shared.open(url)
++            if !opened {
++                self.finish(error: OAuthError.failed("Failed to open authorization URL in default browser."))
++            }
++        }
++    }
++
++    private func receiveCallback(url: URL) {
++        let params = Self.parseCallback(url: url)
++        if let error = params["error"] {
++            let desc = params["error_description"] ?? error
++            finish(error: OAuthError.failed(desc))
++            return
++        }
++
++        if let expected = expectedState, !expected.isEmpty {
++            guard let received = params["state"], !received.isEmpty, received == expected else {
++                finish(error: OAuthError.stateMismatch)
++                return
++            }
++        }
++
++        finish(result: params)
++    }
++
++    private func finish(result: [String: String]? = nil, error: Error? = nil) {
++        timeoutTimer?.invalidate()
++        timeoutTimer = nil
++
++        if Self.activeSession === self {
++            Self.activeSession = nil
++        }
++
++        if let continuation = self.continuation {
++            self.continuation = nil
++            if let error {
++                continuation.resume(throwing: error)
++            } else if let result {
++                continuation.resume(returning: result)
++            } else {
++                continuation.resume(throwing: OAuthError.canceled)
++            }
++        }
++    }
++
++    func cancel() {
++        finish(error: OAuthError.canceled)
++    }
++
++    // MARK: - URL Parsing
++
++    static func parseCallback(url: URL) -> [String: String] {
++        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
++            return [:]
++        }
++        var result: [String: String] = [:]
++        if let queryItems = components.queryItems {
++            for item in queryItems {
++                result[item.name] = item.value ?? ""
++            }
++        }
++        // Implicit and hash callbacks arrive as `raycast://oauth#code=…`.
++        if let fragment = components.fragment, !fragment.isEmpty {
++            let pairs = fragment.split(separator: "&")
++            for pair in pairs {
++                let parts = pair.split(separator: "=", maxSplits: 1)
++                if parts.count == 2 {
++                    let key = String(parts[0])
++                    let val = String(parts[1]).removingPercentEncoding ?? String(parts[1])
++                    result[key] = val
++                }
++            }
++        }
++        return result
++    }
++}
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift b/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift
+index db3fd4a5..9a85180e 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift
+@@ -258,6 +258,9 @@ final class ExtensionCoordinator {
+     /// True while the palette is on screen — a toast has somewhere to render only then.
+     var isPaletteVisible: Bool { paletteCoordinator.isVisible }
+ 
++    /// True while an OAuth authorization flow is actively awaiting callback.
++    var isAuthorizing: Bool { extensions.isAuthorizing }
++
+     func closeMainWindow() {
+         paletteCoordinator.hidePalette(restoreFocus: false)
+     }
+diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
+index 1a570530..e5ff9d9a 100644
+--- a/Tinycast/Palette/PaletteWindowController.swift
++++ b/Tinycast/Palette/PaletteWindowController.swift
+@@ -179,6 +179,8 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+ 
+     /// Pop to Root Search: reset now, or after the delay unless a reopen consumes it.
+     private func schedulePopToRoot() {
++        // Don't pop to root if an extension is waiting for OAuth authorization in the browser.
++        guard !core.extensions.isAuthorizing else { return }
+         popToRootTimer?.invalidate()
+         let timeout = core.settings.popToRootTimeout
+         guard timeout != .immediately else {
+@@ -188,7 +190,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+         popToRootTimer = Timer.scheduledTimer(withTimeInterval: timeout.interval, repeats: false) {
+             [weak self] _ in
+             MainActor.assumeIsolated {
+-                guard let self else { return }
++                guard let self, !self.core.extensions.isAuthorizing else { return }
+                 self.popToRootTimer = nil
+                 self.popToRoot()
+             }
+@@ -203,6 +205,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+ 
+     /// Skip the Pop to Root Search delay, for a close that means to reset as well as hide.
+     func popToRootNow() {
++        guard !core.extensions.isAuthorizing else { return }
+         popToRootTimer?.invalidate()
+         popToRootTimer = nil
+         popToRoot()
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 59f953cb..390882ee 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -426,7 +426,7 @@ struct RootPaletteView: View {
+                 if vm.mode != .meetingDetails { calendarStore.clearDetails() }
+                 if vm.mode != .rooms, vm.mode != .roomWindows { core.roomCoordinator.screensDidClose() }
+                 // Leaving the screen any other way than Escape still ends the command's session.
+-                if vm.mode != .extensionCommand, extensions.running != nil {
++                if vm.mode != .extensionCommand, extensions.running != nil, !extensions.isAuthorizing {
+                     Task { await extensions.stop() }
+                 }
+             }

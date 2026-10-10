@@ -3,6 +3,7 @@
 import { Action, ActionPanel, Detail, Form, Grid, List, MenuBarExtra, Navigation, setActionEffects, useNavigation } from "./components.js";
 import * as enums from "./enums.generated.js";
 import * as system from "./system.js";
+import { PKCEClient, TokenSet } from "./oauth.js";
 
 const { nestedEnums, ...flatEnums } = enums;
 
@@ -86,6 +87,12 @@ const AI = {
   Creativity: Object.freeze({}),
 };
 
+const OAuth = {
+  RedirectMethod: nestedEnums.OAuth.RedirectMethod,
+  PKCEClient,
+  TokenSet,
+};
+
 const BrowserExtension = rejectingNamespace("BrowserExtension", ["getContent", "getTabs"]);
 
 const WindowManagement = {
@@ -143,6 +150,8 @@ export const raycastApi = {
   captureException: system.captureException,
   launchCommand: system.launchCommand,
   updateCommandMetadata: system.updateCommandMetadata,
+
+  OAuth,
 
   // Unimplemented namespaces
   AI,

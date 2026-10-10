@@ -33,6 +33,8 @@ final class MenuPanel: NSPanel {
             paletteState?.noteCommandHeld(event.modifierFlags.contains(.command))
         default: break
         }
+        // tinycast-space: an inline alias editor on a row takes the typing first.
+        if event.type == .keyDown, InlineEntryEditor.handleMenuKey(event) { return }
         if event.type == .keyDown, onKeyDown?(event) == true {
             return
         }

@@ -56,6 +56,14 @@ struct AboutView: View {
             VStack(spacing: Theme.Spacing.sm) {
                 Text(Bundle.main.appDisplayName)
                     .font(.title.weight(.bold))
+                // tinycast-space: the edition chip, styled like the version chip in the accent colour.
+                Text("✨ Space Edition")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xs / 2)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                    .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1))
                 Text(Self.version)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -149,8 +157,8 @@ private struct AboutLink: Identifiable {
             url: URL(string: "https://tinycast.dev/")!),
         AboutLink(
             id: "github", glyph: .brand("BrandGitHub"), title: "GitHub",
-            detail: "github.com/abue-ammar/tinycast",
-            url: URL(string: "https://github.com/abue-ammar/tinycast")!),
+            detail: "Tinycast Space Edition",
+            url: URL(string: "https://github.com/sermelipharo/tinycast-space")!),
         AboutLink(
             id: "discord", glyph: .brand("BrandDiscord"), title: "Discord",
             detail: "Join the Tinycast community",

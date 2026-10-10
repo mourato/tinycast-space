@@ -271,6 +271,7 @@ final class AppCore {
 
     func start() {
         Signposts.interval("AppCore.start") {
+            SpaceTheme.start()  // tinycast-space: before the extension scan, which must see the Theme command
             // Shorten AppKit's ~2–3s tooltip delay; registration domain, so a user default wins.
             UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
             NSApp.setActivationPolicy(.accessory)
@@ -411,7 +412,10 @@ final class AppCore {
                 return appIndex.isCommandEnabled(id)
             }
             KeyShortcut.displayedHyperChord = { [settings] in
-                guard settings.hyperKey != .none else { return nil }
+                // tinycast-space: another app can own the Hyper key and still want the ✦ glyph.
+                guard settings.hyperKey != .none
+                    || UserDefaults.standard.bool(forKey: "spaceHyperGlyphWithoutRemap")
+                else { return nil }
                 return KeyShortcut.hyperChord(includesShift: settings.hyperKeyIncludesShift)
             }
             SystemActionRunner.onAsyncFailure = { [weak self] id, failure in
@@ -463,6 +467,20 @@ final class AppCore {
     }
 
     func handleOpenURL(_ url: URL) {
+        // tinycast-space: the link extensions fire when a timer or task finishes.
+        if ConfettiOverlay.claims(url) { return ConfettiOverlay.fire() }
+        // tinycast-space: a theme link — ray.so, Raycast's Theme Studio, or the Theme command.
+        if SpaceTheme.handle(url, in: self) { return }
+        switch ExtensionOAuthSession.handleCallbackURL(url) {
+        case .delivered:
+            paletteCoordinator.showPalette(mode: .extensionCommand, restoreAnyMode: true)
+            return
+        case .expired:
+            showMessage("Sign-in expired — run the command again", tone: .danger)
+            return
+        case .ignored:
+            break
+        }
         guard ExtensionDeepLink.claims(url) else { return }
         guard let route = ExtensionDeepLink.route(url: url) else {
             paletteCoordinator.showPalette(mode: .launcher, restoreAnyMode: true)

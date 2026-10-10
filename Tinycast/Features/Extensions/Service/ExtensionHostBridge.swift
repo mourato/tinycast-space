@@ -33,6 +33,10 @@ protocol ExtensionHostContext: AnyObject {
         fallbackText: String?, launchType: ExtensionLaunchType, launchContext: [String: RenderValue]
     ) throws
     func launch(_ link: ExtensionDeepLink) throws
+    func authorizeOAuth(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult
+    func getOAuthTokens(providerId: String) -> String?
+    func setOAuthTokens(providerId: String, tokens: String)
+    func removeOAuthTokens(providerId: String)
 }
 
 /// A toast as the palette shows it.
@@ -121,6 +125,9 @@ enum ExtensionHostError: LocalizedError {
 
 @MainActor
 final class ExtensionHostBridge: ExtensionHostAPI {
+    /// tinycast-space: Raycast Explorer closes the window right after opening a theme link, but the
+    /// link now asks first, in a dialog over the window, so the close that follows is skipped.
+    private var keepsWindowUntil = Date.distantPast
     weak var context: ExtensionHostContext?
     private let clipboardStore: ClipboardStore
     private let fetcher: ExtensionFetcher
@@ -157,6 +164,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         case "dns": return await ExtensionNameResolver.resolve(arguments.first)
         case "proc" where method == "read": return try await ExtensionAsyncProcess.read(arguments)
         case "proc": return try await ExtensionAsyncProcess.wait(arguments.first)
+        case "oauth": return try await oauth(method: method, arguments: arguments)
         default: throw ExtensionHostError.unknown("\(api).\(method)")
         }
     }
@@ -348,6 +356,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         guard context?.activeLaunchType != .background else { return nil }
         switch method {
         case "close":
+            guard Date.now > keepsWindowUntil else { return nil }  // tinycast-space
             let options = arguments.first?.objectValue ?? [:]
             context?.closeMainWindow(clearRootSearch: options["clearRootSearch"]?.boolValue ?? false)
         case "popToRoot":
@@ -505,6 +514,12 @@ final class ExtensionHostBridge: ExtensionHostAPI {
 
     /// A command URL runs it when installed; every other Raycast URL just brings the palette back.
     private func openRaycastURL(_ url: URL) {
+        // tinycast-space: a theme or confetti link goes where an outside `open` lands, in AppCore.
+        if ["theme", "confetti"].contains(url.host()?.lowercased() ?? "") {
+            if RaycastThemeLink(url: url)?.applies == false { keepsWindowUntil = .now + 1 }
+            NSApp.delegate?.application?(NSApp, open: [url])
+            return
+        }
         if let link = ExtensionDeepLink.parse(url: url), (try? context?.launch(link)) != nil {
             return
         }
@@ -564,5 +579,43 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         return result.stringValue?
             .split(separator: "\n")
             .map { ["path": String($0)] } ?? []
+    }
+
+    // MARK: - OAuth
+
+    private func oauth(method: String, arguments: [RenderValue]) async throws -> Any? {
+        guard let context else { throw ExtensionHostError.noActiveExtension }
+        switch method {
+        case "authorize":
+            guard let urlString = arguments.first?.stringValue, let url = URL(string: urlString) else {
+                throw ExtensionHostError.unsupported("authorize requires url")
+            }
+            let options = ExtensionOAuthAuthorizeOptions(
+                url: url, state: arguments[safe: 1]?.stringValue)
+            let result = try await context.authorizeOAuth(options: options)
+            var dict: [String: Any] = ["authorizationCode": result.authorizationCode]
+            if let token = result.accessToken { dict["accessToken"] = token }
+            if let state = result.state { dict["state"] = state }
+            return dict
+
+        case "getTokens":
+            let providerId = arguments.first?.stringValue ?? ""
+            guard let tokens = context.getOAuthTokens(providerId: providerId) else { return nil }
+            return tokens
+
+        case "setTokens":
+            let providerId = arguments.first?.stringValue ?? ""
+            let tokens = arguments[safe: 1]?.stringValue ?? ""
+            context.setOAuthTokens(providerId: providerId, tokens: tokens)
+            return nil
+
+        case "removeTokens":
+            let providerId = arguments.first?.stringValue ?? ""
+            context.removeOAuthTokens(providerId: providerId)
+            return nil
+
+        default:
+            throw ExtensionHostError.unknown("oauth.\(method)")
+        }
     }
 }

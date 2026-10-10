@@ -47,6 +47,8 @@ typealias MenuPanelClipPath =
     let view: (MenuPanelCorner) -> AnyView
     /// Bounds-checked by the caller against `rowCount`, so a row index is always one this menu has.
     let activate: (Int) -> Void
+    /// tinycast-space: true when activating the row edits it in place, so the menu stays up.
+    var keepsOpen: (Int) -> Bool = { _ in false }
 
     init(
         rowCount: Int, preferredSelection: Int? = nil,
@@ -90,6 +92,7 @@ typealias MenuPanelClipPath =
                 ).path(in: bounds).cgPath
             },
             motion: .palette)
+        keepsOpen = { popover.items[$0].keepsMenuOpen }  // tinycast-space
     }
 }
 

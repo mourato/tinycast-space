@@ -433,6 +433,7 @@ function bodyToBytes(body) {
   return utf8Encode(String(body));
 }
 
+// Fetch spec: a body implies a Content-Type, which an OAuth token POST relies on rather than sets.
 function bodyContentType(body) {
   if (typeof body === "string") return "text/plain;charset=UTF-8";
   if (body instanceof URLSearchParams) return "application/x-www-form-urlencoded;charset=UTF-8";
@@ -810,4 +811,96 @@ if (!g.TextDecoder) {
       return utf8Decode(bytes);
     }
   };
+}
+
+// ─── undici's global dispatcher ─────────────────────────────────────
+// tinycast-space: extensions that bundle undici (Google Translate's `request()`, undici's own
+// `fetch`) dispatch every request through the object undici keeps on globalThis under this key,
+// and only create their socket-backed Agent when the slot is empty. There are no raw sockets
+// here, so fill the slot first with a dispatcher that sends the request through the host fetch
+// bridge and replays the answer through undici's handler callbacks. The body arrives whole, as it
+// does for every fetch in this runtime.
+const kUndiciGlobalDispatcher = Symbol.for("undici.globalDispatcher.1");
+
+function undiciHeaders(raw) {
+  const pairs = [];
+  if (Array.isArray(raw)) {
+    for (let i = 0; i + 1 < raw.length; i += 2) pairs.push([String(raw[i]), String(raw[i + 1])]);
+  } else if (raw && typeof raw === "object") {
+    for (const [name, value] of Object.entries(raw)) {
+      if (value === undefined || value === null) continue;
+      for (const item of Array.isArray(value) ? value : [value]) pairs.push([name, String(item)]);
+    }
+  }
+  return pairs;
+}
+
+async function undiciBody(body) {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === "string" || body instanceof Uint8Array || body instanceof ArrayBuffer) return body;
+  if (typeof body[Symbol.asyncIterator] === "function" || typeof body[Symbol.iterator] === "function") {
+    const chunks = [];
+    for await (const chunk of body) {
+      chunks.push(typeof chunk === "string" ? utf8Encode(chunk) : new Uint8Array(chunk));
+    }
+    const out = new Uint8Array(chunks.reduce((sum, c) => sum + c.length, 0));
+    let offset = 0;
+    for (const c of chunks) { out.set(c, offset); offset += c.length; }
+    return out;
+  }
+  return String(body);
+}
+
+class TinycastUndiciDispatcher {
+  dispatch(opts, handler) {
+    const controller = new g.AbortController();
+    let aborted = false;
+    const bytes = (value) => (g.Buffer ? g.Buffer.from(value) : typeof value === "string" ? utf8Encode(value) : value);
+    try {
+      handler.onConnect?.((reason) => {
+        aborted = true;
+        controller.abort(reason);
+      });
+    } catch (error) {
+      handler.onError?.(error);
+      return true;
+    }
+    (async () => {
+      try {
+        const url = new URL(opts.path || "/", opts.origin);
+        const method = (opts.method || "GET").toUpperCase();
+        const response = await g.fetch(url.toString(), {
+          method,
+          headers: undiciHeaders(opts.headers),
+          body: method === "GET" || method === "HEAD" ? undefined : await undiciBody(opts.body),
+          signal: controller.signal,
+          redirect: "manual",
+        });
+        if (aborted) return;
+        const rawHeaders = [];
+        response.headers.forEach((value, name) => { rawHeaders.push(bytes(name), bytes(value)); });
+        handler.onHeaders?.(response.status, rawHeaders, () => {}, response.statusText || "");
+        const body = new Uint8Array(await response.arrayBuffer());
+        if (aborted) return;
+        if (body.length) handler.onData?.(bytes(body));
+        handler.onComplete?.([]);
+      } catch (error) {
+        if (!aborted) handler.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    })();
+    return true;
+  }
+  close(callback) { callback?.(); return Promise.resolve(); }
+  destroy(error, callback) { (typeof error === "function" ? error : callback)?.(); return Promise.resolve(); }
+  on() { return this; }
+  once() { return this; }
+  off() { return this; }
+  emit() { return false; }
+}
+
+if (!g[kUndiciGlobalDispatcher]) {
+  // Writable, as undici's own setGlobalDispatcher leaves it, so an extension can still install its own.
+  Object.defineProperty(g, kUndiciGlobalDispatcher, {
+    value: new TinycastUndiciDispatcher(), writable: true, enumerable: false, configurable: false,
+  });
 }

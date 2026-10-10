@@ -1,0 +1,228 @@
+diff --git a/Tinycast/DesignSystem/PopoverMenu.swift b/Tinycast/DesignSystem/PopoverMenu.swift
+index b63bdcf..5db8cd7 100644
+--- a/Tinycast/DesignSystem/PopoverMenu.swift
++++ b/Tinycast/DesignSystem/PopoverMenu.swift
+@@ -28,6 +28,10 @@ struct PopoverMenuItem {
+     var detail: String?
+     /// Destructive rows (delete) tint their icon + label red, matching the native menu convention.
+     var isDestructive: Bool = false
++    /// tinycast-space: a control drawn where the shortcut caps would be — an inline editor.
++    var trailingAccessory: (@MainActor @Sendable () -> AnyView)?
++    /// tinycast-space: activating the row edits it in place instead of closing the menu.
++    var keepsMenuOpen = false
+     let action: () -> Void
+ 
+     /// What the keyboard and pointer may land on; a loading or disabled row only states itself.
+@@ -373,6 +377,7 @@ private struct PopoverMenuRow: View {
+                     .foregroundStyle(item.isDestructive ? Color.red : Color.primary)
+                     .lineLimit(1)
+                 Spacer(minLength: metrics.spacing.sm)
++                if let accessory = item.trailingAccessory { accessory() }  // tinycast-space
+                 if let detail = item.detail {
+                     Text(detail)
+                         // Smaller than the title it trails: a stated value, not a second label.
+diff --git a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+index 7c337fb..d5a97a1 100644
+--- a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
++++ b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+@@ -72,6 +72,7 @@ enum AppActionsMenu {
+                     title: "Hide from Search", systemImage: "eye.slash", shortcut: "⇧⌘H",
+                     action: onHideFromSearch))
+         }
++        items += InlineEntryEditor.menuItems(for: app, core: core)  // tinycast-space
+         if running, app.kind == .application {
+             items.append(
+                 PopoverMenuItem(
+diff --git a/Tinycast/Features/Launcher/UI/InlineEntryEditor.swift b/Tinycast/Features/Launcher/UI/InlineEntryEditor.swift
+new file mode 100644
+index 0000000..a7d9029
+--- /dev/null
++++ b/Tinycast/Features/Launcher/UI/InlineEntryEditor.swift
+@@ -0,0 +1,132 @@
++import AppKit
++import Carbon.HIToolbox
++import SwiftUI
++
++/// tinycast-space: edit a launcher entry's alias and shortcut in place, from its own ⌘K menu.
++/// Ported from jhasubhash/tinycast (f509d005, AGPL-3.0) and reshaped so everything but a few one-line
++/// hooks lives in this file: the menu rows, the alias draft, and the keys typed while it is open.
++@MainActor
++@Observable
++final class InlineEntryEditor {
++    static let shared = InlineEntryEditor()
++
++    /// The alias key being edited on its ⌘K row, or nil.
++    private(set) var aliasKey: String?
++    /// What is typed while `aliasKey` is set; the row reads it live.
++    private(set) var aliasDraft = ""
++    @ObservationIgnored private weak var core: AppCore?
++
++    private init() {}
++
++    /// The rows an entry's ⌘K menu gains. Query-driven commands have no alias or shortcut to own.
++    static func menuItems(for app: AppEntry, core: AppCore) -> [PopoverMenuItem] {
++        guard !CommandCatalog.isQueryDriven(app) else { return [] }
++        let key = app.preferenceKey
++        var alias = PopoverMenuItem(
++            title: "Change Alias", systemImage: "character.cursor.ibeam", startsSection: true
++        ) {
++            shared.beginAlias(key: key, core: core)
++        }
++        alias.trailingAccessory = { AnyView(MenuAliasBox(key: key)) }
++        alias.keepsMenuOpen = true
++        var items = [alias]
++        if let action = hotKeyAction(for: app) {
++            var shortcut = PopoverMenuItem(title: "Change Shortcut", systemImage: "command") {
++                shared.end()
++                core.hotKeys.recordingAction = action
++            }
++            shortcut.trailingAccessory = { AnyView(ShortcutRecorder(action: action)) }
++            shortcut.keepsMenuOpen = true
++            items.append(shortcut)
++        }
++        return items
++    }
++
++    /// `AppEntry.hotKeyAction` leaves extension commands out; their binding is keyed by entry ID.
++    static func hotKeyAction(for app: AppEntry) -> HotKeyAction? {
++        if let action = app.hotKeyAction { return action }
++        return app.kind == .extensionCommand ? .extensionCommand(entryID: app.id) : nil
++    }
++
++    /// Seeds the draft with the saved alias; ↵ commits it, Esc drops it.
++    private func beginAlias(key: String, core: AppCore) {
++        core.hotKeys.recordingAction = nil
++        self.core = core
++        aliasDraft = core.aliases.alias(for: key) ?? ""
++        aliasKey = key
++    }
++
++    /// Ends any inline edit: called when a row switches editors and when the menu closes.
++    func end(stoppingRecordingIn core: AppCore? = nil) {
++        aliasKey = nil
++        aliasDraft = ""
++        core?.hotKeys.recordingAction = nil
++    }
++
++    /// `MenuPanel`'s key hook: while an alias is being edited, every plain key belongs to its draft,
++    /// ahead of the menu's own search field.
++    static func handleMenuKey(_ event: NSEvent) -> Bool {
++        shared.handle(event)
++    }
++
++    private func handle(_ event: NSEvent) -> Bool {
++        guard let key = aliasKey, let core,
++            event.modifierFlags.isDisjoint(with: [.command, .control])
++        else { return false }
++        switch Int(event.keyCode) {
++        case kVK_Escape:
++            end()
++        case kVK_Return, kVK_ANSI_KeypadEnter:
++            core.aliases.setAlias(aliasDraft, for: key)
++            end()
++        case kVK_Delete:
++            if !aliasDraft.isEmpty { aliasDraft.removeLast() }
++        default:
++            let printable = (event.characters ?? "").unicodeScalars.filter {
++                $0.value >= 0x20 && $0.value != 0x7F && !(0xF700...0xF8FF).contains($0.value)
++            }
++            if !printable.isEmpty { aliasDraft += String(String.UnicodeScalarView(printable)) }
++        }
++        return true
++    }
++}
++
++/// The saved alias, or the live draft with a caret while its row is being edited.
++private struct MenuAliasBox: View {
++    let key: String
++    @Environment(\.metrics) private var metrics
++    @Environment(AliasStore.self) private var aliases
++    private var editor: InlineEntryEditor { .shared }
++
++    private var editing: Bool { editor.aliasKey == key }
++    private var value: String { editing ? editor.aliasDraft : (aliases.alias(for: key) ?? "") }
++
++    var body: some View {
++        HStack(spacing: 1) {
++            Text(value.isEmpty ? "Add Alias" : value)
++                .font(metrics.typography.keyCap)
++                .foregroundStyle(textColor)
++                .lineLimit(1)
++                .truncationMode(.tail)
++            if editing {
++                RoundedRectangle(cornerRadius: 0.5)
++                    .fill(Theme.Colors.textSecondary)
++                    .frame(width: 1.5, height: metrics.scaled(12))
++            }
++        }
++        .frame(width: metrics.scaled(112), height: metrics.scaled(20))
++        .background(
++            RoundedRectangle(cornerRadius: metrics.radius.menuRow, style: .continuous)
++                .fill(Theme.Colors.cardFill))
++        .overlay(
++            RoundedRectangle(cornerRadius: metrics.radius.menuRow, style: .continuous)
++                .strokeBorder(
++                    editing ? Theme.Colors.textTertiary : Theme.Colors.cardStroke, lineWidth: 1))
++    }
++
++    /// Faded until the row is being edited, so it reads as settled once ↵ commits.
++    private var textColor: Color {
++        if value.isEmpty { return Theme.Colors.textTertiary }
++        return editing ? Theme.Colors.textPrimary : Theme.Colors.textSecondary
++    }
++}
+diff --git a/Tinycast/Palette/MenuPanel.swift b/Tinycast/Palette/MenuPanel.swift
+index e709e9c..dc57bc7 100644
+--- a/Tinycast/Palette/MenuPanel.swift
++++ b/Tinycast/Palette/MenuPanel.swift
+@@ -33,6 +33,8 @@ final class MenuPanel: NSPanel {
+             paletteState?.noteCommandHeld(event.modifierFlags.contains(.command))
+         default: break
+         }
++        // tinycast-space: an inline alias editor on a row takes the typing first.
++        if event.type == .keyDown, InlineEntryEditor.handleMenuKey(event) { return }
+         if event.type == .keyDown, onKeyDown?(event) == true {
+             return
+         }
+diff --git a/Tinycast/Palette/PaletteScreen.swift b/Tinycast/Palette/PaletteScreen.swift
+index 1dd60a4..fcd6225 100644
+--- a/Tinycast/Palette/PaletteScreen.swift
++++ b/Tinycast/Palette/PaletteScreen.swift
+@@ -47,6 +47,8 @@ typealias MenuPanelClipPath =
+     let view: (MenuPanelCorner) -> AnyView
+     /// Bounds-checked by the caller against `rowCount`, so a row index is always one this menu has.
+     let activate: (Int) -> Void
++    /// tinycast-space: true when activating the row edits it in place, so the menu stays up.
++    var keepsOpen: (Int) -> Bool = { _ in false }
+ 
+     init(
+         rowCount: Int, preferredSelection: Int? = nil,
+@@ -88,6 +90,7 @@ typealias MenuPanelClipPath =
+                 ).path(in: bounds).cgPath
+             },
+             motion: .palette)
++        keepsOpen = { popover.items[$0].keepsMenuOpen }  // tinycast-space
+     }
+ }
+ 
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 9c16e6d..23e9a58 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -1034,6 +1034,7 @@ struct RootPaletteView: View {
+         vm.menuQuery = ""
+         // Stated here rather than mirrored later: the window delegate reads it during this turn.
+         vm.menuOpen = false
++        InlineEntryEditor.shared.end(stoppingRecordingIn: core)  // tinycast-space
+     }
+ 
+     private func menuQueryChanged() {
+@@ -1232,6 +1233,8 @@ struct RootPaletteView: View {
+     private func activateMenuItem(_ index: Int) {
+         guard let content = menuContent, (0..<content.rowCount).contains(index) else { return }
+         guard content.isSelectable(index) else { return }
++        // tinycast-space: a row that edits in place keeps its menu up. See InlineEntryEditor.
++        if content.keepsOpen(index) { return content.activate(index) }
+         // Before the action: one opening a window must find the palette key again, or nothing hides it.
+         closeMenus()
+         // A mouse click on a row takes the caret with it; menus close back into the field.
