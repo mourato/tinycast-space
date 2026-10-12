@@ -54,8 +54,19 @@ struct ClipboardScreen: PaletteScreen {
             guard let item = item(at: selection), item.offersTextExtraction else { return false }
             core.clipboardCoordinator.copyImageText(item)
             return true
+        case .quickLook: return toggleQuickLook(at: selection)
         default: return false
         }
+    }
+
+    /// ⌘Y — the overlay follows the selection, so a second press is all it needs to close.
+    private func toggleQuickLook(at selection: Int) -> Bool {
+        if vm.quickLook {
+            vm.quickLook = false
+            return true
+        }
+        guard let item = item(at: selection) else { return false }
+        return core.clipboardCoordinator.quickLook(item)
     }
 
     private func activatePinned(at index: Int) -> Bool {
@@ -154,6 +165,15 @@ struct ClipboardScreen: PaletteScreen {
                     .frame(width: 1)
                 ClipboardPreview(item: selected)
             }
+            .overlay {
+                if vm.quickLook, let selected,
+                    let url = store.imageURL(for: selected) ?? store.fileURL(for: selected)
+                {
+                    ClipboardQuickLook(url: url, name: ClipboardActionsMenu.headerText(selected)) {
+                        vm.quickLook = false
+                    }
+                }
+            }
         }
     }
 }
@@ -188,6 +208,12 @@ enum ClipboardActionsMenu {
             ) {
                 core.clipboardCoordinator.pasteKeepingWindowOpen(item)
             })
+        if item.offersQuickLook {
+            items.append(
+                PopoverMenuItem(title: "Quick Look", systemImage: "eye", shortcut: "⌘Y") {
+                    core.clipboardCoordinator.quickLook(item)
+                })
+        }
         if item.isPinned {
             items.append(
                 PopoverMenuItem(
@@ -266,7 +292,7 @@ enum ClipboardActionsMenu {
         }
     }
 
-    private static func headerText(_ item: ClipboardItem) -> String {
+    static func headerText(_ item: ClipboardItem) -> String {
         switch item.kind {
         case .text:
             // Collapse whitespace so a multi-line copy stays a clean one-line title.

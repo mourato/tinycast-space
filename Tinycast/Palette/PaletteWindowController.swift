@@ -411,7 +411,9 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
                 core.snippetCoordinator.cancelSnippetEditing()
                 return true
             }
-            return false
+            guard core.palette.quickLook else { return false }
+            core.palette.quickLook = false
+            return true
         }
         // Handled at the panel: the field editor or a missing main menu eats these first.
         panel.onCommandShortcut = { [weak self] event in

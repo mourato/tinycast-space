@@ -17,6 +17,11 @@
 - **Paste as Plain Text writes `ClipboardItem.plainText` and nothing else**: the text itself, or a
   file entry's path without its `public.file-url`. An image has none, so it gets no plain row, a
   plain-text default pastes it as it is, and ⌃⌘↵ on it falls back to ⌘↵ as on every other screen.
+- **⌘Y opens Quick Look inside the panel for an image or a file entry.** A system `QLPreviewPanel`
+  would take key and close the palette, as in [file-search.md](file-search.md), so the overlay is the
+  clipboard's own: `ClipboardQuickLook` draws File Search's surface, and `PaletteState.quickLook` is
+  the flag `ClipboardScreen` toggles and Esc clears. Text has no file to draw, so it gets neither the
+  ⌘K row nor the chord.
 - **Clipboard writes stamp a private `internalType` marker** so the poller skips Tinycast's own writes.
   If the writer and the poller ever disagree, the app re-captures its own pastes in a loop.
 - **Paste Sequentially never promotes, and its walk is frozen at the first press.** `PasteSequence`

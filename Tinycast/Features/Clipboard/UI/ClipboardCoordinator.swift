@@ -206,6 +206,14 @@ final class ClipboardCoordinator {
         AppLauncher.open(url)
     }
 
+    /// Opens the overlay in the panel, where the palette stays up; false when there is nothing to show.
+    @discardableResult
+    func quickLook(_ item: ClipboardItem) -> Bool {
+        guard item.offersQuickLook, clipURL(for: item) != nil else { return false }
+        palette.quickLook = true
+        return true
+    }
+
     /// Unmarked, so the path enters history like any other copy the reader meant to make.
     func copyClipPath(_ item: ClipboardItem) {
         guard let path = item.filePath else { return }

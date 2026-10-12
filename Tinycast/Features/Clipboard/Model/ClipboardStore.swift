@@ -39,6 +39,9 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
         }
     }
 
+    /// Whether ⌘Y applies: an image or a file has something on disk for Quick Look to draw.
+    var offersQuickLook: Bool { kind != .text }
+
     init(text: String, sourceBundleID: String?) {
         self.init(
             id: UUID(), kind: .text, text: text, imagePath: nil, createdAt: Date(),
