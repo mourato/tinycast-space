@@ -263,7 +263,9 @@ the way back out.
 `ClipboardFilter` owns the seven cases and everything the UI needs from them — title, glyph, and the
 `emptyMessage` that stops "Clipboard history is empty" from appearing over a history that only looks
 empty. The cases are **exclusive**: a copied URL is a link, not a narrower kind of text, so *Text
-Only* means prose, and *Colors Only* takes `#FF5733` out of it.
+Only* means prose, and *Colors Only* takes `#FF5733` out of it. An image file copied in Finder is
+an image: *Images Only* takes it by extension, and *Files Only* leaves it out. The OCR search
+applies the same rule in SQL, through the `is_image_file` function that `isImageFile` shares.
 
 `ClipboardItem.textForm` derives `plain`/`color`/`link`/`email` from the text on demand — nil for an
 image.
