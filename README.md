@@ -67,8 +67,10 @@ Good to know:
 - **Coming from the original, re-grant Accessibility once.** macOS ties the grant to the signing
   certificate, and this fork signs with a different one. Remove the old Tinycast entry from the
   Accessibility list and add the new app.
-- **There is no Homebrew cask for the fork.** `brew install --cask tinycast` installs the original.
-  If you have it through Homebrew, `brew uninstall --cask tinycast` first; the fork updates itself.
+- **There is no Homebrew cask for the fork.** `brew install --cask tinycast` installs the original
+  at the same path. Don't run `brew uninstall --cask tinycast` to get rid of it: that deletes
+  `/Applications/Tinycast.app`, which is the fork. Drop only Homebrew's record instead, and the app stays:
+  `rm -rf /opt/homebrew/Caskroom/tinycast`. The fork updates itself.
 - **Going back to the original** is the same move in reverse: install it from
   [upstream](https://github.com/abue-ammar/tinycast#install) and re-grant Accessibility.
 - Apple silicon only; there is no universal (Intel) build of the fork.
