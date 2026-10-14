@@ -36,9 +36,7 @@ final class UpdateCheckStore {
     @ObservationIgnored private var pump: Task<Void, Never>?
 
     init(
-        // mourato: builds of this fork are installed locally and never update themselves, so a
-        // Space release never replaces them. Rebuild with `make update` / `make install`.
-        channel: ReleaseChannel = .development,
+        channel: ReleaseChannel = ReleaseChannel(bundleID: Bundle.main.bundleIdentifier),
         runningVersion: AppVersion? = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
             .flatMap(AppVersion.init),
         fileURL: URL = AppPaths.caches().appendingPathComponent("update-check.json"),

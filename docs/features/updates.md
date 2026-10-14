@@ -64,6 +64,11 @@ no appcast: the release feed the website already reads is the feed the app reads
   the web, and a bare mention is what notifies the contributor, so the published body keeps them
   plain and `ReleaseNotes` spells them as Markdown links on the way to the window. Both point at
   `ReleaseFeed.repository`, the one place the repo is named.
+- **A build that cannot install still notifies.** `UpdateCoordinator.installsUpdates` is `false` in
+  this fork: releases are signed by another identity than local builds, so `BundleSignature` refuses
+  them. The window shows the changelog and offers *View Release*, which opens the GitHub page. Local
+  builds run as the base's release tag (`.mine/build.sh` sets `MARKETING_VERSION`), so only newer
+  releases are offered.
 
 ## Channel and version
 

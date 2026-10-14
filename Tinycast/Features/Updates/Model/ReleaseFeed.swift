@@ -29,6 +29,11 @@ enum ReleaseFeed {
             .max { $0.version < $1.version }
     }
 
+    /// The release's page on GitHub, where a build that cannot install it sends the user.
+    static func page(for release: AvailableRelease) -> URL {
+        URL(string: "https://github.com/\(repository)/releases/tag/\(release.tag)")!
+    }
+
     /// The release worth offering: strictly newer than what runs, and not skipped.
     static func offer(
         _ release: AvailableRelease?, running: AppVersion, skipped: AppVersion?
