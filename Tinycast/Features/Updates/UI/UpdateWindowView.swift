@@ -86,7 +86,10 @@ struct UpdateWindowView: View {
         case .localBuild:
             return String(localized: "This is a local build — rebuild it to move it forward.")
         case .available, .blocked, .installing:
-            return String(localized: "You have \(updates.runningVersion).")
+            guard UpdateCoordinator.installsUpdates else {
+                return "You have \(updates.runningVersion). Local builds don't install updates."
+            }
+            return "You have \(updates.runningVersion)."
         case .readyToRelaunch:
             return String(localized: "Relaunch to start using it.")
         }
@@ -171,8 +174,13 @@ struct UpdateWindowView: View {
             case .available:
                 Button("Later") { updates.skip() }
                     .keyboardShortcut(.cancelAction)
-                Button("Update Now") { updates.install() }
-                    .keyboardShortcut(.defaultAction)
+                if UpdateCoordinator.installsUpdates {
+                    Button("Update Now") { updates.install() }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("View Release") { updates.openReleasePage() }
+                        .keyboardShortcut(.defaultAction)
+                }
             case .blocked:
                 Button("Later") { updates.skip() }
                     .keyboardShortcut(.cancelAction)

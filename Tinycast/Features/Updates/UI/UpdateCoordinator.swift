@@ -5,6 +5,9 @@ import SwiftUI
 @MainActor
 @Observable
 final class UpdateCoordinator {
+    /// Releases are signed by another identity than local builds, so BundleSignature refuses them.
+    static let installsUpdates = false
+
     /// One surface for prompt, progress and report: a download cannot move into a dialog.
     enum Stage: Equatable {
         case checking
@@ -110,7 +113,7 @@ final class UpdateCoordinator {
     // MARK: - Actions
 
     func install() {
-        guard let release = pendingRelease else { return }
+        guard Self.installsUpdates, let release = pendingRelease else { return }
         // Re-asked at the moment of the click, never read from a flag that could have gone stale.
         if let blocker = UpdateReadiness.evaluate(core.currentActivity) {
             stage = .blocked(blocker, release)
@@ -135,6 +138,13 @@ final class UpdateCoordinator {
                 self?.stage = .failed(.downloadFailed(error.localizedDescription))
             }
         }
+    }
+
+    /// What a build that cannot install offers instead: the release page, where its notes live.
+    func openReleasePage() {
+        guard let release = pendingRelease else { return }
+        NSWorkspace.shared.open(ReleaseFeed.page(for: release))
+        window.close()
     }
 
     /// Dismissing a version is what stops it asking again; a later one still will.
