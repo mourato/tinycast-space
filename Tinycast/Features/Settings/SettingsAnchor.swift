@@ -53,6 +53,11 @@ extension SettingsAnchor {
     static let aiMCPServers = Self(tab: .ai, title: "MCP Servers")
     static let aiCommands = Self(tab: .ai, title: "Commands")
 
+    static let contextApplication = Self(tab: .context, title: "Application Context")
+    static let contextBrowser = Self(tab: .context, title: "Browser Context")
+    static let contextOptions = Self(tab: .context, title: "Options")
+    static let contextItems = Self(tab: .context, title: "Context Items")
+
     static let quickActionsQuickActions = Self(tab: .quickActions, title: "Quick Actions")
     static let quickActionsActions = Self(tab: .quickActions, title: "Actions")
     static let quickActionsModel = Self(tab: .quickActions, title: "Model")

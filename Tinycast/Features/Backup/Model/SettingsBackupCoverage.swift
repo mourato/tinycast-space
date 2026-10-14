@@ -67,7 +67,20 @@ enum SettingsBackupCoverage {
         "menuBarLinkedEventsOnly": .menuBarLinkedEventsOnly,
         "calendarMenuBarHidesWhenEmpty": .calendarMenuBarHidesWhenEmpty,
         "hideCurrentEvent": .hideCurrentEvent,
-        "supportReminders": .supportReminders
+        "supportReminders": .supportReminders,
+        "contextSelectionOnly": .contextSelectionOnly,
+        "contextIncludeOrigin": .contextIncludeOrigin,
+        "contextPrioritizeActiveApp": .contextPrioritizeActiveApp,
+        "contextSourceBrowserTabsEnabled": .contextSourceBrowserTabsEnabled,
+        "contextSourceAppsEnabled": .contextSourceAppsEnabled,
+        "contextSourceActionsEnabled": .contextSourceActionsEnabled,
+        "contextSourceIntegrationsEnabled": .contextSourceIntegrationsEnabled,
+        "contextSourceToolsEnabled": .contextSourceToolsEnabled,
+        "contextPriorityBrowserTabs": .contextPriorityBrowserTabs,
+        "contextPriorityApps": .contextPriorityApps,
+        "contextPriorityActions": .contextPriorityActions,
+        "contextPriorityIntegrations": .contextPriorityIntegrations,
+        "contextPriorityTools": .contextPriorityTools
     ]
 
     /// The `SettingsData` fields no `AppSettings` key stands behind, and what they read instead.
@@ -186,6 +199,14 @@ enum SettingsBackupCoverage {
         AppSettingsKey.notesFolder.rawValue:
             "Names a folder on this Mac; the one a backup lands on may not have it.",
         AppSettingsKey.settingsFileEnabled.rawValue:
-            "Lets a file on this Mac change its settings; an import must not hand that to another."
+            "Lets a file on this Mac change its settings; an import must not hand that to another.",
+        AppSettingsKey.contextAppEnabled.rawValue:
+            "Grants reading the front app's text for chat context; an import must not enable capture.",
+        AppSettingsKey.contextBrowserEnabled.rawValue:
+            "Grants reading Helium tabs for chat context; an import must not enable capture.",
+        AppSettingsKey.contextAutoAttachApp.rawValue:
+            "Stages app context without asking each time; an import must not switch that on.",
+        AppSettingsKey.contextAutoAttachBrowser.rawValue:
+            "Stages tab context without asking each time; an import must not switch that on."
     ]
 }

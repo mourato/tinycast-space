@@ -657,6 +657,11 @@ final class AppCore {
             guardrails: .permissiveContentTransformations)
     }
 
+    /// The app the palette was summoned from, for context quotes; never Tinycast itself.
+    func paletteContextSnapshot() -> ContextAppReader.Snapshot? {
+        ContextAppReader.snapshot(of: windowController.previousApp)
+    }
+
     // MARK: - Feature switches
 
     private func observeFeatureSwitches() {
@@ -712,6 +717,13 @@ final class AppCore {
             })
         track({ _ = $0.notesEnabled }, reproject: { $0.notesCoordinator.applyEnabled() })
         track({ _ = $0.aiEnabled }, reproject: { $0.aiChatCoordinator.applyEnabled() })
+        // Capture reads stop with their masters; staged quotes stay, owned by the reader.
+        track(
+            {
+                _ = $0.contextAppEnabled
+                _ = $0.contextBrowserEnabled
+            },
+            reproject: { $0.aiChatCoordinator.contextCoordinator.cancelAllCaptures() })
         track(
             { _ = $0.dictationIdleRelease },
             reproject: {

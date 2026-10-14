@@ -116,7 +116,7 @@ enum SettingsSearchCatalog {
     static let entries: [SettingsSearchEntry] =
         general + applications + systemSettings + systemActions + commands + quicklinks
         + appleShortcuts + fallbacks + clipboard + snippets + fileSearch + windowManagement
-        + navigation + notes + calendar + emoji + ai + quickActions + dictation + extensions + permissions
+        + navigation + notes + calendar + emoji + ai + context + quickActions + dictation + extensions + permissions
         + backup + about
 
     private static let general: [SettingsSearchEntry] = [
@@ -334,6 +334,57 @@ enum SettingsSearchCatalog {
         .init(
             group: .aiCommands, "AI commands",
             keywords: ["shortcut", "launcher", "chat"])
+    ]
+
+    private static let context: [SettingsSearchEntry] = [
+        .init(
+            pane: .context,
+            keywords: ["app context", "browser tab", "selection", "attach", "quote"]),
+        .init(
+            .contextApplication, "Enable app context",
+            keywords: ["accessibility", "frontmost", "selection", "capture"]),
+        .init(
+            .contextApplication, "Automatically attach active app",
+            keywords: ["auto", "capture", "frontmost"]),
+        .init(
+            .contextBrowser, "Enable browser context",
+            keywords: ["helium", "automation", "tab", "capture"]),
+        .init(
+            .contextBrowser, "Automatically attach active tab",
+            keywords: ["auto", "capture", "helium"]),
+        .init(
+            .contextOptions, "Use selected text only",
+            keywords: ["selection", "full page", "whole"]),
+        .init(
+            .contextOptions, "Include active app or tab",
+            keywords: ["origin", "metadata", "source"]),
+        .init(
+            .contextOptions, "Prioritize active app",
+            keywords: ["active", "ranking", "order", "frontmost"]),
+        .init(
+            group: .contextItems, "Context items",
+            keywords: ["sources", "priority", "ranking", "order"]),
+        .init(
+            .contextItems, "Browser tabs",
+            keywords: ["helium", "priority", "source"]),
+        .init(
+            .contextItems, "Apps",
+            keywords: ["frontmost", "priority", "source"]),
+        .init(
+            .contextItems, "Actions",
+            keywords: ["quick action", "prompt", "priority", "source"]),
+        .init(
+            .contextItems, "Integrations",
+            keywords: ["mcp", "server", "priority", "source"]),
+        .init(
+            .contextItems, "Tools",
+            keywords: ["mcp", "tool", "priority", "source"]),
+        .init(
+            .contextItems, "Memory groups",
+            keywords: ["memory", "unavailable"]),
+        .init(
+            .contextItems, "Variables",
+            keywords: ["variable", "unavailable"])
     ]
 
     private static let quickActions: [SettingsSearchEntry] = [

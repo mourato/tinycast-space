@@ -120,6 +120,9 @@ bottom with the model picker. ⌘J hands a Quick AI conversation to the window.
   one turn inside that. The scope binds both shapes alike: Tinycast's loop is offered only the
   allowed servers' tools, and a Codex or Claude turn is handed only the allowed servers. A route that
   cannot call tools shows the menu disabled and says why.
+- **Staged context is quoted text, staged before send.** Apps, browser tabs, actions, integrations
+  and tools attach as `text/plain` documents through the pending-attachments pipeline — chipped,
+  removable, and re-asked frozen on regenerate. See [Context](context.md).
 - **A reply can end on choices, and a choice is only ever a message.** The preamble lets the model
   close a reply with a fenced `choices` block, one option per line. `ChatChoices.split` lifts the
   fence out of the prose (an unclosed one mid-stream too, so it never flashes as code). A small

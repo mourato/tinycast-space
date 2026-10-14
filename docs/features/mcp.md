@@ -55,6 +55,9 @@ nothing about MCP. `AIChatCoordinator.send` is the one place the two meet.
 - **A refused or failed call is content, never a thrown error.** It comes back as an `AIToolResult`
   the model can read and work around, so a declined tool ends in an honest sentence rather than a
   failed turn.
+- **Listing a server or tool as context calls nothing.** [Context](context.md) quotes their
+  metadata as text under the same trust and per-chat scope; attaching one neither enables the
+  server nor runs the tool.
 - **Every turn is bounded three ways.** The round cap is `AISettingsStore.toolRounds` — Settings →
   AI → Chat → Tool call rounds, an `AIToolRounds` of 10, 25, 50, 100 or Unlimited, 25 unless changed
   — after which the turn fails saying so: a model that only calls has stopped answering, but a long

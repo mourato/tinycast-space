@@ -32,6 +32,8 @@ final class QuickAICoordinator {
         }
         applyOpenPolicy()
         paletteCoordinator.showPalette(mode: .ai)
+        core.aiChatCoordinator.contextCoordinator.enteredQuickAI(
+            chat: chat, snapshot: core.paletteContextSnapshot())
     }
 
     /// ⇥ and the AI fallback: a fresh chat that carries the question, already asked.
@@ -45,6 +47,9 @@ final class QuickAICoordinator {
         chat.startNewChat()
         paletteCoordinator.showPalette(mode: .ai)
         send(prompt)
+        // Stages behind the sent question, for the next turn; the ask itself never waits on it.
+        core.aiChatCoordinator.contextCoordinator.enteredQuickAI(
+            chat: chat, snapshot: core.paletteContextSnapshot())
     }
 
     /// Off leaves the screen too, so the palette never shows a feature that is gone.
@@ -90,10 +95,11 @@ final class QuickAICoordinator {
 
     @discardableResult
     func send(_ input: String) -> Bool {
-        chatCoordinator.send(input, in: chat)
+        chatCoordinator.send(input, in: chat, appSnapshot: core.paletteContextSnapshot())
     }
 
     func startNewChat() {
+        chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
         chat.startNewChat()
         // A fresh conversation, not a fresh root: whatever opened chat is still behind it.
         palette.replace(mode: .ai)
@@ -105,6 +111,7 @@ final class QuickAICoordinator {
 
     /// A chat the window holds opens there, since two writers would each save over the other.
     func openChat(id: UUID) {
+        chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
         guard chats.openInQuickAI(id: id) else {
             continueInChat(id: id)
             return
@@ -151,14 +158,32 @@ final class QuickAICoordinator {
 
     /// Backspace on an empty composer takes the last staged image before it backs out of chat.
     func removeLastAttachment() -> Bool {
-        chat.removeLastAttachment()
+        if let last = chat.pendingAttachments.last {
+            chatCoordinator.contextCoordinator.noteRemoved(last.id)
+        }
+        return chat.removeLastAttachment()
     }
 
     func clearAttachments() {
+        chatCoordinator.contextCoordinator.noteCleared(in: chat)
         chat.clearAttachments()
     }
 
     func removeAttachment(_ id: UUID) {
+        chatCoordinator.contextCoordinator.noteRemoved(id)
         chat.removeAttachment(id)
+    }
+
+    /// The picker's rows for Quick AI, and the snapshot they quote.
+    func contextSnapshot() -> ContextAppReader.Snapshot? {
+        core.paletteContextSnapshot()
+    }
+
+    func contextPickerData() -> AIContextPickerData {
+        chatCoordinator.contextCoordinator.pickerData(for: chat, snapshot: contextSnapshot())
+    }
+
+    func performContextAction(_ action: AIContextPickerAction) {
+        chatCoordinator.contextCoordinator.perform(action, in: chat, snapshot: contextSnapshot())
     }
 }

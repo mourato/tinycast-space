@@ -81,6 +81,27 @@ enum SettingsFileSchema {
         case .aiNewChatAfter: return bind(ai, \.newChatAfter)
         case .aiToolRounds: return bind(ai, \.toolRounds)
         case .aiCommands: return launcher.commandsBinding(for: key, owner: .ai)
+        case .contextSelectionOnly: return bind(settings, \.contextSelectionOnly)
+        case .contextIncludeOrigin: return bind(settings, \.contextIncludeOrigin)
+        case .contextPrioritizeActiveApp: return bind(settings, \.contextPrioritizeActiveApp)
+        case .contextSourceBrowserTabsEnabled:
+            return bind(settings, \.contextSourceBrowserTabsEnabled)
+        case .contextSourceAppsEnabled: return bind(settings, \.contextSourceAppsEnabled)
+        case .contextSourceActionsEnabled: return bind(settings, \.contextSourceActionsEnabled)
+        case .contextSourceIntegrationsEnabled:
+            return bind(settings, \.contextSourceIntegrationsEnabled)
+        case .contextSourceToolsEnabled: return bind(settings, \.contextSourceToolsEnabled)
+        case .contextPriorityBrowserTabs:
+            return priorityBinding(key, settings, \.contextPriorityBrowserTabs, source: .browserTabs)
+        case .contextPriorityApps:
+            return priorityBinding(key, settings, \.contextPriorityApps, source: .apps)
+        case .contextPriorityActions:
+            return priorityBinding(key, settings, \.contextPriorityActions, source: .actions)
+        case .contextPriorityIntegrations:
+            return priorityBinding(
+                key, settings, \.contextPriorityIntegrations, source: .integrations)
+        case .contextPriorityTools:
+            return priorityBinding(key, settings, \.contextPriorityTools, source: .tools)
         case .quickActionLanguage: return bind(quickActions, \.settings.targetLanguage)
         case .quickActionCommands: return launcher.commandsBinding(for: key, owner: .quickActions)
         case .fileSearchEnabled: return bind(settings, \.fileSearchEnabled)
@@ -163,6 +184,22 @@ enum SettingsFileSchema {
     private static func folder(_ path: String?) -> String?? {
         guard let path else { return .some(nil) }
         return AppPaths.isFolderPath(path) ? path : nil
+    }
+
+    /// Priorities ride as numbers; a hand edit outside 0…1 repairs to the source's default.
+    private static func priorityBinding(
+        _ key: SettingsFileKey, _ settings: AppSettings,
+        _ path: ReferenceWritableKeyPath<AppSettings, Double>, source: ContextSource
+    ) -> SettingsFileBinding {
+        SettingsFileBinding(
+            key,
+            read: { .number(settings[keyPath: path]) },
+            write: { json in
+                guard let number = json.number else { return [.invalidValue(key)] }
+                let repaired = ContextSource.normalized(priority: number, for: source)
+                if settings[keyPath: path] != repaired { settings[keyPath: path] = repaired }
+                return []
+            })
     }
 }
 

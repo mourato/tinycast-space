@@ -63,7 +63,12 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
             // Summoned over one of our own windows: there is no external paste or focus target.
             let frontmost = NSWorkspace.shared.frontmostApplication
             let ownPID = NSRunningApplication.current.processIdentifier
-            previousApp = frontmost?.processIdentifier == ownPID ? nil : frontmost
+            // Kept across mode switches: a re-show while our panel holds key must not clear it.
+            if let frontmost, frontmost.processIdentifier != ownPID {
+                previousApp = frontmost
+            } else if previousApp?.processIdentifier == ownPID {
+                previousApp = nil
+            }
             // Recorded even when another app is frontmost: our panels take key without activating.
             let key = NSApp.keyWindow
             // A mode switch re-shows the palette while it holds key; keep what it recorded then.
