@@ -54,6 +54,23 @@ enum ContextBrowser {
         return BrowserTab(id: id, windowID: windowID, title: title, url: url, isActive: isActive)
     }
 
+    /// Listing rows into tabs: private windows never list, and short rows never count.
+    static func tabs(from rows: [[String]]) -> [BrowserTab] {
+        rows.compactMap { fields in
+            guard fields.count >= 5 else { return nil }
+            if fields.count >= 6, fields[5] == "incognito" { return nil }
+            return tab(
+                id: fields[0], windowID: fields[1], title: fields[3], url: fields[4],
+                isActive: fields[2] == "1")
+        }
+    }
+
+    /// True when the front window reported private, so auto-attach refuses rather than swapping.
+    static func frontIsPrivate(rows: [[String]]) -> Bool {
+        guard let first = rows.first, first.count >= 6 else { return false }
+        return first[5] == "incognito"
+    }
+
     /// Windows arrive front to back, so the first selected tab is the active one.
     static func activeTab(in tabs: [BrowserTab]) -> BrowserTab? {
         tabs.first { $0.isActive }
@@ -65,6 +82,8 @@ enum ContextBrowser {
         let url: String
         let selection: String
         let body: String
+        /// True when the fixed reader or the parser cut the text before staging saw it.
+        let isTruncated: Bool
     }
 
     /// Parses the fixed reader's JSON; anything else is a restricted or failed page.
@@ -78,9 +97,18 @@ enum ContextBrowser {
             guard let text = value as? String else { return "" }
             return String(text.prefix(maxFieldChars))
         }
+        func overlong(_ value: Any?) -> Bool {
+            guard let text = value as? String else { return false }
+            return text.count > maxFieldChars
+        }
+        let selection = capped(object["s"])
+        let body = capped(object["b"])
+        var cut = overlong(object["t"]) || overlong(object["s"]) || overlong(object["b"])
+        if let reported = object["sl"] as? Int, reported > selection.count { cut = true }
+        if let reported = object["bl"] as? Int, reported > body.count { cut = true }
         return PageRead(
-            title: capped(object["t"]), url: url, selection: capped(object["s"]),
-            body: capped(object["b"]))
+            title: capped(object["t"]), url: url, selection: selection, body: body,
+            isTruncated: cut)
     }
 
     /// The read counts only for the tab asked about; a moved tab is stale, never substituted.
@@ -96,6 +124,7 @@ enum ContextBrowser {
         components.fragment = nil
         components.user = nil
         components.password = nil
+        components.query = nil
         guard let text = components.string, !text.isEmpty else {
             return ContextPolicy.sanitizedOrigin(url)
         }
@@ -133,7 +162,7 @@ enum ContextBrowser {
         (function(){try{var s=window.getSelection?String(window.getSelection()):"";\
         var b=document.body?document.body.innerText:"";\
         return JSON.stringify({t:document.title,u:location.href,\
-        s:s.slice(0,8000),b:(b||"").slice(0,8000)});}\
+        s:s.slice(0,8000),b:(b||"").slice(0,8000),sl:s.length,bl:(b||"").length});}\
         catch(e){return JSON.stringify({e:String(e).slice(0,200)});}})()
         """
 }

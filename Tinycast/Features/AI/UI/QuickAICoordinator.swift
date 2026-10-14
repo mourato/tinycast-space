@@ -44,12 +44,20 @@ final class QuickAICoordinator {
             show()
             return
         }
+        let snapshot = core.paletteContextSnapshot()
+        // Auto context stages for review first: the first answer must see it, after the reader can.
+        if core.aiChatCoordinator.contextCoordinator.autoApplies(snapshot: snapshot) {
+            chat.startNewChat()
+            palette.query = prompt
+            paletteCoordinator.showPalette(mode: .ai)
+            core.aiChatCoordinator.contextCoordinator.enteredQuickAI(chat: chat, snapshot: snapshot)
+            return
+        }
         chat.startNewChat()
         paletteCoordinator.showPalette(mode: .ai)
         send(prompt)
         // Stages behind the sent question, for the next turn; the ask itself never waits on it.
-        core.aiChatCoordinator.contextCoordinator.enteredQuickAI(
-            chat: chat, snapshot: core.paletteContextSnapshot())
+        core.aiChatCoordinator.contextCoordinator.enteredQuickAI(chat: chat, snapshot: snapshot)
     }
 
     /// Off leaves the screen too, so the palette never shows a feature that is gone.

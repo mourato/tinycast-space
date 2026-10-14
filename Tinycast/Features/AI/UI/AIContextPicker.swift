@@ -70,6 +70,11 @@ extension AIContextCoordinator {
             attachAppContext(
                 to: chat, snapshot: ContextAppReader.snapshot(of: app), automatic: false)
         case .activeTab:
+            if frontTabIsPrivate {
+                core.showMessage(
+                    ContextBrowser.ReadFailure.restrictedPage.message, tone: .neutral)
+                return
+            }
             guard let active = activeTab else {
                 refreshTabsIfAllowed()
                 core.showMessage("There's no browser tab to attach right now.", tone: .neutral)
