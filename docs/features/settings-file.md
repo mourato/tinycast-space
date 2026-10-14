@@ -15,7 +15,9 @@ in `Features/Settings/` (`Model/`, `Service/`, `SettingsFileSchema.swift`), the 
   excluded from backups: a file or an import must never switch on something that reads a file.
 - **A capability grant never has a key.** Snippets, Extensions, Calendar access, Auto Join, Camera
   Preview, Quick Actions, MCP and clipboard text recognition are switched on only in the app, which
-  asks first. `settings-file-test` checks those paths stay absent.
+  asks first. Context's capture masters and auto-attach switches (`context.appEnabled`,
+  `context.browserEnabled`, `context.autoAttachApp`, `context.autoAttachBrowser`) are grants the
+  same way: ordinary Context options mirror, grants never do. `settings-file-test` checks those paths stay absent.
 - **`SettingsFileSchema`'s switch is exhaustive.** A new `SettingsFileKey` case fails to build until it
   is bound to a property.
 - **A bad edit never costs a setting.** A key the file leaves out keeps its value; a value Tinycast

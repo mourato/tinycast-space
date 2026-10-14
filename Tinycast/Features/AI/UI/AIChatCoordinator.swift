@@ -14,6 +14,9 @@ final class AIChatCoordinator {
     private let window: AppWindowController
     /// Chats with a title request in flight, so a quick second reply never asks twice.
     @ObservationIgnored private var naming: [UUID: Task<Void, Never>] = [:]
+    /// App, tab and picker context both surfaces share; owned here so every chat reaches it.
+    @ObservationIgnored private(set) lazy var contextCoordinator = AIContextCoordinator(
+        settings: settings, chatCoordinator: self, core: core)
 
     init(
         chats: AIChatSurfacesState, settings: AppSettings, appIndex: AppIndex,
@@ -38,6 +41,7 @@ final class AIChatCoordinator {
         guard settings.aiEnabled else {
             for request in naming.values { request.cancel() }
             naming = [:]
+            contextCoordinator.cancelAllCaptures()
             // Before the handle closes: cancelling an open reply saves the conversation it ends.
             chats.reset()
             window.close()
@@ -67,7 +71,11 @@ final class AIChatCoordinator {
     /// Reopens on whatever it last showed: the conversation is `AppCore`'s, not the window's.
     func showWindow(applyingOpenPolicy: Bool = false) {
         guard settings.aiEnabled else { return }
+        // Before the window takes anything: the app in front now is the quote's source.
+        contextCoordinator.windowSnapshot = ContextAppReader.snapshot(
+            of: NSWorkspace.shared.frontmostApplication)
         prepareForChat()
+        contextCoordinator.enteredWindow(chat: chats.window)
         guard !window.focus() else { return }
         if applyingOpenPolicy {
             chats.applyWindowOpenPolicy(
@@ -106,10 +114,12 @@ final class AIChatCoordinator {
     }
 
     func newChat() {
+        contextCoordinator.forget(chatID: chats.window.session.id)
         chats.newWindowChat()
     }
 
     func openChat(id: UUID) {
+        contextCoordinator.forget(chatID: chats.window.session.id)
         guard chats.openInWindow(id: id) else {
             core.showMessage("That chat could not be opened.", tone: .danger)
             return
@@ -182,6 +192,7 @@ final class AIChatCoordinator {
     }
 
     func deleteChat(id: UUID) async {
+        contextCoordinator.forget(chatID: id)
         let title = core.chatHistory.conversation(id: id)?.displayTitle ?? "This chat"
         guard
             await core.confirm(
@@ -271,10 +282,18 @@ final class AIChatCoordinator {
     // MARK: - Either surface
 
     @discardableResult
-    func send(_ input: String, in chat: AIChatState) -> Bool {
+    func send(
+        _ input: String, in chat: AIChatState, appSnapshot: ContextAppReader.Snapshot? = nil
+    ) -> Bool {
         guard settings.aiEnabled else { return false }
         do {
             let address = MCPComposerAddress.parse(input, slugs: core.mcpCoordinator.slugs)
+            if address.slug == nil,
+                let (token, rest) = contextCoordinator.contextToken(in: address.rest)
+            {
+                return contextCoordinator.sendWithToken(
+                    token, rest: rest, in: chat, snapshot: appSnapshot)
+            }
             let sent = chat.send(
                 address.rest, using: try provider(for: chat, scopedTo: address.slug),
                 model: model(for: chat), webSearch: webSearch(for: chat),
@@ -383,6 +402,16 @@ final class AIChatCoordinator {
             .flatMap { core.mcpCoordinator.server(slug: $0) }
     }
 
+    /// `@app` or `@tab` while neither names a server; the composer chips it like one.
+    func addressedContext(in draft: String) -> String? {
+        contextCoordinator.addressedContext(in: draft)
+    }
+
+    /// What a picker's Tools section lists: this turn's scope, nothing it switched off.
+    func contextTools(for chat: AIChatState) -> [AITool] {
+        tools(for: chat, scopedTo: nil)
+    }
+
     func stopResponse(in chat: AIChatState) {
         chat.cancel()
     }
@@ -486,10 +515,12 @@ final class AIChatCoordinator {
     }
 
     func clearAttachments(in chat: AIChatState) {
+        contextCoordinator.noteCleared(in: chat)
         chat.clearAttachments()
     }
 
     func removeAttachment(_ id: UUID, in chat: AIChatState) {
+        contextCoordinator.noteRemoved(id)
         chat.removeAttachment(id)
     }
 
@@ -642,6 +673,7 @@ final class AIChatCoordinator {
     func prepareForChat() {
         warmUpModelList()
         core.mcpCoordinator.warmUp()
+        contextCoordinator.refreshTabsIfAllowed()
     }
 
     /// Fetches the list so the title is a name, and a default can resolve without Settings.

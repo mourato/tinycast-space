@@ -712,6 +712,13 @@ run ai-chat-test           Tinycast/Features/AI/Model/AIRequest.swift \
                            Tinycast/Features/AI/UI/AIChatState.swift \
                            Tinycast/Features/AI/UI/AIChatSurfacesState.swift \
                            Tinycast/Features/AI/UI/ChatFindState.swift
+run context-test           Tinycast/Features/AI/Model/AIRequest.swift \
+                           Tinycast/Features/AI/Model/AIAttachmentPolicy.swift \
+                           Tinycast/Features/AI/Model/AITool.swift \
+                           Tinycast/Features/AI/Model/JSONValue.swift \
+                           Tinycast/Features/AI/Model/ContextSource.swift \
+                           Tinycast/Features/AI/Model/ContextPolicy.swift \
+                           Tinycast/Features/AI/Model/ContextBrowser.swift
 run chat-markdown-test     Tinycast/Platform/Appearance.swift \
                            Tinycast/DesignSystem/Theme.swift Tinycast/Features/Settings/RaycastThemeCore.swift \
                            Tinycast/DesignSystem/InterfaceMetrics.swift \

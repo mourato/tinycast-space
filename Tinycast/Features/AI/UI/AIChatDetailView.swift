@@ -170,11 +170,17 @@ private struct AIChatComposer: View {
 
     @ViewBuilder private var chips: some View {
         let addressed = coordinator.addressedServer(in: chat.draft)
-        if !chat.pendingAttachments.isEmpty || addressed != nil {
+        let addressedContext =
+            addressed == nil ? coordinator.addressedContext(in: chat.draft) : nil
+        if !chat.pendingAttachments.isEmpty || addressed != nil || addressedContext != nil {
             ScrollView(.horizontal) {
                 HStack(spacing: Theme.Spacing.sm) {
                     if let addressed {
                         ComposerChip(symbol: "wrench.and.screwdriver", label: "@\(addressed.slug)")
+                    }
+                    if let addressedContext {
+                        ComposerChip(
+                            symbol: "app.connected.to.app.below.fill", label: addressedContext)
                     }
                     ForEach(chat.pendingAttachments) { attachment in
                         AttachmentChip(attachment: attachment) {
@@ -335,6 +341,7 @@ private struct AIAddMenu: View {
         Menu {
             Button("Attach Files…", systemImage: "paperclip") { coordinator.chooseFiles(for: chat) }
                 .help(attachHelp)
+            contextMenu
             Divider()
             if offersSearch {
                 Toggle("Web Search", systemImage: "globe", isOn: $settings.webSearchEnabled)
@@ -346,6 +353,30 @@ private struct AIAddMenu: View {
         .composerMenu()
         .help("Attach files, search the web, choose tools")
         .accessibilityLabel("Add")
+    }
+
+    /// The shared Context picker as a submenu: ordered sources, then the honest gaps.
+    private var contextMenu: some View {
+        let snapshot = coordinator.contextCoordinator.windowSnapshot
+        let data = coordinator.contextCoordinator.pickerData(for: chat, snapshot: snapshot)
+        return Menu {
+            ForEach(data.sections) { section in
+                Section(section.source.title) {
+                    ForEach(section.items.prefix(12)) { item in
+                        Button(item.title) {
+                            if let action = item.action {
+                                coordinator.contextCoordinator.perform(
+                                    action, in: chat, snapshot: snapshot)
+                            }
+                        }
+                        .disabled(item.disabledReason != nil)
+                        .help(item.disabledReason ?? item.subtitle)
+                    }
+                }
+            }
+        } label: {
+            Label("Attach Context…", systemImage: "app.connected.to.app.below.fill")
+        }
     }
 
     /// One entry for every kind; what this chat's model can read is what the help says.

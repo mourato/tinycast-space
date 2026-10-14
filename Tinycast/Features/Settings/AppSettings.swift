@@ -635,6 +635,138 @@ final class AppSettings {
         didSet { defaults.set(settingsFileEnabled, forKey: Key.settingsFileEnabled.rawValue) }
     }
 
+    /// Capability masters: off, so nothing is read or sent until explicitly enabled in Context.
+    var contextAppEnabled: Bool {
+        didSet { defaults.set(contextAppEnabled, forKey: Key.contextAppEnabled.rawValue) }
+    }
+
+    var contextBrowserEnabled: Bool {
+        didSet { defaults.set(contextBrowserEnabled, forKey: Key.contextBrowserEnabled.rawValue) }
+    }
+
+    /// Automatic capture grants, also off: entering chat stages nothing until these say so.
+    var contextAutoAttachApp: Bool {
+        didSet { defaults.set(contextAutoAttachApp, forKey: Key.contextAutoAttachApp.rawValue) }
+    }
+
+    var contextAutoAttachBrowser: Bool {
+        didSet {
+            defaults.set(contextAutoAttachBrowser, forKey: Key.contextAutoAttachBrowser.rawValue)
+        }
+    }
+
+    /// When on and text is selected, the selection replaces the whole app or page.
+    var contextSelectionOnly: Bool {
+        didSet { defaults.set(contextSelectionOnly, forKey: Key.contextSelectionOnly.rawValue) }
+    }
+
+    /// Whether staged context names the app or tab it came from; separate from auto-attach.
+    var contextIncludeOrigin: Bool {
+        didSet { defaults.set(contextIncludeOrigin, forKey: Key.contextIncludeOrigin.rawValue) }
+    }
+
+    /// Whether the front app or tab leads the context picker; ordering only, never capture.
+    var contextPrioritizeActiveApp: Bool {
+        didSet {
+            defaults.set(
+                contextPrioritizeActiveApp, forKey: Key.contextPrioritizeActiveApp.rawValue)
+        }
+    }
+
+    /// Source availability: on shows the source in pickers, never grants capture by itself.
+    var contextSourceBrowserTabsEnabled: Bool {
+        didSet {
+            defaults.set(
+                contextSourceBrowserTabsEnabled,
+                forKey: Key.contextSourceBrowserTabsEnabled.rawValue)
+        }
+    }
+
+    var contextSourceAppsEnabled: Bool {
+        didSet {
+            defaults.set(
+                contextSourceAppsEnabled, forKey: Key.contextSourceAppsEnabled.rawValue)
+        }
+    }
+
+    var contextSourceActionsEnabled: Bool {
+        didSet {
+            defaults.set(
+                contextSourceActionsEnabled, forKey: Key.contextSourceActionsEnabled.rawValue)
+        }
+    }
+
+    var contextSourceIntegrationsEnabled: Bool {
+        didSet {
+            defaults.set(
+                contextSourceIntegrationsEnabled,
+                forKey: Key.contextSourceIntegrationsEnabled.rawValue)
+        }
+    }
+
+    var contextSourceToolsEnabled: Bool {
+        didSet {
+            defaults.set(
+                contextSourceToolsEnabled, forKey: Key.contextSourceToolsEnabled.rawValue)
+        }
+    }
+
+    /// Picker order weights; out-of-range values repair to the source's default on read.
+    var contextPriorityBrowserTabs: Double {
+        didSet {
+            defaults.set(
+                contextPriorityBrowserTabs, forKey: Key.contextPriorityBrowserTabs.rawValue)
+        }
+    }
+
+    var contextPriorityApps: Double {
+        didSet { defaults.set(contextPriorityApps, forKey: Key.contextPriorityApps.rawValue) }
+    }
+
+    var contextPriorityActions: Double {
+        didSet {
+            defaults.set(contextPriorityActions, forKey: Key.contextPriorityActions.rawValue)
+        }
+    }
+
+    var contextPriorityIntegrations: Double {
+        didSet {
+            defaults.set(
+                contextPriorityIntegrations, forKey: Key.contextPriorityIntegrations.rawValue)
+        }
+    }
+
+    var contextPriorityTools: Double {
+        didSet {
+            defaults.set(contextPriorityTools, forKey: Key.contextPriorityTools.rawValue)
+        }
+    }
+
+    /// The Context picker's current policy, read as one snapshot so a turn can't half-apply it.
+    var contextPolicyOptions: ContextPolicy.Options {
+        ContextPolicy.Options(
+            appEnabled: contextAppEnabled, browserEnabled: contextBrowserEnabled,
+            autoAttachApp: contextAutoAttachApp, autoAttachBrowser: contextAutoAttachBrowser,
+            selectionOnly: contextSelectionOnly, includeOrigin: contextIncludeOrigin,
+            prioritizeActiveApp: contextPrioritizeActiveApp,
+            enabledSources: contextEnabledSources,
+            priorities: [
+                .browserTabs: contextPriorityBrowserTabs, .apps: contextPriorityApps,
+                .actions: contextPriorityActions, .integrations: contextPriorityIntegrations,
+                .tools: contextPriorityTools
+            ])
+    }
+
+    private var contextEnabledSources: Set<ContextSource> {
+        var sources = Set<ContextSource>()
+        if contextSourceBrowserTabsEnabled { sources.insert(.browserTabs) }
+        if contextSourceAppsEnabled { sources.insert(.apps) }
+        if contextSourceActionsEnabled { sources.insert(.actions) }
+        if contextSourceIntegrationsEnabled { sources.insert(.integrations) }
+        if contextSourceToolsEnabled { sources.insert(.tools) }
+        return sources
+    }
+
     init() {
         // The only feature switch that defaults on, so absence has to outrank a stored `false`.
         clipboardEnabled =
@@ -847,5 +979,56 @@ final class AppSettings {
             defaults.object(forKey: Key.supportReminders.rawValue) == nil
             || defaults.bool(forKey: Key.supportReminders.rawValue)
         settingsFileEnabled = defaults.bool(forKey: Key.settingsFileEnabled.rawValue)
+        contextAppEnabled = defaults.bool(forKey: Key.contextAppEnabled.rawValue)
+        contextBrowserEnabled = defaults.bool(forKey: Key.contextBrowserEnabled.rawValue)
+        contextAutoAttachApp = defaults.bool(forKey: Key.contextAutoAttachApp.rawValue)
+        contextAutoAttachBrowser = defaults.bool(forKey: Key.contextAutoAttachBrowser.rawValue)
+        // On unless stored off, so a fresh install quotes the smaller thing first.
+        contextSelectionOnly =
+            defaults.object(forKey: Key.contextSelectionOnly.rawValue) == nil
+            || defaults.bool(forKey: Key.contextSelectionOnly.rawValue)
+        contextIncludeOrigin =
+            defaults.object(forKey: Key.contextIncludeOrigin.rawValue) == nil
+            || defaults.bool(forKey: Key.contextIncludeOrigin.rawValue)
+        contextPrioritizeActiveApp =
+            defaults.object(forKey: Key.contextPrioritizeActiveApp.rawValue) == nil
+            || defaults.bool(forKey: Key.contextPrioritizeActiveApp.rawValue)
+        // Sources ship available; enabling one never grants capture, the masters do that.
+        contextSourceBrowserTabsEnabled =
+            defaults.object(forKey: Key.contextSourceBrowserTabsEnabled.rawValue) == nil
+            || defaults.bool(forKey: Key.contextSourceBrowserTabsEnabled.rawValue)
+        contextSourceAppsEnabled =
+            defaults.object(forKey: Key.contextSourceAppsEnabled.rawValue) == nil
+            || defaults.bool(forKey: Key.contextSourceAppsEnabled.rawValue)
+        contextSourceActionsEnabled =
+            defaults.object(forKey: Key.contextSourceActionsEnabled.rawValue) == nil
+            || defaults.bool(forKey: Key.contextSourceActionsEnabled.rawValue)
+        contextSourceIntegrationsEnabled =
+            defaults.object(forKey: Key.contextSourceIntegrationsEnabled.rawValue) == nil
+            || defaults.bool(forKey: Key.contextSourceIntegrationsEnabled.rawValue)
+        contextSourceToolsEnabled =
+            defaults.object(forKey: Key.contextSourceToolsEnabled.rawValue) == nil
+            || defaults.bool(forKey: Key.contextSourceToolsEnabled.rawValue)
+        // Unset reads as 0, which no source defaults to, so absence must not read as a value.
+        contextPriorityBrowserTabs = Self.contextPriority(
+            defaults, key: Key.contextPriorityBrowserTabs, source: .browserTabs)
+        contextPriorityApps = Self.contextPriority(
+            defaults, key: Key.contextPriorityApps, source: .apps)
+        contextPriorityActions = Self.contextPriority(
+            defaults, key: Key.contextPriorityActions, source: .actions)
+        contextPriorityIntegrations = Self.contextPriority(
+            defaults, key: Key.contextPriorityIntegrations, source: .integrations)
+        contextPriorityTools = Self.contextPriority(
+            defaults, key: Key.contextPriorityTools, source: .tools)
+    }
+
+    /// A stored priority survives only inside the unit interval; anything else is the default.
+    private static func contextPriority(
+        _ defaults: UserDefaults, key: AppSettingsKey, source: ContextSource
+    ) -> Double {
+        guard let stored = defaults.object(forKey: key.rawValue) as? Double else {
+            return source.defaultPriority
+        }
+        return ContextSource.normalized(priority: stored, for: source)
     }
 }

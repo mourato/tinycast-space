@@ -92,6 +92,20 @@ struct SettingsBackup: Codable {
         var hideCurrentEvent: Int?
         // Safe to carry: it silences a prompt rather than granting anything.
         var supportReminders: Bool?
+        // Carried: source availability and ordering grant no capture; the masters stay local.
+        var contextSelectionOnly: Bool?
+        var contextIncludeOrigin: Bool?
+        var contextPrioritizeActiveApp: Bool?
+        var contextSourceBrowserTabsEnabled: Bool?
+        var contextSourceAppsEnabled: Bool?
+        var contextSourceActionsEnabled: Bool?
+        var contextSourceIntegrationsEnabled: Bool?
+        var contextSourceToolsEnabled: Bool?
+        var contextPriorityBrowserTabs: Double?
+        var contextPriorityApps: Double?
+        var contextPriorityActions: Double?
+        var contextPriorityIntegrations: Double?
+        var contextPriorityTools: Double?
     }
 
     struct HotkeyBackup: Codable {
@@ -194,7 +208,20 @@ extension SettingsBackup {
             menuBarLinkedEventsOnly: s.menuBarLinkedEventsOnly,
             calendarMenuBarHidesWhenEmpty: s.calendarMenuBarHidesWhenEmpty,
             hideCurrentEvent: s.hideCurrentEvent.rawValue,
-            supportReminders: s.supportRemindersEnabled)
+            supportReminders: s.supportRemindersEnabled,
+            contextSelectionOnly: s.contextSelectionOnly,
+            contextIncludeOrigin: s.contextIncludeOrigin,
+            contextPrioritizeActiveApp: s.contextPrioritizeActiveApp,
+            contextSourceBrowserTabsEnabled: s.contextSourceBrowserTabsEnabled,
+            contextSourceAppsEnabled: s.contextSourceAppsEnabled,
+            contextSourceActionsEnabled: s.contextSourceActionsEnabled,
+            contextSourceIntegrationsEnabled: s.contextSourceIntegrationsEnabled,
+            contextSourceToolsEnabled: s.contextSourceToolsEnabled,
+            contextPriorityBrowserTabs: s.contextPriorityBrowserTabs,
+            contextPriorityApps: s.contextPriorityApps,
+            contextPriorityActions: s.contextPriorityActions,
+            contextPriorityIntegrations: s.contextPriorityIntegrations,
+            contextPriorityTools: s.contextPriorityTools)
 
         let hk = core.hotKeys
         var hotkeys = HotkeyBackup()
@@ -556,6 +583,62 @@ extension SettingsBackup {
         }
         if let flag = s.supportReminders {
             settings.supportRemindersEnabled = flag
+            count += 1
+        }
+        if let flag = s.contextSelectionOnly {
+            settings.contextSelectionOnly = flag
+            count += 1
+        }
+        if let flag = s.contextIncludeOrigin {
+            settings.contextIncludeOrigin = flag
+            count += 1
+        }
+        if let flag = s.contextPrioritizeActiveApp {
+            settings.contextPrioritizeActiveApp = flag
+            count += 1
+        }
+        if let flag = s.contextSourceBrowserTabsEnabled {
+            settings.contextSourceBrowserTabsEnabled = flag
+            count += 1
+        }
+        if let flag = s.contextSourceAppsEnabled {
+            settings.contextSourceAppsEnabled = flag
+            count += 1
+        }
+        if let flag = s.contextSourceActionsEnabled {
+            settings.contextSourceActionsEnabled = flag
+            count += 1
+        }
+        if let flag = s.contextSourceIntegrationsEnabled {
+            settings.contextSourceIntegrationsEnabled = flag
+            count += 1
+        }
+        if let flag = s.contextSourceToolsEnabled {
+            settings.contextSourceToolsEnabled = flag
+            count += 1
+        }
+        if let priority = s.contextPriorityBrowserTabs {
+            settings.contextPriorityBrowserTabs = ContextSource.normalized(
+                priority: priority, for: .browserTabs)
+            count += 1
+        }
+        if let priority = s.contextPriorityApps {
+            settings.contextPriorityApps = ContextSource.normalized(priority: priority, for: .apps)
+            count += 1
+        }
+        if let priority = s.contextPriorityActions {
+            settings.contextPriorityActions = ContextSource.normalized(
+                priority: priority, for: .actions)
+            count += 1
+        }
+        if let priority = s.contextPriorityIntegrations {
+            settings.contextPriorityIntegrations = ContextSource.normalized(
+                priority: priority, for: .integrations)
+            count += 1
+        }
+        if let priority = s.contextPriorityTools {
+            settings.contextPriorityTools = ContextSource.normalized(
+                priority: priority, for: .tools)
             count += 1
         }
         return count

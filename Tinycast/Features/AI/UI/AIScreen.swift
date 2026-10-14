@@ -76,7 +76,35 @@ struct AIScreen: PaletteScreen {
             ) {
                 chatCoordinator.showSettings()
             })
+        items += contextItems()
         return PopoverMenuContent(header: chatCoordinator.title(of: chat), items: items)
+    }
+
+    /// The picker's rows as ⌘K rows, sectioned by source and ordered by Context priority.
+    private func contextItems() -> [PopoverMenuItem] {
+        let data = coordinator.contextPickerData()
+        var items: [PopoverMenuItem] = []
+        for section in data.sections {
+            for (index, item) in section.items.enumerated() {
+                let detail =
+                    item.disabledReason == nil && item.subtitle.count <= 32 ? item.subtitle : nil
+                items.append(
+                    PopoverMenuItem(
+                        title: item.disabledReason == nil
+                            ? item.title : "\(item.title) — \(item.disabledReason!)",
+                        icon: .symbol(section.source.menuSymbol),
+                        isEnabled: item.disabledReason == nil,
+                        sectionTitle: index == 0 ? section.source.title : nil,
+                        startsSection: index == 0,
+                        detail: detail
+                    ) {
+                        if let action = item.action {
+                            coordinator.performContextAction(action)
+                        }
+                    })
+            }
+        }
+        return items
     }
 
     func activate(at selection: Int) {
@@ -113,11 +141,13 @@ struct AIScreen: PaletteScreen {
     ) -> PaletteHeaderAccessory? {
         let attachments = chat.pendingAttachments
         let addressed = chatCoordinator.addressedServer(in: vm.query)
-        guard !attachments.isEmpty || addressed != nil else { return nil }
+        let addressedContext = addressed == nil ? chatCoordinator.addressedContext(in: vm.query) : nil
+        guard !attachments.isEmpty || addressed != nil || addressedContext != nil else { return nil }
         let width =
             (attachments.isEmpty ? 0 : AttachmentsPill.width(for: attachments, metrics))
             + (addressed == nil ? 0 : ComposerChip.width(metrics))
-            + (attachments.isEmpty || addressed == nil ? 0 : metrics.spacing.sm)
+            + (addressedContext == nil ? 0 : ComposerChip.width(metrics))
+            + ((attachments.isEmpty || (addressed == nil && addressedContext == nil)) ? 0 : metrics.spacing.sm)
         return PaletteHeaderAccessory(
             width: width + metrics.spacing.md,
             fieldNames: [], firstIncompleteField: nil,
@@ -125,6 +155,9 @@ struct AIScreen: PaletteScreen {
                 HStack(spacing: metrics.spacing.sm) {
                     if let addressed {
                         ComposerChip(symbol: "wrench.and.screwdriver", label: "@\(addressed.slug)")
+                    }
+                    if let addressedContext {
+                        ComposerChip(symbol: "app.connected.to.app.below.fill", label: addressedContext)
                     }
                     // Absent, not empty: an empty stack would still take a gap after the `@` chip.
                     if !attachments.isEmpty {
