@@ -14,9 +14,8 @@ final class AIChatCoordinator {
     private let window: AppWindowController
     /// Chats with a title request in flight, so a quick second reply never asks twice.
     @ObservationIgnored private var naming: [UUID: Task<Void, Never>] = [:]
-    /// App, tab and picker context both surfaces share; owned here so every chat reaches it.
-    @ObservationIgnored private(set) lazy var contextCoordinator = AIContextCoordinator(
-        settings: settings, chatCoordinator: self, core: core)
+    /// App, tab and picker context both surfaces share; solely owned by `AppCore`, reached here.
+    var contextCoordinator: AIContextCoordinator { core.aiContextCoordinator }
 
     init(
         chats: AIChatSurfacesState, settings: AppSettings, appIndex: AppIndex,
@@ -72,8 +71,18 @@ final class AIChatCoordinator {
     func showWindow(applyingOpenPolicy: Bool = false) {
         guard settings.aiEnabled else { return }
         // Before the window takes anything: the app in front now is the quote's source.
-        contextCoordinator.windowSnapshot = ContextAppReader.snapshot(
-            of: NSWorkspace.shared.frontmostApplication)
+        // Tinycast frontmost means a handoff or re-show, so the earlier snapshot survives.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let target =
+            frontmost?.processIdentifier == NSRunningApplication.current.processIdentifier
+            ? nil : frontmost
+        if let snapshot = ContextAppReader.snapshot(of: target) {
+            contextCoordinator.windowSnapshot = snapshot
+        } else if contextCoordinator.windowSnapshot == nil,
+            let carried = core.paletteContextSnapshot()
+        {
+            contextCoordinator.windowSnapshot = carried
+        }
         prepareForChat()
         contextCoordinator.enteredWindow(chat: chats.window)
         guard !window.focus() else { return }
@@ -294,8 +303,15 @@ final class AIChatCoordinator {
             if address.slug == nil,
                 let (token, rest) = contextCoordinator.contextToken(in: address.rest)
             {
-                return contextCoordinator.sendWithToken(
+                // A `@`-context command stages for review and keeps the draft; never auto-sends.
+                let staged = contextCoordinator.prepareWithToken(
                     token, rest: rest, in: chat, snapshot: appSnapshot)
+                if chat === chats.window {
+                    chat.draft = staged
+                } else {
+                    core.palette.query = staged
+                }
+                return false
             }
             let sent = chat.send(
                 address.rest, using: try provider(for: chat, scopedTo: address.slug),

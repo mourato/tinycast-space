@@ -1,20 +1,32 @@
+import AppKit
 import Foundation
 
 /// AppleScript against Helium, off-main, returning Sendable values like SystemActionRunner.
 enum ContextBrowserRunner {
+    /// Every tab of every normal window, front to back, plus whether the front window is private.
+    struct TabList: Sendable {
+        let tabs: [ContextBrowser.BrowserTab]
+        let frontIsPrivate: Bool
+    }
+
+    /// Never launches Helium to ask it: a listing with it absent is an empty answer, not a launch.
+    static func isHeliumRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == ContextBrowser.heliumBundleID && !$0.isTerminated
+        }
+    }
+
     /// Every tab of every normal window, front to back; private windows never listed.
-    static func listTabs() async -> Result<[ContextBrowser.BrowserTab], ContextBrowser.ReadFailure> {
+    static func listTabs() async -> Result<TabList, ContextBrowser.ReadFailure> {
+        guard isHeliumRunning() else { return .failure(.noSource) }
         let rows = await runList(script: listScript())
         switch rows {
         case .failure(let failure): return .failure(failure)
         case .success(let rows):
-            let tabs = rows.compactMap { fields -> ContextBrowser.BrowserTab? in
-                guard fields.count >= 5 else { return nil }
-                return ContextBrowser.tab(
-                    id: fields[0], windowID: fields[1], title: fields[3], url: fields[4],
-                    isActive: fields[2] == "1")
-            }
-            return .success(tabs)
+            return .success(
+                TabList(
+                    tabs: ContextBrowser.tabs(from: rows),
+                    frontIsPrivate: ContextBrowser.frontIsPrivate(rows: rows)))
         }
     }
 
@@ -22,6 +34,7 @@ enum ContextBrowserRunner {
     static func readTab(
         id: String, windowID: String, expectedURL: String
     ) async -> Result<ContextBrowser.PageRead, ContextBrowser.ReadFailure> {
+        guard isHeliumRunning() else { return .failure(.noSource) }
         let result = await runScalar(script: readScript(tabID: id, windowID: windowID))
         switch result {
         case .failure(let failure): return .failure(failure)
@@ -49,7 +62,7 @@ enum ContextBrowserRunner {
         tell application id \(ContextBrowser.appleScriptLiteral(ContextBrowser.heliumBundleID))
         set out to {}
         repeat with w in windows
-        if mode of w is not "incognito" then
+        set wmode to mode of w
         try
         set activeID to id of active tab of w
         on error
@@ -63,9 +76,8 @@ enum ContextBrowserRunner {
         else
         set flag to "0"
         end if
-        set end of out to {tid, wid, flag, title of t, URL of t}
+        set end of out to {tid, wid, flag, title of t, URL of t, wmode}
         end repeat
-        end if
         end repeat
         return out
         end tell
@@ -125,13 +137,19 @@ enum ContextBrowserRunner {
                 return .failure(mapError(errorInfo))
             }
             var rows: [[String]] = []
-            for index in 1...max(result.numberOfItems, 0) {
-                guard let row = result.atIndex(index) else { continue }
-                var fields: [String] = []
-                for field in 1...max(row.numberOfItems, 0) {
-                    fields.append(row.atIndex(field)?.stringValue ?? "")
+            let rowCount = result.numberOfItems
+            if rowCount > 0 {
+                for index in 1...rowCount {
+                    guard let row = result.atIndex(index) else { continue }
+                    var fields: [String] = []
+                    let fieldCount = row.numberOfItems
+                    if fieldCount > 0 {
+                        for field in 1...fieldCount {
+                            fields.append(row.atIndex(field)?.stringValue ?? "")
+                        }
+                    }
+                    rows.append(fields)
                 }
-                rows.append(fields)
             }
             return .success(rows)
         }.value

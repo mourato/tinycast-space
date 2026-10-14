@@ -3,12 +3,17 @@ import SwiftUI
 /// What Quick AI and AI Chat may quote, and when they may stage it unasked.
 struct ContextSettingsView: View {
     @Environment(AppSettings.self) private var appSettings
+    @Environment(AIContextCoordinator.self) private var contextCoordinator
 
     var body: some View {
         @Bindable var settings = appSettings
         return Form {
             Section {
-                Toggle(isOn: $settings.contextAppEnabled) {
+                Toggle(
+                    isOn: Binding(
+                        get: { settings.contextAppEnabled },
+                        set: { contextCoordinator.setAppEnabled($0) })
+                ) {
                     SettingsFeatureToggleLabel(
                         anchor: .contextApplication, title: "Enable app context",
                         subtitle: "Let chats quote the front app's selected or visible text.")
@@ -20,6 +25,23 @@ struct ContextSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .disabled(!settings.contextAppEnabled)
+                if settings.contextAppEnabled, !Permissions.isAccessibilityTrusted() {
+                    LabeledContent {
+                        Button("Grant Access…") { Permissions.openAccessibilitySettings() }
+                    } label: {
+                        HStack(alignment: .center, spacing: Theme.Spacing.lg) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .frame(width: SettingsListMetrics.iconSize)
+                            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                                Text("App quoting needs Accessibility access")
+                                    .foregroundStyle(.orange)
+                                Text("Without the grant there is nothing to attach.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
             } header: {
                 SettingsSectionHeader(.contextApplication)
             } footer: {

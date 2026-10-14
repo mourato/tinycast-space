@@ -19,13 +19,18 @@ struct ContextTests {
         defaultsCaptureNothing()
         selectionPrecedence()
         enabledGating()
+        sourceDisablesGateEveryPath()
         sourceRanking()
         payloadComposition()
+        truncationPropagation()
         browserLookup()
         literalEscaping()
         tabValidation()
+        tabListParsing()
         pageReadParsing()
+        originStripping()
         staleCaptureBoundaries()
+        generationBoundaries()
         priorityNormalization()
 
         print("\(passes) passed, \(failures) failed")
@@ -117,6 +122,34 @@ struct ContextTests {
             "tabs need the browser master")
     }
 
+    static func sourceDisablesGateEveryPath() {
+        var options = ContextPolicy.Options()
+        options.appEnabled = true
+        options.browserEnabled = true
+        options.autoAttachApp = true
+        options.autoAttachBrowser = true
+        var appsOff = options
+        appsOff.enabledSources.remove(.apps)
+        expect(
+            !ContextPolicy.canCaptureApp(options: appsOff, aiEnabled: true),
+            "a switched-off Apps source cannot capture")
+        expect(
+            !ContextPolicy.canAutoAttachApp(options: appsOff, aiEnabled: true),
+            "a switched-off Apps source cannot auto-attach")
+        var tabsOff = options
+        tabsOff.enabledSources.remove(.browserTabs)
+        expect(
+            !ContextPolicy.canCaptureBrowser(options: tabsOff, aiEnabled: true),
+            "a switched-off Browser tabs source cannot capture")
+        expect(
+            !ContextPolicy.canAutoAttachBrowser(options: tabsOff, aiEnabled: true),
+            "a switched-off Browser tabs source cannot auto-attach")
+        expect(
+            ContextPolicy.canCaptureApp(options: options, aiEnabled: true)
+                && ContextPolicy.canCaptureBrowser(options: options, aiEnabled: true),
+            "enabled sources still capture under their masters")
+    }
+
     static func sourceRanking() {
         let options = ContextPolicy.Options()
         let ordered = ContextPolicy.orderedSources(options: options, activeSource: nil)
@@ -193,6 +226,27 @@ struct ContextTests {
         expect(!forged.name.isEmpty && forged.document.data.count > 0, "a payload always names itself")
     }
 
+    static func truncationPropagation() {
+        let short = ContextPolicy.ResolvedBody(text: "hello", usedSelectionInsteadOfFull: false)
+        let cutUpstream = ContextPolicy.compose(
+            source: .browserTabs, title: "Page", origin: "https://example.com/",
+            body: short, includeOrigin: true, upstreamTruncated: true)
+        let cutText = String(data: cutUpstream.document.data, encoding: .utf8) ?? ""
+        expect(cutUpstream.isPartial, "an upstream cut stages as partial")
+        expect(cutText.contains("Truncated"), "an upstream cut says it is cut")
+        let anonymous = ContextPolicy.compose(
+            source: .browserTabs, title: "Page", origin: "https://example.com/",
+            body: short, includeOrigin: false, upstreamTruncated: true)
+        let anonymousText = String(data: anonymous.document.data, encoding: .utf8) ?? ""
+        expect(!anonymousText.contains("example.com"), "withheld origin leaves every line")
+        expect(anonymousText.contains("Page"), "withheld origin still names the title")
+        let appQuote = ContextPolicy.compose(
+            source: .apps, title: "Notes", origin: "com.example.notes", body: short,
+            includeOrigin: true)
+        let appText = String(data: appQuote.document.data, encoding: .utf8) ?? ""
+        expect(appText.contains("focused element excerpt"), "an app quote says what it is")
+    }
+
     static func browserLookup() {
         expect(
             ContextBrowser.isSupported(bundleID: "net.imput.helium"), "helium is supported")
@@ -237,6 +291,35 @@ struct ContextTests {
             "a tab without a window never lists")
     }
 
+    static func tabListParsing() {
+        expect(ContextBrowser.tabs(from: []).isEmpty, "an empty list parses to no tabs")
+        expect(!ContextBrowser.frontIsPrivate(rows: []), "an empty list is not a private front")
+        let short: [[String]] = [["7", "3", "1", "T"]]
+        expect(ContextBrowser.tabs(from: short).isEmpty, "a short row never counts")
+        let normal: [[String]] = [
+            ["7", "3", "1", "Title", "https://example.com/", "normal"],
+            ["8", "3", "0", "Other", "https://example.com/o", "normal"],
+        ]
+        let parsed = ContextBrowser.tabs(from: normal)
+        expect(parsed.count == 2, "normal rows parse")
+        expect(parsed.first?.isActive == true, "the front window's pick stays active")
+        expect(!ContextBrowser.frontIsPrivate(rows: normal), "a normal front is not private")
+        let privateFront: [[String]] = [
+            ["9", "4", "1", "Secret", "https://example.com/s", "incognito"],
+            ["7", "3", "1", "Title", "https://example.com/", "normal"],
+        ]
+        expect(
+            ContextBrowser.tabs(from: privateFront).count == 1,
+            "private windows never list, lower normal windows still do")
+        expect(
+            ContextBrowser.frontIsPrivate(rows: privateFront),
+            "a private front window reports private")
+        let legacy: [[String]] = [["7", "3", "1", "Title", "https://example.com/"]]
+        expect(
+            ContextBrowser.tabs(from: legacy).count == 1,
+            "five-field rows without a mode still parse")
+    }
+
     static func pageReadParsing() {
         let json = """
             {"t":"Title","u":"https://example.com/a","s":"sel","b":"body text"}
@@ -264,9 +347,20 @@ struct ContextTests {
             "{\"t\":\"T\",\"u\":\"https://example.com/\",\"s\":\"\",\"b\":\"\(big)\"}")
         expect(
             capped?.body.count == ContextBrowser.maxFieldChars, "fields stay bounded")
+        expect(capped?.isTruncated == true, "a capped field reports its cut")
+        let reported = ContextBrowser.parsePageRead(
+            "{\"t\":\"T\",\"u\":\"https://example.com/\",\"s\":\"\",\"b\":\"short\",\"bl\":9000}")
+        expect(reported?.isTruncated == true, "a longer full length reports its cut")
+        let whole = ContextBrowser.parsePageRead(
+            "{\"t\":\"T\",\"u\":\"https://example.com/\",\"s\":\"\",\"b\":\"short\",\"bl\":5}")
+        expect(whole?.isTruncated == false, "a short read stages as whole")
+    }
+
+    static func originStripping() {
         expect(
-            ContextBrowser.sanitizedOrigin(url: "https://example.com/a#frag") == "https://example.com/a",
-            "origins drop fragments")
+            ContextBrowser.sanitizedOrigin(url: "https://example.com/a?token=secret#frag")
+                == "https://example.com/a",
+            "origins drop queries, credentials and fragments")
     }
 
     static func staleCaptureBoundaries() {
@@ -302,6 +396,30 @@ struct ContextTests {
             !ContextPolicy.shouldPublish(
                 ticket: ticket, latest: ticket, latestCancelled: false, captureAllowed: false),
             "switching capture off stops the publish")
+    }
+
+    static func generationBoundaries() {
+        let first = ContextPolicy.CaptureTicket(
+            operationID: UUID(), chatID: UUID(), sourceKey: "tab:1/2", generation: 3,
+            source: .browserTabs)
+        expect(
+            ContextPolicy.shouldPublish(
+                ticket: first, latest: first, latestCancelled: false, captureAllowed: true,
+                currentGeneration: 3),
+            "a capture publishes in its own staging generation")
+        expect(
+            !ContextPolicy.shouldPublish(
+                ticket: first, latest: first, latestCancelled: false, captureAllowed: true,
+                currentGeneration: 4),
+            "a send or clear stops a late capture")
+        let otherSource = ContextPolicy.CaptureTicket(
+            operationID: first.operationID, chatID: first.chatID, sourceKey: first.sourceKey,
+            generation: first.generation, source: .apps)
+        expect(
+            !ContextPolicy.shouldPublish(
+                ticket: first, latest: otherSource, latestCancelled: false,
+                captureAllowed: true),
+            "an app ticket never validates a browser slot")
     }
 
     static func priorityNormalization() {

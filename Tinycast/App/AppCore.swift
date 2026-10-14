@@ -233,6 +233,9 @@ final class AppCore {
         chats: aiChats, settings: settings, appIndex: appIndex,
         paletteCoordinator: paletteCoordinator, settingsCoordinator: settingsCoordinator,
         core: self)
+    /// App, tab and picker context both chat surfaces share; owned here, never in a coordinator.
+    @ObservationIgnored private(set) lazy var aiContextCoordinator = AIContextCoordinator(
+        settings: settings, chatCoordinator: aiChatCoordinator, core: self)
     @ObservationIgnored private(set) lazy var quickAICoordinator = QuickAICoordinator(
         chats: aiChats, settings: settings, palette: palette,
         paletteCoordinator: paletteCoordinator, core: self)
@@ -304,6 +307,8 @@ final class AppCore {
             installedAI.launchSettings = { [aiSettings] in aiSettings.launch(for: $0) }
             chatGPTSubscription.launchSettings = { [aiSettings] in aiSettings.launch(for: .codex) }
             aiChatCoordinator.applyEnabled()
+            // Owned here, passive until the Context switches say otherwise; defaults read nothing.
+            _ = aiContextCoordinator
             mcpCoordinator.applyEnabled()
             customQuickActions.onChange = { [weak self] _ in
                 self?.quickActionCoordinator.applyCustomQuickActionsPresence()
@@ -717,13 +722,21 @@ final class AppCore {
             })
         track({ _ = $0.notesEnabled }, reproject: { $0.notesCoordinator.applyEnabled() })
         track({ _ = $0.aiEnabled }, reproject: { $0.aiChatCoordinator.applyEnabled() })
-        // Capture reads stop with their masters; staged quotes stay, owned by the reader.
+        // Every switch that admits capture re-projects: in-flight reads stop, spent quotes leave.
         track(
             {
+                _ = $0.aiEnabled
                 _ = $0.contextAppEnabled
                 _ = $0.contextBrowserEnabled
+                _ = $0.contextAutoAttachApp
+                _ = $0.contextAutoAttachBrowser
+                _ = $0.contextSourceBrowserTabsEnabled
+                _ = $0.contextSourceAppsEnabled
+                _ = $0.contextSourceActionsEnabled
+                _ = $0.contextSourceIntegrationsEnabled
+                _ = $0.contextSourceToolsEnabled
             },
-            reproject: { $0.aiChatCoordinator.contextCoordinator.cancelAllCaptures() })
+            reproject: { $0.aiContextCoordinator.optionsDidChange() })
         track(
             { _ = $0.dictationIdleRelease },
             reproject: {

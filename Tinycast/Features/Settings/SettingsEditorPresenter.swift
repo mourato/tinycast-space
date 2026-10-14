@@ -391,6 +391,7 @@ extension View {
             .environment(core.aiSettings)
             .environment(core.mcpSettings)
             .environment(core.mcpCoordinator)
+            .environment(core.aiContextCoordinator)
             .environment(core.quickActionSettings)
             .environment(core.customQuickActions)
             .environment(core.chatGPTSubscription)
