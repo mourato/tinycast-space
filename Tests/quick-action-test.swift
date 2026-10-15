@@ -24,6 +24,10 @@ struct QuickActionTests {
         customActionsKeepTheBoundary()
         customActionsSurviveARelaunch()
         customActionsNeverWriteOverWhatTheyCouldNotRead()
+        captureShowsProgressBeforeReading()
+        captureKeepsPageResultsReadable()
+        captureErrorsStayInTheirWindow()
+        staleCapturesNeverReachTheWrongChat()
 
         print("\(passes) passed, \(failures) failed")
         if failures > 0 { exit(1) }
@@ -325,5 +329,147 @@ struct QuickActionTests {
         }
         expect(writeFailure == .storageUnavailable, "a write that cannot land is reported")
         expect(unwritable.actions.isEmpty, "and the list never moved ahead of the file")
+    }
+
+    /// Quick AI opens before the read, so its progress is already on screen when capture blocks.
+    static func captureShowsProgressBeforeReading() {
+        expect(
+            QuickActionCapturePlan.previews(
+                replacesOnly: QuickActionSettings().replacesOnly(.builtIn(.summarize))),
+            "Summarize always previews, so its progress shows before the read")
+        expect(
+            QuickActionCapturePlan.previews(
+                replacesOnly: QuickActionSettings().replacesOnly(.builtIn(.rewrite))),
+            "a writing action previews until it is set to Replace only")
+        var replacing = QuickActionSettings()
+        replacing.setReplacesOnly(true, for: .rewrite)
+        expect(
+            !QuickActionCapturePlan.previews(
+                replacesOnly: replacing.replacesOnly(.builtIn(.rewrite))),
+            "a Replace only writing action stays silent")
+        let custom = CustomQuickAction(
+            name: "Terse", instructions: "Trim.", previewsResult: false)
+        expect(
+            !QuickActionCapturePlan.previews(
+                replacesOnly: QuickActionSettings().replacesOnly(.custom(custom))),
+            "a custom Replace only stays silent too")
+    }
+
+    /// A page has no selection to write into, so it is always read, even for Replace only.
+    static func captureKeepsPageResultsReadable() {
+        expect(
+            !QuickActionCapturePlan.writesBack(replacesSelection: true, fromPage: true),
+            "a page result is never written back")
+        expect(
+            QuickActionCapturePlan.writesBack(replacesSelection: true, fromPage: false),
+            "a selection keeps its write-back")
+        expect(
+            !QuickActionCapturePlan.writesBack(replacesSelection: false, fromPage: false),
+            "Summarize never writes back")
+        expect(
+            !QuickActionCapturePlan.silently(writesBack: false, replacesOnly: true),
+            "a page result opens Quick AI even for Replace only")
+        expect(
+            QuickActionCapturePlan.silently(writesBack: true, replacesOnly: true),
+            "Replace only with a target stays silent")
+        expect(
+            !QuickActionCapturePlan.silently(writesBack: true, replacesOnly: false),
+            "a preview is never silent")
+        expect(
+            QuickActionCapturePlan.sourceName(fromPage: true) == "Page text",
+            "a page rides under its own name")
+        expect(
+            QuickActionCapturePlan.sourceName(fromPage: false) == "Selected text",
+            "a selection keeps its name")
+    }
+
+    /// A prepared Quick AI keeps every capture failure; silence keeps the old pill and dialog.
+    static func captureErrorsStayInTheirWindow() {
+        let failures: [QuickActionFailure] = [
+            .needsAccessibility, .noTarget, .unreadableApp("Chrome"), .noSelection, .tooLong
+        ]
+        for failure in failures {
+            expect(
+                QuickActionCapturePlan.destination(for: failure, previews: true) == .chat,
+                "a prepared capture keeps its failure in Quick AI")
+        }
+        expect(
+            QuickActionCapturePlan.destination(for: .needsAccessibility, previews: false)
+                == .dialog,
+            "a silent permission failure still earns its dialog")
+        for failure in failures where failure != .needsAccessibility {
+            expect(
+                QuickActionCapturePlan.destination(for: failure, previews: false) == .pill,
+                "a silent failure stays a fading pill")
+        }
+        expect(
+            QuickActionCapturePlan.destinationForPageFailure(previews: true) == .chat,
+            "a page read failure stays in Quick AI")
+    }
+
+    /// A capture that outlives its chat, window or switch must stage nothing and reopen nothing.
+    static func staleCapturesNeverReachTheWrongChat() {
+        let session = UUID()
+        let prepared = QuickActionCapturePlan.ChatSnapshot(
+            sessionID: session, stagingGeneration: 3, messageCount: 0, isStreaming: false,
+            pendingAttachmentCount: 0)
+        func ui(
+            mine: Int = 7, generation: Int = 7, cancelled: Bool = false,
+            showing: Bool = true, ai: Bool = true, quickActions: Bool = true
+        ) -> QuickActionCapturePlan.UIState {
+            QuickActionCapturePlan.UIState(
+                mine: mine, generation: generation, cancelled: cancelled,
+                paletteShowingAI: showing, aiEnabled: ai, quickActionsEnabled: quickActions)
+        }
+        expect(
+            QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(), previews: true),
+            "an untouched prepared chat still takes its capture")
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(cancelled: true), previews: true),
+            "a cancelled capture stages nothing")
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(generation: 8), previews: true),
+            "a superseded capture stages nothing")
+        let newChat = QuickActionCapturePlan.ChatSnapshot(
+            sessionID: UUID(), stagingGeneration: 3, messageCount: 0, isStreaming: false,
+            pendingAttachmentCount: 0)
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: newChat, ui: ui(), previews: true),
+            "a new chat never receives the old capture")
+        let restaged = QuickActionCapturePlan.ChatSnapshot(
+            sessionID: session, stagingGeneration: 4, messageCount: 0, isStreaming: false,
+            pendingAttachmentCount: 1)
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: restaged, ui: ui(), previews: true),
+            "a conflicting attachment is never consumed by the capture")
+        let answering = QuickActionCapturePlan.ChatSnapshot(
+            sessionID: session, stagingGeneration: 3, messageCount: 1, isStreaming: true,
+            pendingAttachmentCount: 0)
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: answering, ui: ui(), previews: true),
+            "a conflicting send is never answered over by the capture")
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(showing: false), previews: true),
+            "a dismissed window is never reopened by the capture")
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(ai: false), previews: true),
+            "a disabled chat never receives the capture")
+        expect(
+            !QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(quickActions: false),
+                previews: true),
+            "a disabled feature drops its capture")
+        expect(
+            QuickActionCapturePlan.allowsStaging(
+                prepared: prepared, current: prepared, ui: ui(showing: false), previews: false),
+            "silence needs no window, so a hidden palette does not stop it")
     }
 }
