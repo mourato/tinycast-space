@@ -10,6 +10,8 @@ final class PaletteCoordinator {
     private let menuSearch: MenuSearchSession
     private let windowSwitch: WindowSwitchSession
     private let windowController: PaletteWindowController
+    /// Every hide retires prepared captures, even when the same chat reopens.
+    private(set) var dismissalGeneration = 0
     /// Features whose launcher rows are read from outside Tinycast re-read them on each open.
     var onLauncherShown: (() -> Void)?
     /// Screens that snapshot other apps re-read them on every open, a restored one included.
@@ -131,6 +133,7 @@ final class PaletteCoordinator {
     }
 
     func hidePalette(restoreFocus: Bool = true) {
+        dismissalGeneration += 1
         menuSearch.reset()
         windowSwitch.reset()
         windowController.hide(restoreFocus: restoreFocus)

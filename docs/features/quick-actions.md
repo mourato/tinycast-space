@@ -63,8 +63,10 @@ nothing and says so with a HUD.
   stages nothing: cancellation, a new chat, a hidden or handed-off conversation, a conflicting send
   or attachment, or either switch going off all drop it, and a dismissed window is never reopened.
   `QuickActionCoordinator.preparedChat` is the single predicate, read off the chat's own session,
-  staging generation, transcript, attachments and streaming state. A dropped capture also clears its
-  gathering notice, so the next summon never explains work that never happened.
+  staging generation, the palette's dismissal generation, transcript, attachments and streaming
+  state. Every hide moves that dismissal on, so reopening the same empty chat still drops the old
+  capture. A dropped capture also clears its gathering notice, so the next summon never explains
+  work that never happened.
 - **A browser page stands in for a missing selection only where browser context is on.** When no
   selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
   tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
@@ -286,7 +288,8 @@ failure handler, so automatic expansion stays silent as before.
 - Set a writing action to Replace only and run it in a browser with no selection: the pill shows
   first, then Quick AI opens with the gathering notice, and a page failure reports there.
 - Start a preview action, then hide the palette or start a new chat before capture lands: nothing
-  is staged, sent or reported, and the window stays as the reader left it.
+  is staged, sent or reported, and the window stays as the reader left it. Hiding then reopening
+  the same empty chat drops the old capture the same way, while a later run still starts.
 - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
 - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
 - Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.

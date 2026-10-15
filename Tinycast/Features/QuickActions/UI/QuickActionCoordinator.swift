@@ -374,6 +374,7 @@ final class QuickActionCoordinator {
     private struct PreparedCapture {
         let sessionID: UUID
         let stagingGeneration: Int
+        let dismissalGeneration: Int
     }
 
     private static let gatheringMessage = "Gathering selected text…"
@@ -386,7 +387,8 @@ final class QuickActionCoordinator {
         // Unkeyed: the borrowed ⌘C activates the retained app, which would hide a key window.
         paletteCoordinator.showPalette(mode: .ai, takingKey: false)
         return PreparedCapture(
-            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration)
+            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
+            dismissalGeneration: paletteCoordinator.dismissalGeneration)
     }
 
     /// The prepared chat while it is still the one on screen and empty; anything else drops it.
@@ -396,6 +398,7 @@ final class QuickActionCoordinator {
         let chat = core.aiChatCoordinator.chats.quickAI
         guard chat.session.id == prepared.sessionID,
             chat.stagingGeneration == prepared.stagingGeneration,
+            paletteCoordinator.dismissalGeneration == prepared.dismissalGeneration,
             !chat.isStreaming,
             chat.session.messages.isEmpty,
             chat.pendingAttachments.isEmpty,
