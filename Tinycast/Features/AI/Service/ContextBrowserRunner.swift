@@ -58,7 +58,7 @@ enum ContextBrowserRunner {
             if text == "NOTFOUND" || text.isEmpty { return .failure(.staleTab) }
             if text == "INCOGNITO" { return .failure(.restrictedPage) }
             if text == "LOADING" { return .failure(.loading) }
-            guard text.hasPrefix("{"), let read = ContextBrowser.parsePageRead(text) else {
+            guard let read = ContextBrowser.parsePageRead(text) else {
                 return .failure(.restrictedPage)
             }
             guard ContextBrowser.verified(read, expectedURL: tab.url) else {

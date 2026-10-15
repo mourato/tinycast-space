@@ -466,6 +466,12 @@ struct ContextTests {
             ContextBrowser.parsePageRead("{\"e\":\"blocked\"}") == nil,
             "a page error parses as a failure")
         expect(ContextBrowser.parsePageRead("not json") == nil, "garbage never parses")
+        let arcWrapped = ContextBrowser.parsePageRead(
+            "\"{\\\"t\\\":\\\"T\\\",\\\"u\\\":\\\"https://example.com/a\\\",\\\"b\\\":\\\"hi\\\"}\"")
+        expect(arcWrapped?.body == "hi", "Arc's JSON-encoded reader report parses like a raw one")
+        expect(
+            ContextBrowser.parsePageRead("\"plain\"") == nil,
+            "a wrapped non-object never parses")
         expect(
             ContextBrowser.parsePageRead("{\"t\":\"x\"}") == nil,
             "a read without a URL never parses")
