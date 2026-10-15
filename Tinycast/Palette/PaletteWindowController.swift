@@ -59,42 +59,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         Signposts.interval("PaletteWindowController.show") {
-            isPoppedToRoot = false
-            core.palette.focusToken = UUID()
-            // Summoned over one of our own windows: there is no external paste or focus target.
-            let frontmost = NSWorkspace.shared.frontmostApplication
-            let ownPID = NSRunningApplication.current.processIdentifier
-            // Kept across mode switches: a re-show while our panel holds key must not clear it.
-            if let frontmost, frontmost.processIdentifier != ownPID {
-                previousApp = frontmost
-            } else if previousApp?.processIdentifier == ownPID {
-                previousApp = nil
-            }
-            // Recorded even when another app is frontmost: our panels take key without activating.
-            let key = NSApp.keyWindow
-            // A mode switch re-shows the palette while it holds key; keep what it recorded then.
-            if key !== panel { previousOwnWindow = key }
-            // Once per summon, and from `previousApp`, so the label names the paste target.
-            core.palette.pasteTarget = PasteTarget(app: previousApp)
-            let panel = ensurePanel()
-            // Undo a sink a modal left behind, unless one is still up.
-            if NSApp.modalWindow == nil { panel.level = .palette }
-            // Open disarmed: a pointer already over a row must not highlight it.
-            core.palette.disarmHoverHighlight(pointerAt: NSEvent.mouseLocation)
-            // Re-resolve the anchor now, then hold it so resizes never move the window.
-            anchor = nil
-            // Size and place before ordering front, so a compact summon never flashes.
-            positionPanel(panel, collapsed: core.paletteCoordinator.paletteIsCollapsed)
-            // Flush first-mount layout off-screen, so the safe-area settle isn't visible.
-            panel.contentView?.layoutSubtreeIfNeeded()
-            core.inputSourceSwitcher.beginSession(
-                preferredInputSourceID: core.settings.autoSwitchInputSourceID)
-            // Events go stale while the palette is closed, and the countdown only ticks while up.
-            core.calendarCoordinator.paletteDidShow()
-            core.palette.noteVisible(true)
-            core.clipboardStore.setTextSearchActive(true)
-            // Only while we are on screen: a system-wide tap has no business outliving the window.
-            commandEscapeTap.enable()
+            let panel = prepareForShow()
             // Non-activating, so summoning never raises our own aux windows behind it.
             panel.makeKeyAndOrderFront(nil)
             panel.orderFrontRegardless()
@@ -104,6 +69,63 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
                 panel.makeKeyAndOrderFront(nil)
             }
         }
+    }
+
+    /// Visible but not key, so a borrowed ⌘C keeps its target while progress shows.
+    func showWithoutTakingKey() {
+        Signposts.interval("PaletteWindowController.show") {
+            prepareForShow().orderFrontRegardless()
+        }
+    }
+
+    /// Keys the already-visible palette once admitted work finishes; never summons.
+    func claimKey() {
+        guard let panel, panel.isVisible else { return }
+        panel.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { [weak panel] in
+            guard let panel, panel.isVisible, !panel.isKeyWindow else { return }
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func prepareForShow() -> PalettePanel {
+        isPoppedToRoot = false
+        core.palette.focusToken = UUID()
+        // Summoned over one of our own windows: there is no external paste or focus target.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let ownPID = NSRunningApplication.current.processIdentifier
+        // Kept across mode switches: a re-show while our panel holds key must not clear it.
+        if let frontmost, frontmost.processIdentifier != ownPID {
+            previousApp = frontmost
+        } else if previousApp?.processIdentifier == ownPID {
+            previousApp = nil
+        }
+        // Recorded even when another app is frontmost: our panels take key without activating.
+        let key = NSApp.keyWindow
+        // A mode switch re-shows the palette while it holds key; keep what it recorded then.
+        if key !== panel { previousOwnWindow = key }
+        // Once per summon, and from `previousApp`, so the label names the paste target.
+        core.palette.pasteTarget = PasteTarget(app: previousApp)
+        let panel = ensurePanel()
+        // Undo a sink a modal left behind, unless one is still up.
+        if NSApp.modalWindow == nil { panel.level = .palette }
+        // Open disarmed: a pointer already over a row must not highlight it.
+        core.palette.disarmHoverHighlight(pointerAt: NSEvent.mouseLocation)
+        // Re-resolve the anchor now, then hold it so resizes never move the window.
+        anchor = nil
+        // Size and place before ordering front, so a compact summon never flashes.
+        positionPanel(panel, collapsed: core.paletteCoordinator.paletteIsCollapsed)
+        // Flush first-mount layout off-screen, so the safe-area settle isn't visible.
+        panel.contentView?.layoutSubtreeIfNeeded()
+        core.inputSourceSwitcher.beginSession(
+            preferredInputSourceID: core.settings.autoSwitchInputSourceID)
+        // Events go stale while the palette is closed, and the countdown only ticks while up.
+        core.calendarCoordinator.paletteDidShow()
+        core.palette.noteVisible(true)
+        core.clipboardStore.setTextSearchActive(true)
+        // Only while we are on screen: a system-wide tap has no business outliving the window.
+        commandEscapeTap.enable()
+        return panel
     }
 
     // Isolated so teardown may touch the main-actor monitor; the block is already weak.

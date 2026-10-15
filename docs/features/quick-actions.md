@@ -33,8 +33,11 @@ nothing and says so with a HUD.
   `QuickActionCoordinator.run(_:)`, which captures the target **before** hiding the palette. An
   external app remains the usual target; a selected passage in the Notes editor is captured directly
   from its text view. A preview action prepares its Quick AI conversation before the read starts —
-  a fresh chat saying it is gathering the text — so the window is already open while capture blocks.
-  The borrowed ⌘C still posts to the retained app's process, never to the palette.
+  a fresh chat saying it is gathering the text — so the window is already visible while capture
+  blocks. It opens without taking key: the borrowed ⌘C activates the retained app, and a key
+  window would resign and dismiss itself there. When the admitted capture lands or fails, the
+  coordinator claims key for that same window. The borrowed ⌘C still posts to the retained app's
+  process, never to the palette.
 - **Enabling is consent, and it is the only place Accessibility is requested.** The toggle confirms
   through `DialogController` first and then calls `Permissions.ensureAccessibility()`. Everything else
   uses `isAccessibilityTrusted()` and degrades to a HUD.
@@ -59,7 +62,9 @@ nothing and says so with a HUD.
   is refused the same way, because two reads race for one selection. A capture that outlives its run
   stages nothing: cancellation, a new chat, a hidden or handed-off conversation, a conflicting send
   or attachment, or either switch going off all drop it, and a dismissed window is never reopened.
-  `QuickActionCapturePlan.allowsStaging` is the single predicate.
+  `QuickActionCoordinator.preparedChat` is the single predicate, read off the chat's own session,
+  staging generation, transcript, attachments and streaming state. A dropped capture also clears its
+  gathering notice, so the next summon never explains work that never happened.
 - **A browser page stands in for a missing selection only where browser context is on.** When no
   selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
   tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
@@ -203,7 +208,8 @@ A failed reply keeps the chat's usual `failed` state and no button. Cancelling i
 behaves as cancelling any reply does.
 
 Quick AI has no progress pill of its own. The streaming reply is the progress. While a preview
-capture is still in flight, the empty chat says it is gathering the text.
+capture is still in flight, the empty chat says it is gathering the text. A gathering notice is
+progress, not something to fix, so the empty state offers no Configure button for it.
 
 ## Reading the selection
 
@@ -274,7 +280,8 @@ failure handler, so automatic expansion stays silent as before.
 - Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
   text untouched.
 - Press Summarize with text selected: Quick AI opens at once saying it is gathering the text, then
-  streams the summary. With no selection in a browser it reads the page under the same notice, and
+  streams the summary. The window takes key only once the text lands or fails, so a borrowed copy
+  in flight never dismisses it. With no selection in a browser it reads the page under the same notice, and
   nothing is typed into the page.
 - Set a writing action to Replace only and run it in a browser with no selection: the pill shows
   first, then Quick AI opens with the gathering notice, and a page failure reports there.
@@ -302,5 +309,6 @@ failure handler, so automatic expansion stays silent as before.
 - Press one in a password field: refused.
 - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
 - Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action
-  persistence and refusal of unreadable storage, and the capture plan: preview routing, the
-  read-only page, error destinations and stale guards).
+  persistence and refusal of unreadable storage, and the capture orchestration itself: a suspended
+  read proving Quick AI opens before capture in the same prepared chat, in-window failures, silent
+  Replace only, stale and conflicting captures dropped without a trace, and the page-text contract).

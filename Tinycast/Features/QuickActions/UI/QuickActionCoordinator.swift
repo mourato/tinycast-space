@@ -210,6 +210,7 @@ final class QuickActionCoordinator {
         running?.cancel()
         running = nil
         core.hideProgress()
+        core.aiChatCoordinator.chats.quickAI.clearProgressNotice()
     }
 
     /// The generation stops a superseded task from clearing the newer handle as it finishes.
@@ -245,11 +246,9 @@ final class QuickActionCoordinator {
             return
         }
         guard !Task.isCancelled else { return }
-        let writesBack = QuickActionCapturePlan.writesBack(
-            replacesSelection: action.replacesSelection, fromPage: false)
-        let silently = QuickActionCapturePlan.silently(
-            writesBack: writesBack, replacesOnly: store.settings.replacesOnly(action))
-        let sourceName = QuickActionCapturePlan.sourceName(fromPage: false)
+        let writesBack = action.replacesSelection
+        let silently = writesBack && store.settings.replacesOnly(action)
+        let sourceName = "Selected text"
         if action.usesTranslationFramework {
             await translate(
                 selection, sourceName: sourceName, action: action, target: target,
@@ -265,9 +264,9 @@ final class QuickActionCoordinator {
         _ action: QuickAction, app: NSRunningApplication?, target: Target
     ) async {
         let replacesOnly = store.settings.replacesOnly(action)
-        var previews = QuickActionCapturePlan.previews(replacesOnly: replacesOnly)
+        var previews = !replacesOnly
         let mine = generation
-        var prepared: QuickActionCapturePlan.ChatSnapshot?
+        var prepared: PreparedCapture?
         if previews {
             guard !Task.isCancelled, mine == generation else { return }
             guard settings.quickActionsEnabled, settings.aiEnabled else { return }
@@ -302,7 +301,11 @@ final class QuickActionCoordinator {
                 case .success(let text): selection = text
                 case .failure(let refusal):
                     guard let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine)
-                    else { return }
+                    else {
+                        dropStaleCapture()
+                        return
+                    }
+                    paletteCoordinator.claimKey()
                     chat.report(refusal.message)
                     return
                 }
@@ -310,30 +313,36 @@ final class QuickActionCoordinator {
             }
         } catch let failure as QuickActionFailure {
             if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
+                paletteCoordinator.claimKey()
                 chat.report(failure.localizedDescription)
                 return
             }
-            if previews { return }
+            if previews {
+                dropStaleCapture()
+                return
+            }
             core.hideProgress()
             guard !Task.isCancelled, mine == generation else { return }
             reportRefusal(failure)
             return
         } catch {
             if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
+                paletteCoordinator.claimKey()
                 chat.report(error.localizedDescription)
                 return
             }
-            if previews { return }
+            if previews {
+                dropStaleCapture()
+                return
+            }
             core.hideProgress()
             guard !Task.isCancelled, mine == generation else { return }
             core.showMessage(error.localizedDescription, tone: .danger)
             return
         }
-        let writesBack = QuickActionCapturePlan.writesBack(
-            replacesSelection: action.replacesSelection, fromPage: fromPage)
-        let silently = QuickActionCapturePlan.silently(
-            writesBack: writesBack, replacesOnly: replacesOnly)
-        let sourceName = QuickActionCapturePlan.sourceName(fromPage: fromPage)
+        let writesBack = action.replacesSelection && !fromPage
+        let silently = writesBack && replacesOnly
+        let sourceName = fromPage ? "Page text" : "Selected text"
         if previews {
             guard let snapshot = prepared else { return }
             if action.usesTranslationFramework {
@@ -361,35 +370,43 @@ final class QuickActionCoordinator {
         }
     }
 
-    private func preparePreview() -> QuickActionCapturePlan.ChatSnapshot {
+    /// What the read must still find: the same chat, empty and unstreamed, still on screen.
+    private struct PreparedCapture {
+        let sessionID: UUID
+        let stagingGeneration: Int
+    }
+
+    private static let gatheringMessage = "Gathering selected text…"
+
+    private func preparePreview() -> PreparedCapture {
         let chat = core.aiChatCoordinator.chats.quickAI
         chat.startNewChat()
         pendingReply = nil
-        chat.report(QuickActionCapturePlan.capturingMessage)
-        paletteCoordinator.showPalette(mode: .ai)
-        return QuickActionCapturePlan.ChatSnapshot(
-            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
-            messageCount: chat.session.messages.count, isStreaming: chat.isStreaming,
-            pendingAttachmentCount: chat.pendingAttachments.count)
+        chat.reportProgress(Self.gatheringMessage)
+        // Unkeyed: the borrowed ⌘C activates the retained app, which would hide a key window.
+        paletteCoordinator.showPalette(mode: .ai, takingKey: false)
+        return PreparedCapture(
+            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration)
     }
 
-    private func preparedChat(
-        matching prepared: QuickActionCapturePlan.ChatSnapshot, mine: Int
-    ) -> AIChatState? {
+    /// The prepared chat while it is still the one on screen and empty; anything else drops it.
+    private func preparedChat(matching prepared: PreparedCapture, mine: Int) -> AIChatState? {
+        guard !Task.isCancelled, mine == generation else { return nil }
+        guard settings.quickActionsEnabled, settings.aiEnabled else { return nil }
         let chat = core.aiChatCoordinator.chats.quickAI
-        let current = QuickActionCapturePlan.ChatSnapshot(
-            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
-            messageCount: chat.session.messages.count, isStreaming: chat.isStreaming,
-            pendingAttachmentCount: chat.pendingAttachments.count)
-        let ui = QuickActionCapturePlan.UIState(
-            mine: mine, generation: generation, cancelled: Task.isCancelled,
-            paletteShowingAI: paletteCoordinator.isShowing(.ai),
-            aiEnabled: settings.aiEnabled, quickActionsEnabled: settings.quickActionsEnabled)
-        guard
-            QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: current, ui: ui, previews: true)
+        guard chat.session.id == prepared.sessionID,
+            chat.stagingGeneration == prepared.stagingGeneration,
+            !chat.isStreaming,
+            chat.session.messages.isEmpty,
+            chat.pendingAttachments.isEmpty,
+            paletteCoordinator.isShowing(.ai)
         else { return nil }
         return chat
+    }
+
+    /// A dropped capture leaves no gathering notice for the next summon to explain.
+    private func dropStaleCapture() {
+        core.aiChatCoordinator.chats.quickAI.clearProgressNotice()
     }
 
     private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
@@ -459,14 +476,18 @@ final class QuickActionCoordinator {
     private func answer(
         _ action: QuickAction, selection: String, sourceName: String, target: Target,
         writesBack: Bool, silently: Bool,
-        prepared: QuickActionCapturePlan.ChatSnapshot? = nil, mine: Int? = nil
+        prepared: PreparedCapture? = nil, mine: Int? = nil
     ) {
         let chat = core.aiChatCoordinator.chats.quickAI
         let isPrepared = prepared != nil && mine != nil
         if isPrepared {
             guard let prepared, let mine, preparedChat(matching: prepared, mine: mine) != nil
-            else { return }
+            else {
+                dropStaleCapture()
+                return
+            }
             pendingReply = nil
+            paletteCoordinator.claimKey()
         } else {
             chat.startNewChat()
             pendingReply = nil
@@ -504,7 +525,7 @@ final class QuickActionCoordinator {
         if !sent {
             chat.onNextReplyEnded = nil
             if isPrepared {
-                if chat.notice == nil { chat.report("\(action.title) didn't start") }
+                if chat.noticeIsProgress { chat.report("\(action.title) didn't start") }
             } else if silently {
                 core.hideProgress()
                 core.showMessage(chat.notice ?? "\(action.title) didn't start", tone: .danger)
@@ -516,12 +537,16 @@ final class QuickActionCoordinator {
     private func translate(
         _ selection: String, sourceName: String, action: QuickAction, target: Target,
         writesBack: Bool, silently: Bool,
-        prepared: QuickActionCapturePlan.ChatSnapshot? = nil, mine: Int? = nil
+        prepared: PreparedCapture? = nil, mine: Int? = nil
     ) async {
         let chat = core.aiChatCoordinator.chats.quickAI
         if let prepared, let mine {
-            guard preparedChat(matching: prepared, mine: mine) != nil else { return }
+            guard preparedChat(matching: prepared, mine: mine) != nil else {
+                dropStaleCapture()
+                return
+            }
             pendingReply = nil
+            paletteCoordinator.claimKey()
         } else {
             chat.startNewChat()
             pendingReply = nil
@@ -534,7 +559,10 @@ final class QuickActionCoordinator {
         do {
             let text = try await TextTranslator.translate(selection, to: language)
             if let prepared, let mine {
-                guard preparedChat(matching: prepared, mine: mine) != nil else { return }
+                guard preparedChat(matching: prepared, mine: mine) != nil else {
+                    dropStaleCapture()
+                    return
+                }
             } else {
                 guard !Task.isCancelled else { return }
             }
@@ -550,6 +578,14 @@ final class QuickActionCoordinator {
                     chatID: chat.session.id, messageID: messageID, action: action, target: target)
             }
         } catch let failure as TextTranslator.Failure where failure.needsDownload {
+            if let prepared, let mine {
+                guard preparedChat(matching: prepared, mine: mine) != nil else {
+                    dropStaleCapture()
+                    return
+                }
+            } else {
+                guard !Task.isCancelled else { return }
+            }
             guard
                 await core.reportFailure(
                     title: "\(languageName) isn’t downloaded yet",
@@ -562,6 +598,13 @@ final class QuickActionCoordinator {
         } catch {
             if silently {
                 core.showMessage(error.localizedDescription, tone: .danger)
+            } else if let prepared, let mine,
+                let failedChat = preparedChat(matching: prepared, mine: mine)
+            {
+                paletteCoordinator.claimKey()
+                failedChat.report(error.localizedDescription)
+            } else if prepared != nil {
+                dropStaleCapture()
             } else {
                 chat.report(error.localizedDescription)
             }

@@ -198,7 +198,8 @@ private struct AIChatView: View {
                 let unavailability = availability()
                 AIEmptyState(
                     message: chat.notice ?? unavailability,
-                    canConfigure: chat.notice != nil || unavailability != nil,
+                    canConfigure: (chat.notice != nil && !chat.noticeIsProgress)
+                        || unavailability != nil,
                     onConfigure: onConfigure)
             } else {
                 ChatTranscriptView(
