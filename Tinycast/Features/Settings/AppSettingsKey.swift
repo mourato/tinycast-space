@@ -100,6 +100,7 @@ enum AppSettingsKey: String, CaseIterable {
     case mcpServers = "mcpServers"
     case quickActionsEnabled = "quickActionsEnabled"
     case quickActionInstructions = "quickActionInstructions"
+    case quickActionReplaceOnly = "quickActionReplaceOnly"
     case quickActionLanguage = "quickActionLanguage"
     case dictationEnabled = "dictationEnabled"
     case dictationMode = "dictationMode"

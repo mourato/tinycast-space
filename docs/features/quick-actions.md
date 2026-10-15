@@ -10,6 +10,10 @@ Grammar, Rewrite, Translate and custom actions write their reply back over the s
 **Replace** button on that reply. Summarize only reads. Translate is the one exception to the model:
 it runs on Apple's translator, which needs no account, and its reply joins the transcript the same way.
 
+Each writing action can instead be set to **Replace only**. Its reply is written back as soon as it
+finishes, and Quick AI never opens: the pill shows progress, and a failure reports in a HUD. Both
+choices sit beside each action in **Settings → Quick Actions**.
+
 Quick Actions depend on AI Chat. With AI Chat switched off, every shortcut and launcher row does
 nothing and says so with a HUD.
 
@@ -35,11 +39,13 @@ nothing and says so with a HUD.
 - **Tinycast is never an event target.** `QuickActionRunner.selection(in:using:)` refuses our own
   bundle identifier, and `TextInjector.targetAcceptsInjection` refuses it again before every event post,
   along with anything raised while Secure Event Input is up. Notes is the narrow in-process exception.
-- **Results open in Quick AI and nowhere else.** `answer` starts a new conversation in
+- **Results open in Quick AI unless the action is Replace only.** `answer` starts a new conversation in
   `AIChatSurfacesState.quickAI`, stages the text as one `text/plain` document, and sends the action's
   title as the turn. Its instructions come from `QuickActionPrompt`, or the reader's override. The turn
-  goes through the chat's own route with no tools and no web search. The reply streams in the palette,
-  and ⌘J hands the conversation to the AI Chat window like any other.
+  goes through the chat's own route with no tools and no web search. By default the reply streams in
+  the palette, and ⌘J hands the conversation to the AI Chat window like any other. A Replace only
+  action keeps the palette shut and shows the pill instead; the conversation is still kept in
+  history, so the reader can open it later.
 - **The text is bounded where it is read, not where it is sent.** The selection or page is capped at
   `QuickActionRunner.maxSelectionBytes` (32 KB), the same ceiling `AIAttachmentBudget` gives a text
   document, so a page that fits the reader fits the request. Chat's own 8,000-character page staging is
@@ -53,6 +59,14 @@ nothing and says so with a HUD.
   selection wins, else its text, capped to `maxSelectionBytes`. **A page result is never written back**:
   `begin` computes `writesBack = !fromPage && action.replacesSelection`, so no Replace button and no
   automatic replacement is offered for it, whatever the action.
+- **Replace only is a per-action choice, and it needs a write-back target.** `QuickActionSettings`
+  keeps the built-in choice, and a custom action keeps its own on its record, so
+  `replacesOnly(_:)` answers for both. A page result has no selection to write into, so it opens Quick
+  AI even when its action is Replace only. The choice is excluded from settings backups, like the
+  Replace choice before it.
+- **Replace only refuses to paste into the wrong app.** A reply that finishes while another app is
+  frontmost is copied to the clipboard and reported in a HUD, never written into that app. The check
+  runs only for an external target; a note still checks its own editor and range.
 - **Only the reply is written back, and only to where the text came from.** The target — the frontmost
   app or the note editor and its range — is captured when the run starts. `replaceReply` writes the last
   reply through `deliver`, and only while `canReplaceReply` finds it still the last message of the same
@@ -60,10 +74,10 @@ nothing and says so with a HUD.
 - **Summarize never writes back.** `BuiltInQuickAction.replacesSelection` is false for it, so its
   reply carries no Replace button and nothing replaces the text. The answer is about the text, and
   replacing the text with it would destroy what the reader selected.
-- **A custom action chooses between Preview and Replace on its record.** Preview shows the reply in
-  Quick AI with a Replace button. Replace writes the reply back as soon as it finishes: `finishedReply`
-  leaves the palette, then calls `deliver`. Tinycast cannot know whether an arbitrary prompt transforms
-  the text or answers a question about it, so Preview stays the default.
+- **Quick AI or Replace only is the reader's call, and Quick AI stays the default.** A Replace only
+  reply is written by `replyEnded`, which calls `writeBack` once the turn ends. Tinycast cannot know
+  whether an arbitrary custom prompt transforms the text or answers a question about it, so a custom
+  action starts in Quick AI.
 - **Translate uses Apple's translator and needs its language installed.** `TextTranslator` runs on
   device. Its reply is recorded whole with `AIChatState.record`, since the translator does not stream.
   A language that is supported but not downloaded raises a dialog that opens Language & Region, and
@@ -93,16 +107,15 @@ A fifth *shipped* action is one `BuiltInQuickAction` case, its prompt in `QuickA
 `CommandID` case for its launcher row. `CommandID.init(_ action:)` is exhaustive, so it cannot compile
 without one.
 
-| Action | Engine | Result | Replace |
+| Action | Engine | Result, by default | Replace only |
 | --- | --- | --- | --- |
-| Fix Grammar | chat model | Quick AI | button |
-| Rewrite | chat model | Quick AI | button |
-| Translate | Apple Translation | Quick AI | button |
-| Summarize | chat model | Quick AI | none — read only |
-| a custom action, Preview | chat model | Quick AI | button |
-| a custom action, Replace | chat model | Quick AI | written back on finish |
+| Fix Grammar | chat model | Quick AI, with a Replace button | written back at once |
+| Rewrite | chat model | Quick AI, with a Replace button | written back at once |
+| Translate | Apple Translation | Quick AI, with a Replace button | written back at once |
+| Summarize | chat model | Quick AI, read only | not offered |
+| a custom action | chat model | Quick AI, with a Replace button | written back at once |
 
-On a page with no selection, every row keeps its result and loses its write-back.
+On a page with no selection, every row opens Quick AI and loses its write-back.
 
 Results no longer show a diff. The old panel marked what Fix Grammar and Rewrite changed; Quick AI
 is a transcript, and `TextDiffEngine` was removed with the panel. The reply is the whole text.
@@ -114,8 +127,9 @@ is a transcript, and `TextDiffEngine` was removed with the panel. The reply is t
 injected directory so the harness gets a throwaway one. Name and instructions must be non-empty;
 nothing else is rejected, including a name a shipped action already uses.
 
-**Replace / Preview rides the record.** A parallel dictionary in settings would outlive the actions it
-described, and `BuiltInQuickAction` cannot hold a UUID. On the record, a delete takes the choice with it.
+**Quick AI / Replace only rides the record.** A custom action's choice is `previewsResult` on its
+record, so a delete takes it with it. A built-in action's choice is a list of raw values in settings,
+since `BuiltInQuickAction` has no UUID to key a record by.
 
 **`AppEntry.Kind.quickAction` is one section for both halves**, ungated in
 `VisibilityStore.allowsHotKey` because `quickActionsEnabled` is the master switch. The four keep their
@@ -258,8 +272,14 @@ failure handler, so automatic expansion stays silent as before.
   page.
 - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
 - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
-- Add a custom action in Preview mode, run it, and confirm Replace appears only after the reply.
-  Switch it to Replace, run it again, and confirm the selection changes as soon as the reply ends.
+- Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.
+  Switch it to Replace only, run it again, and confirm Quick AI stays closed, the pill shows progress,
+  and the selection changes as soon as the reply ends.
+- Set Fix Grammar to Replace only and run it from a shortcut in Notes and in a browser with no
+  selection. In Notes the selection changes; in the browser Quick AI opens and nothing is typed.
+- Set Fix Grammar to Replace only, start it, then switch to another app before the reply ends.
+  Confirm the text is copied with a HUD and not pasted into the other app.
+- Set Fix Grammar to Replace only and press the pill's cancel. Confirm nothing is written.
 - Translate into a language that has not been downloaded: a dialog names the language, and its
   button opens Language & Region. Nothing is written.
 - Translate into a downloaded language: the reply appears as a finished turn, and Replace writes it.

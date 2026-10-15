@@ -589,8 +589,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
   `Duration.messageHUD` (2.4s) — longer than the volume box, since a sentence needs reading time and a
   level only needs a glance — and a repeat call replaces rather than stacks.
 - **The same pill reports work still running**, through `showProgress(message:onCancel:)`: Translate
-  does not stream, so the pill says `Translating…` while Apple's translator works, and its reply
-  then appears in Quick AI. Model replies stream there and need no pill. Its leading mark is a spinner rather
+  does not stream, so the pill says `Translating…` while Apple's translator works. A Replace only
+  Quick Action shows the pill too, since Quick AI stays shut. Model replies that open Quick AI stream
+  there and need no pill. Its leading mark is a spinner rather
   than a tone, which is why `MessageHUDView.Accessory` exists — a tone says how something *went*, and
   nothing has gone anywhere yet. When `onCancel` is provided, hovering over the pill lights it up,
   turns the spinner into an `xmark`, and clicking anywhere on the pill cancels the in-flight task.

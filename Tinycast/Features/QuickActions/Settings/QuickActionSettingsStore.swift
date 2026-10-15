@@ -19,6 +19,8 @@ final class QuickActionSettingsStore {
         loaded.storedInstructionOverrides =
             defaults.dictionary(forKey: AppSettingsKey.quickActionInstructions.rawValue)
             as? [String: String] ?? [:]
+        loaded.storedReplaceOnlyActions =
+            defaults.stringArray(forKey: AppSettingsKey.quickActionReplaceOnly.rawValue) ?? []
         settings = loaded
     }
 
@@ -27,5 +29,7 @@ final class QuickActionSettingsStore {
         defaults.set(
             settings.storedInstructionOverrides,
             forKey: AppSettingsKey.quickActionInstructions.rawValue)
+        defaults.set(
+            settings.storedReplaceOnlyActions, forKey: AppSettingsKey.quickActionReplaceOnly.rawValue)
     }
 }

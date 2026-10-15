@@ -71,6 +71,24 @@ struct QuickActionTests {
             reopened.settings.instructionOverride(for: BuiltInQuickAction.fixGrammar)
                 == "Use British English.",
             "an action's instructions survive a relaunch")
+
+        expect(
+            !reopened.settings.replacesOnly(BuiltInQuickAction.fixGrammar),
+            "every action opens Quick AI until the reader says otherwise")
+        store.settings.setReplacesOnly(true, for: .fixGrammar)
+        store.settings.setReplacesOnly(true, for: .summarize)
+        let replacing = QuickActionSettingsStore(defaults: defaults)
+        expect(
+            replacing.settings.replacesOnly(BuiltInQuickAction.fixGrammar),
+            "a Replace only choice survives a relaunch")
+        expect(
+            !replacing.settings.replacesOnly(BuiltInQuickAction.summarize),
+            "Summarize cannot be set to replace its text, so it never stores the choice")
+        var cleared = replacing.settings
+        cleared.setReplacesOnly(false, for: .fixGrammar)
+        expect(
+            !cleared.replacesOnly(BuiltInQuickAction.fixGrammar),
+            "switching back to Quick AI removes the choice")
     }
 
     static func everyActionDescribesItself() {
@@ -181,6 +199,14 @@ struct QuickActionTests {
 
         // Preview is the default, because Tinycast cannot know what an arbitrary prompt returns.
         expect(record.previewsResult, "a custom action previews until the reader says otherwise")
+        expect(
+            !QuickActionSettings().replacesOnly(.custom(record)),
+            "a custom action opens Quick AI by default")
+        var replacing = record
+        replacing.previewsResult = false
+        expect(
+            QuickActionSettings().replacesOnly(.custom(replacing)),
+            "a custom action set to Replace only is read from its record")
     }
 
     static func customActionsKeepTheBoundary() {
