@@ -806,19 +806,47 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
                            Tinycast/Features/MCP/Model/*.swift \
                            Tinycast/Features/MCP/Settings/MCPSettingsStore.swift
 run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
+                           Tinycast/Features/AI/Model/AIRequest.swift \
                            Tinycast/Features/AI/Model/AIConnection.swift \
                            Tinycast/Features/AI/Model/AppleIntelligence.swift \
                            Tinycast/Features/AI/Model/ChatGPTSubscription.swift \
                            Tinycast/Features/AI/Model/InstalledAI.swift \
+                           Tinycast/Features/AI/Model/AIConversationOpenPolicy.swift \
+                           Tinycast/Features/AI/Model/AIAttachmentPolicy.swift \
+                           Tinycast/Features/AI/Model/AIRetention.swift \
+                           Tinycast/Features/AI/Model/AITool.swift \
+                           Tinycast/Features/AI/Model/JSONValue.swift \
+                           Tinycast/Features/AI/Model/ChatMessage.swift \
+                           Tinycast/Features/AI/Model/ChatSession.swift \
+                           Tinycast/Features/AI/Model/ChatChoices.swift \
+                           Tinycast/Features/AI/Model/ChatReferences.swift \
+                           Tinycast/Features/AI/Model/ChatTitle.swift \
+                           Tinycast/Features/AI/Model/ChatFind.swift \
+                           Tinycast/Features/AI/Model/ChatCitations.swift \
+                           Tinycast/Features/AI/Model/ChatToolScope.swift \
+                           Tinycast/Features/AI/Model/MarkdownBlock.swift \
+                           Tinycast/Features/AI/Model/MarkdownMath.swift \
+                           Tinycast/Features/AI/Model/MathFormula.swift \
+                           Tinycast/Features/AI/Model/MathNode.swift \
+                           Tinycast/Features/AI/Model/MathSymbolCatalog.swift \
+                           Tinycast/Features/AI/Model/ContextBrowser.swift \
+                           Tinycast/Features/AI/Model/ContextPolicy.swift \
+                           Tinycast/Features/AI/Model/ContextSource.swift \
+                           Tinycast/Features/AI/Service/AIProvider.swift \
+                           Tinycast/Features/AI/Service/ChatHistoryStore.swift \
+                           Tinycast/Features/AI/Service/AIToolLoopProvider.swift \
+                           Tinycast/Features/AI/UI/AIChatState.swift \
+                           Tinycast/Features/AI/UI/AIChatSurfacesState.swift \
+                           Tinycast/Features/AI/UI/ChatFindState.swift \
                            Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift \
                            Tinycast/Features/QuickActions/Model/CustomQuickAction.swift \
                            Tinycast/Features/QuickActions/Model/CustomQuickActionStore.swift \
                            Tinycast/Features/QuickActions/Model/QuickAction.swift \
-                           Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionFailure.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
-                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift \
+                           Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift \
+                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
                            Tinycast/Platform/LocalizedResource.swift
 run apple-intelligence-test Tinycast/Features/Settings/AppSettingsKey.swift \
                            Tinycast/Features/AI/Model/*.swift \

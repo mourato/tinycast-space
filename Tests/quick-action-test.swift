@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @main
@@ -15,7 +16,7 @@ struct QuickActionTests {
         }
     }
 
-    static func main() {
+    static func main() async {
         everyActionDescribesItself()
         promptsForbidCommentaryAndInjection()
         settingsPersistTheirChoices()
@@ -24,10 +25,17 @@ struct QuickActionTests {
         customActionsKeepTheBoundary()
         customActionsSurviveARelaunch()
         customActionsNeverWriteOverWhatTheyCouldNotRead()
-        captureShowsProgressBeforeReading()
-        captureKeepsPageResultsReadable()
-        captureErrorsStayInTheirWindow()
-        staleCapturesNeverReachTheWrongChat()
+        await captureOpensQuickAIBeforeReading()
+        await captureErrorsStayInTheirWindow()
+        await replaceOnlyStaysSilent()
+        await unreadableAppsStayHonestWithoutAPage()
+        await answerFailuresStayInTheirWindow()
+        await cancelDuringCaptureStagesNothing()
+        await hideDuringCaptureReopensNothing()
+        await newChatDuringCaptureKeepsItsOwn()
+        await conflictingSendDropsTheCapture()
+        await conflictingAttachmentIsNeverConsumed()
+        pageTextKeepsItsOwnContract()
 
         print("\(passes) passed, \(failures) failed")
         if failures > 0 { exit(1) }
@@ -332,144 +340,593 @@ struct QuickActionTests {
     }
 
     /// Quick AI opens before the read, so its progress is already on screen when capture blocks.
-    static func captureShowsProgressBeforeReading() {
+    static func captureOpensQuickAIBeforeReading() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        let before = fixture.chat.session.id
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "Quick AI opens before the read starts")
         expect(
-            QuickActionCapturePlan.previews(
-                replacesOnly: QuickActionSettings().replacesOnly(.builtIn(.summarize))),
-            "Summarize always previews, so its progress shows before the read")
+            fixture.chat.session.id != before, "the read lands in a fresh chat, not the old one")
+        expect(fixture.chat.notice == "Gathering selected text…", "progress names the capture")
+        expect(fixture.chat.noticeIsProgress, "progress is not an error, so no Configure button")
+        expect(fixture.chat.session.messages.isEmpty, "nothing is sent before the capture lands")
+        expect(fixture.injector.copies == 0, "nothing is borrowed before the read resumes")
+        expect(QuickActionRunner.seenPIDs.count == 1, "the read starts exactly once")
         expect(
-            QuickActionCapturePlan.previews(
-                replacesOnly: QuickActionSettings().replacesOnly(.builtIn(.rewrite))),
-            "a writing action previews until it is set to Replace only")
-        var replacing = QuickActionSettings()
-        replacing.setReplacesOnly(true, for: .rewrite)
+            QuickActionRunner.seenPIDs.first == fixture.app.processIdentifier,
+            "the read keeps the source app for its borrowed copy")
+        QuickActionRunner.resumeAll(with: "the selected words")
+        await waitUntil(
+            fixture.core.aiChatCoordinator.answers.count == 1, "the capture is answered")
+        let answer = fixture.core.aiChatCoordinator.answers.first!
         expect(
-            !QuickActionCapturePlan.previews(
-                replacesOnly: replacing.replacesOnly(.builtIn(.rewrite))),
-            "a Replace only writing action stays silent")
-        let custom = CustomQuickAction(
-            name: "Terse", instructions: "Trim.", previewsResult: false)
-        expect(
-            !QuickActionCapturePlan.previews(
-                replacesOnly: QuickActionSettings().replacesOnly(.custom(custom))),
-            "a custom Replace only stays silent too")
-    }
-
-    /// A page has no selection to write into, so it is always read, even for Replace only.
-    static func captureKeepsPageResultsReadable() {
-        expect(
-            !QuickActionCapturePlan.writesBack(replacesSelection: true, fromPage: true),
-            "a page result is never written back")
-        expect(
-            QuickActionCapturePlan.writesBack(replacesSelection: true, fromPage: false),
-            "a selection keeps its write-back")
-        expect(
-            !QuickActionCapturePlan.writesBack(replacesSelection: false, fromPage: false),
-            "Summarize never writes back")
-        expect(
-            !QuickActionCapturePlan.silently(writesBack: false, replacesOnly: true),
-            "a page result opens Quick AI even for Replace only")
-        expect(
-            QuickActionCapturePlan.silently(writesBack: true, replacesOnly: true),
-            "Replace only with a target stays silent")
-        expect(
-            !QuickActionCapturePlan.silently(writesBack: true, replacesOnly: false),
-            "a preview is never silent")
-        expect(
-            QuickActionCapturePlan.sourceName(fromPage: true) == "Page text",
-            "a page rides under its own name")
-        expect(
-            QuickActionCapturePlan.sourceName(fromPage: false) == "Selected text",
-            "a selection keeps its name")
+            answer.session == fixture.chat.session.id,
+            "the answer continues the same prepared chat")
+        expect(answer.attachments == ["Selected text"], "the selection rides as its document")
+        expect(!fixture.chat.noticeIsProgress, "the answer retires the gathering notice")
+        expect(fixture.palette.keyClaims == 1, "the finished capture takes key")
+        expect(fixture.chat.session.messages.count == 2, "prompt and reply join the transcript")
+        expect(fixture.core.messages.isEmpty, "no pill or dialog escapes the window")
     }
 
     /// A prepared Quick AI keeps every capture failure; silence keeps the old pill and dialog.
-    static func captureErrorsStayInTheirWindow() {
-        let failures: [QuickActionFailure] = [
-            .needsAccessibility, .noTarget, .unreadableApp("Chrome"), .noSelection, .tooLong
-        ]
-        for failure in failures {
+    static func captureErrorsStayInTheirWindow() async {
+        for failure in [
+            QuickActionFailure.needsAccessibility, .noTarget, .unreadableApp("Chrome"), .noSelection,
+            .tooLong
+        ] as [QuickActionFailure] {
+            let fixture = QuickActionFixture()
+            QuickActionRunner.behavior = .fail(failure)
+            fixture.coordinator.run(.builtIn(.summarize))
+            await waitUntil(
+                fixture.chat.notice == failure.localizedDescription,
+                "a prepared capture keeps \(failure) in Quick AI")
+            expect(fixture.palette.visible, "the window stays open on its error")
+            expect(fixture.palette.keyClaims == 1, "the error takes key so it is seen")
+            expect(fixture.chat.session.messages.isEmpty, "a failure sends nothing")
             expect(
-                QuickActionCapturePlan.destination(for: failure, previews: true) == .chat,
-                "a prepared capture keeps its failure in Quick AI")
+                fixture.core.aiChatCoordinator.answers.isEmpty, "a failure starts no answer")
+            expect(fixture.core.messages.isEmpty, "no pill carries the failure")
+            expect(fixture.core.failures.isEmpty, "no dialog carries the failure")
+            fixture.cleanUp()
+            QuickActionRunner.reset()
         }
-        expect(
-            QuickActionCapturePlan.destination(for: .needsAccessibility, previews: false)
-                == .dialog,
-            "a silent permission failure still earns its dialog")
-        for failure in failures where failure != .needsAccessibility {
-            expect(
-                QuickActionCapturePlan.destination(for: failure, previews: false) == .pill,
-                "a silent failure stays a fading pill")
-        }
-        expect(
-            QuickActionCapturePlan.destinationForPageFailure(previews: true) == .chat,
-            "a page read failure stays in Quick AI")
     }
 
-    /// A capture that outlives its chat, window or switch must stage nothing and reopen nothing.
-    static func staleCapturesNeverReachTheWrongChat() {
-        let session = UUID()
-        let prepared = QuickActionCapturePlan.ChatSnapshot(
-            sessionID: session, stagingGeneration: 3, messageCount: 0, isStreaming: false,
-            pendingAttachmentCount: 0)
-        func ui(
-            mine: Int = 7, generation: Int = 7, cancelled: Bool = false,
-            showing: Bool = true, ai: Bool = true, quickActions: Bool = true
-        ) -> QuickActionCapturePlan.UIState {
-            QuickActionCapturePlan.UIState(
-                mine: mine, generation: generation, cancelled: cancelled,
-                paletteShowingAI: showing, aiEnabled: ai, quickActionsEnabled: quickActions)
+    /// Replace only keeps the window shut: progress in the pill, and any failure in a HUD.
+    static func replaceOnlyStaysSilent() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
         }
+        fixture.store.settings.setReplacesOnly(true, for: .rewrite)
+        QuickActionRunner.behavior = .fail(.noSelection)
+        fixture.coordinator.run(.builtIn(.rewrite))
+        await waitUntil(!fixture.core.progresses.isEmpty, "the pill shows progress while silent")
+        expect(fixture.core.progresses == ["Rewriting…"], "the pill names the action")
+        await waitUntil(!fixture.core.messages.isEmpty, "the failure stays a fading pill")
         expect(
-            QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(), previews: true),
-            "an untouched prepared chat still takes its capture")
+            fixture.core.messages.map { $0.text } == ["Select some text first."],
+            "the pill carries the cause")
+        expect(fixture.palette.shows == 0, "Replace only never opens Quick AI")
+        expect(fixture.core.failures.isEmpty, "silence earns no dialog")
         expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(cancelled: true), previews: true),
-            "a cancelled capture stages nothing")
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(generation: 8), previews: true),
-            "a superseded capture stages nothing")
-        let newChat = QuickActionCapturePlan.ChatSnapshot(
-            sessionID: UUID(), stagingGeneration: 3, messageCount: 0, isStreaming: false,
-            pendingAttachmentCount: 0)
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: newChat, ui: ui(), previews: true),
-            "a new chat never receives the old capture")
-        let restaged = QuickActionCapturePlan.ChatSnapshot(
-            sessionID: session, stagingGeneration: 4, messageCount: 0, isStreaming: false,
-            pendingAttachmentCount: 1)
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: restaged, ui: ui(), previews: true),
-            "a conflicting attachment is never consumed by the capture")
-        let answering = QuickActionCapturePlan.ChatSnapshot(
-            sessionID: session, stagingGeneration: 3, messageCount: 1, isStreaming: true,
-            pendingAttachmentCount: 0)
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: answering, ui: ui(), previews: true),
-            "a conflicting send is never answered over by the capture")
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(showing: false), previews: true),
-            "a dismissed window is never reopened by the capture")
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(ai: false), previews: true),
-            "a disabled chat never receives the capture")
-        expect(
-            !QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(quickActions: false),
-                previews: true),
-            "a disabled feature drops its capture")
-        expect(
-            QuickActionCapturePlan.allowsStaging(
-                prepared: prepared, current: prepared, ui: ui(showing: false), previews: false),
-            "silence needs no window, so a hidden palette does not stop it")
+            fixture.core.aiChatCoordinator.answers.isEmpty, "a failed silent run answers nothing")
+        expect(fixture.injector.replaced.isEmpty, "a failed silent run writes nothing back")
     }
+
+    /// Without a browser behind the failure there is no page to try, and the cause stays honest.
+    static func unreadableAppsStayHonestWithoutAPage() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+            ContextBrowserRunner.reset()
+        }
+        QuickActionRunner.behavior = .fail(.unreadableApp("Figma"))
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(
+            fixture.chat.notice == QuickActionFailure.unreadableApp("Figma").localizedDescription,
+            "an unreadable app is named in Quick AI")
+        expect(ContextBrowserRunner.listCalls == 0, "a non-browser never lists tabs")
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "no page means no answer")
+    }
+
+    /// A turn that never starts reports where the reader already looks.
+    static func answerFailuresStayInTheirWindow() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        fixture.core.aiChatCoordinator.failAnswer = true
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(
+            fixture.chat.notice == "Summarize didn't start", "a stalled turn says so in Quick AI")
+        expect(!fixture.chat.noticeIsProgress, "the report replaces the progress, not the chat")
+        expect(fixture.palette.visible, "the window stays open on its error")
+        expect(fixture.chat.session.messages.isEmpty, "a stalled turn sends nothing")
+    }
+
+    /// Cancelling mid-capture stages nothing and leaves no gathering notice behind.
+    static func cancelDuringCaptureStagesNothing() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        fixture.coordinator.cancel()
+        QuickActionRunner.resumeAll(with: "late text")
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "a cancelled capture answers nothing")
+        expect(fixture.chat.session.messages.isEmpty, "a cancelled capture sends nothing")
+        expect(fixture.chat.notice == nil, "cancel clears the gathering notice")
+    }
+
+    /// Hiding mid-capture is explicit: the late capture stages nothing and reopens nothing.
+    static func hideDuringCaptureReopensNothing() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        fixture.palette.hidePalette()
+        QuickActionRunner.resumeAll(with: "late text")
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "a hidden capture answers nothing")
+        expect(fixture.chat.session.messages.isEmpty, "a hidden capture sends nothing")
+        expect(fixture.chat.notice == nil, "a dropped capture leaves no notice behind")
+        expect(!fixture.palette.visible, "a dropped capture never reopens the window")
+    }
+
+    /// A new chat mid-capture belongs to the reader; the late capture leaves it alone.
+    static func newChatDuringCaptureKeepsItsOwn() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        fixture.chat.startNewChat()
+        let own = fixture.chat.session.id
+        QuickActionRunner.resumeAll(with: "late text")
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "a superseded capture answers nothing")
+        expect(fixture.chat.session.id == own, "the reader's new chat is untouched")
+        expect(fixture.chat.session.messages.isEmpty, "nothing lands in the new chat")
+        expect(fixture.chat.notice == nil, "no notice leaks into the new chat")
+    }
+
+    /// A send that beats the capture owns the chat; the late capture answers over nothing.
+    static func conflictingSendDropsTheCapture() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        _ = fixture.chat.record(prompt: "their question", documents: [], reply: "their answer")
+        QuickActionRunner.resumeAll(with: "late text")
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty,
+            "a capture never answers over a conflicting send")
+        expect(fixture.chat.session.messages.count == 2, "the reader's turn stands as sent")
+    }
+
+    /// An attachment staged mid-capture belongs to the next send, never to the late capture.
+    static func conflictingAttachmentIsNeverConsumed() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        let staged = ChatAttachment(
+            payload: .document(
+                AIDocument(data: Data("theirs".utf8), mimeType: "text/plain", name: "Theirs")),
+            name: "Theirs", preview: nil)
+        expect(fixture.chat.attach(staged) == nil, "the reader's attachment stages")
+        QuickActionRunner.resumeAll(with: "late text")
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty,
+            "a capture never consumes a conflicting attachment")
+        expect(
+            fixture.chat.pendingAttachments.map(\.name) == ["Theirs"],
+            "the reader's attachment waits for their own send")
+        expect(fixture.chat.session.messages.isEmpty, "nothing is sent on their behalf")
+    }
+
+    /// A page stands in only where browser context already allows it, capped like a selection.
+    static func pageTextKeepsItsOwnContract() {
+        expect(
+            ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.google.Chrome", options: browserOptions(),
+                aiEnabled: true),
+            "a supported browser with context on may stand in")
+        expect(
+            !ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.google.Chrome", options: ContextPolicy.Options(),
+                aiEnabled: true),
+            "a supported browser with context off may not")
+        expect(
+            !ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.example.editor", options: browserOptions(), aiEnabled: true),
+            "an editor never stands in as a page")
+        let read = ContextBrowser.PageRead(
+            title: "T", url: "https://example.com/", selection: "chosen",
+            body: "whole page", isTruncated: false)
+        expect(
+            ContextBrowser.quickActionText(read, limitBytes: 32_768) == "chosen",
+            "a page selection wins over its body")
+        let bodyOnly = ContextBrowser.PageRead(
+            title: "T", url: "https://example.com/", selection: "  ",
+            body: "whole page", isTruncated: false)
+        expect(
+            ContextBrowser.quickActionText(bodyOnly, limitBytes: 32_768) == "whole page",
+            "a page without a selection reads whole")
+        let long = String(repeating: "a", count: 40_000)
+        let capped = ContextBrowser.quickActionText(
+            ContextBrowser.PageRead(
+                title: "T", url: "https://example.com/", selection: "",
+                body: long, isTruncated: false),
+            limitBytes: QuickActionRunner.maxSelectionBytes)
+        expect(
+            capped?.utf8.count ?? 0 <= QuickActionRunner.maxSelectionBytes,
+            "a page is capped where it is read, like a selection")
+    }
+
+    static func browserOptions() -> ContextPolicy.Options {
+        var options = ContextPolicy.Options()
+        options.browserEnabled = true
+        return options
+    }
+
+    /// Polls for the event the run owes; a missing event fails here rather than hanging the suite.
+    static func waitUntil(_ condition: @autoclosure () -> Bool, _ message: String) async {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        expect(condition(), message)
+    }
+}
+
+// The shipped coordinator with every collaborator isolated, so no run reads, pastes or prompts.
+@MainActor
+final class QuickActionFixture {
+    let directory: URL
+    let suite: String
+    let defaults: UserDefaults
+    let settings = AppSettings()
+    let store: QuickActionSettingsStore
+    let customActions: CustomQuickActionStore
+    let injector = TextInjector()
+    let palette = PaletteCoordinator()
+    let chat: AIChatState
+    let core: AppCore
+    let coordinator: QuickActionCoordinator
+    let app = NSRunningApplication.current
+
+    init() {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QuickActionCaptureTests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        chat = AIChatState(history: ChatHistoryStore(directory: directory))
+        core = AppCore(chat: chat)
+        suite = "QuickActionCaptureTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        store = QuickActionSettingsStore(defaults: defaults)
+        customActions = CustomQuickActionStore(directory: directory)
+        customActions.load()
+        palette.targetApp = app
+        coordinator = QuickActionCoordinator(
+            settings: settings, store: store, customActions: customActions,
+            injector: injector, appIndex: AppIndex(), hotKeys: HotKeyManager(),
+            favorites: FavoritesStore(), visibility: VisibilityStore(),
+            ranking: LauncherRankingStore(), aliases: AliasStore(),
+            paletteCoordinator: palette, core: core)
+    }
+
+    func cleanUp() {
+        defaults.removePersistentDomain(forName: suite)
+        UserDefaults.standard.removeSuite(named: suite)
+        CFPreferencesAppSynchronize(suite as CFString)
+        try? FileManager.default.removeItem(
+            at: URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Preferences/\(suite).plist"))
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+@MainActor
+final class AppSettings {
+    var quickActionsEnabled = true
+    var aiEnabled = true
+    var contextPolicyOptions = ContextPolicy.Options()
+}
+
+@MainActor
+final class PaletteCoordinator {
+    var mode = PaletteMode.ai
+    var visible = false
+    var key = false
+    var shows = 0
+    var passiveShows = 0
+    var keyClaims = 0
+    var targetApp: NSRunningApplication?
+    var previousOwnWindow: NSWindow?
+    var isVisible: Bool { visible }
+
+    func showPalette(
+        mode: PaletteMode, restoreAnyMode: Bool = false, seeding query: String? = nil,
+        takingKey: Bool = true
+    ) {
+        self.mode = mode
+        shows += 1
+        if takingKey {
+            key = true
+        } else {
+            passiveShows += 1
+        }
+        visible = true
+    }
+
+    func claimKey() {
+        keyClaims += 1
+        if visible { key = true }
+    }
+
+    func isShowing(_ mode: PaletteMode) -> Bool { visible && self.mode == mode }
+    func hidePalette(restoreFocus: Bool = true) { visible = false; key = false }
+}
+
+enum PaletteMode { case launcher, ai }
+
+@MainActor
+enum QuickActionRunner {
+    static let maxSelectionBytes = 32_768
+    enum Behavior {
+        case succeed(String)
+        case fail(QuickActionFailure)
+        case suspend
+    }
+    static var behavior: Behavior = .succeed("selected text")
+    static var seenPIDs: [pid_t] = []
+    static var continuations: [CheckedContinuation<String, Error>] = []
+
+    static func reset() {
+        behavior = .succeed("selected text")
+        seenPIDs = []
+        continuations = []
+    }
+
+    static func selection(
+        in targetApp: NSRunningApplication?, using injector: TextInjector
+    ) async throws -> String {
+        seenPIDs.append(targetApp?.processIdentifier ?? -1)
+        switch behavior {
+        case .succeed(let text): return try accepted(text)
+        case .fail(let failure): throw failure
+        case .suspend:
+            return try await withCheckedThrowingContinuation { continuations.append($0) }
+        }
+    }
+
+    static func accepted(_ text: String) throws -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw QuickActionFailure.noSelection
+        }
+        guard text.utf8.count <= maxSelectionBytes else { throw QuickActionFailure.tooLong }
+        return text
+    }
+
+    static func resumeAll(with text: String) {
+        let pending = continuations
+        continuations = []
+        for continuation in pending { continuation.resume(returning: text) }
+    }
+}
+
+@MainActor
+final class TextInjector {
+    var copied: String?
+    var copies = 0
+    var copyPIDs: [pid_t] = []
+    var replaced: [(text: String, pid: pid_t)] = []
+
+    func copySelection(from targetApp: NSRunningApplication?) async -> String? {
+        copies += 1
+        copyPIDs.append(targetApp?.processIdentifier ?? -1)
+        return copied
+    }
+
+    func replaceSelection(
+        with text: String, in targetApp: NSRunningApplication?,
+        onDelivered: @escaping @MainActor () -> Void = {},
+        onFailed: @escaping @MainActor () -> Void = {}
+    ) {
+        replaced.append((text, targetApp?.processIdentifier ?? -1))
+        onDelivered()
+    }
+}
+
+@MainActor
+enum ContextBrowserRunner {
+    static var listCalls = 0
+    static var readCalls = 0
+    static func reset() { listCalls = 0; readCalls = 0 }
+    struct TabList: Sendable {
+        let browser: ContextBrowser.Browser
+        let tabs: [ContextBrowser.BrowserTab]
+        let frontIsPrivate: Bool
+    }
+    static func listTabs(preferredBundleID: String?) async -> Result<
+        TabList, ContextBrowser.ReadFailure
+    > {
+        listCalls += 1
+        return .failure(.noSource)
+    }
+    static func readTab(_ tab: ContextBrowser.BrowserTab) async -> Result<
+        ContextBrowser.PageRead, ContextBrowser.ReadFailure
+    > {
+        readCalls += 1
+        return .failure(.noSource)
+    }
+}
+
+@MainActor
+enum TextTranslator {
+    enum Failure: Error { case notInstalled }
+    static func displayName(of language: Locale.Language) -> String { "Test Language" }
+    static func translate(_ text: String, to language: Locale.Language) async throws -> String {
+        "translated"
+    }
+    static func supportedLanguages() async -> [Locale.Language] { [] }
+}
+
+struct InjectionTarget {
+    var ownEditor: Any?
+    static func behindPalette(ownWindow: NSWindow?, app: NSRunningApplication?) -> InjectionTarget? {
+        InjectionTarget()
+    }
+    static func current() -> InjectionTarget? { InjectionTarget() }
+}
+
+final class NoteTextView: NSView {
+    var injectableSelection = ""
+    func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
+    func replaceUnchangedSelection(with text: String, source: String, range: NSRange) -> Bool {
+        false
+    }
+}
+
+struct NoteEditorInput: Equatable { var source = "" }
+
+@MainActor
+final class AppIndex {
+    func setCommandsVisible(_ commands: Set<CommandID>, _ visible: Bool) {}
+    func setCustomQuickActions(_ actions: [CustomQuickAction]) {}
+}
+
+enum CommandID: Hashable {
+    case builtIn(BuiltInQuickAction)
+    init(_ action: BuiltInQuickAction) { self = .builtIn(action) }
+}
+
+enum HotKeyAction: Equatable { case quickAction(id: UUID) }
+
+@MainActor
+final class HotKeyManager {
+    var recordingAction: HotKeyAction?
+    func setBinding(_ binding: String?, for action: HotKeyAction) {}
+}
+
+final class FavoritesStore { func remove(keys: Set<String>) {} }
+final class VisibilityStore { func removeItemKeys(_ keys: [String]) {} }
+final class LauncherRankingStore { func reset(itemKey: String) {} }
+final class AliasStore { func removeKeys(_ keys: [String]) {} }
+
+enum DialogTone { case danger, neutral, success }
+enum DialogConfirmRole { case standard }
+
+@MainActor
+final class TestNotesCoordinator { var editorInput = NoteEditorInput() }
+
+@MainActor
+final class TestChats {
+    let quickAI: AIChatState
+    init(_ chat: AIChatState) { quickAI = chat }
+}
+
+@MainActor
+final class TestAIChatCoordinator {
+    struct Answer {
+        let prompt: String
+        let session: UUID
+        let attachments: [String]
+    }
+    let chats: TestChats
+    var answers: [Answer] = []
+    var failAnswer = false
+    init(chat: AIChatState) { chats = TestChats(chat) }
+    func answerQuickAction(prompt: String, instructions: String, in chat: AIChatState) -> Bool {
+        guard !failAnswer else { return false }
+        answers.append(
+            Answer(
+                prompt: prompt, session: chat.session.id,
+                attachments: chat.pendingAttachments.map(\.name)))
+        _ = chat.record(
+            prompt: prompt, documents: chat.pendingAttachments.compactMap(\.document),
+            reply: "canned")
+        return true
+    }
+}
+
+@MainActor
+final class AppCore {
+    let aiChatCoordinator: TestAIChatCoordinator
+    let notesCoordinator = TestNotesCoordinator()
+    var progresses: [String] = []
+    var progressHides = 0
+    var messages: [(text: String, tone: DialogTone)] = []
+    var failures: [(title: String, message: String)] = []
+    init(chat: AIChatState) { aiChatCoordinator = TestAIChatCoordinator(chat: chat) }
+    func showProgress(_ message: String, onCancel: (() -> Void)? = nil) {
+        progresses.append(message)
+    }
+    func hideProgress() { progressHides += 1 }
+    func showMessage(_ message: String, tone: DialogTone = .success) {
+        messages.append((message, tone))
+    }
+    func reportFailure(title: String, message: String, symbol: String, recovery: String?) async
+        -> Bool
+    {
+        failures.append((title, message))
+        return false
+    }
+    func confirm(
+        title: String, message: String, symbol: String, confirmTitle: String,
+        tone: DialogTone = .success, confirmRole: DialogConfirmRole = .standard
+    ) async -> Bool { false }
+    func showNotice(title: String, message: String, symbol: String, tone: DialogTone) async {}
+    func applyInstalledAILifecycle() {}
+}
+
+enum Paster {
+    static func copyPlainText(_ text: String) {}
+}
+
+enum Permissions {
+    static func ensureAccessibility() -> Bool { true }
+    static func isAccessibilityTrusted() -> Bool { true }
+    static func openAccessibilitySettings() {}
+}
+
+enum AppLauncher {
+    static func openSettingsPane(bundleID: String) {}
 }

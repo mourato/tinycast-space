@@ -8,6 +8,8 @@ final class AIChatState {
     private(set) var isStreaming = false
     private(set) var isThinking = false
     private(set) var notice: String?
+    /// A notice naming work in flight, not something to fix; the empty state hides Configure for it.
+    private(set) var noticeIsProgress = false
     /// Files staged for the next message; they go out with whatever is typed next.
     private(set) var pendingAttachments: [ChatAttachment] = []
     /// The window's unsent text; Quick AI's lives in the palette query instead.
@@ -47,7 +49,7 @@ final class AIChatState {
     ) -> Bool {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !pendingAttachments.isEmpty, !isStreaming else { return false }
-        notice = nil
+        clearNotice()
         session.append(
             ChatMessage(
                 role: .user, text: text, images: pendingAttachments.compactMap(\.image),
@@ -63,7 +65,7 @@ final class AIChatState {
     /// A reply the chat's model did not write, such as Apple's translator's, as a finished turn.
     @discardableResult
     func record(prompt: String, documents: [AIDocument], reply: String) -> UUID {
-        notice = nil
+        clearNotice()
         session.append(ChatMessage(role: .user, text: prompt, documents: documents))
         let message = ChatMessage(role: .assistant, text: reply)
         session.append(message)
@@ -85,7 +87,7 @@ final class AIChatState {
         instructions: String? = nil, contextBudget: Int = ChatSession.defaultTextBudget
     ) -> Bool {
         guard !isStreaming, session.dropTrailingReply() else { return false }
-        notice = nil
+        clearNotice()
         if let model { session.model = model }
         startReply(
             using: provider, webSearch: webSearch, instructions: instructions,
@@ -132,6 +134,19 @@ final class AIChatState {
 
     func report(_ message: String) {
         notice = message
+        noticeIsProgress = false
+    }
+
+    /// Progress the reader waits on; cancelling or superseding it clears it without a trace.
+    func reportProgress(_ message: String) {
+        notice = message
+        noticeIsProgress = true
+    }
+
+    /// Drops a gathering notice its run never used; a report or a turn keeps its own.
+    func clearProgressNotice() {
+        guard noticeIsProgress, session.messages.isEmpty else { return }
+        clearNotice()
     }
 
     /// Refused, not truncated: the composer is the last place an oversized turn can be explained.
@@ -169,6 +184,11 @@ final class AIChatState {
         stagingGeneration += 1
     }
 
+    private func clearNotice() {
+        notice = nil
+        noticeIsProgress = false
+    }
+
     func cancel() {
         replyGeneration += 1
         replyTask?.cancel()
@@ -183,7 +203,7 @@ final class AIChatState {
     func startNewChat() {
         cancel()
         session = ChatSession()
-        notice = nil
+        clearNotice()
         clearStaging()
     }
 
@@ -194,7 +214,7 @@ final class AIChatState {
         guard let loaded = history.session(id: id) else { return false }
         cancel()
         session = loaded
-        notice = nil
+        clearNotice()
         clearStaging()
         return true
     }
@@ -203,7 +223,7 @@ final class AIChatState {
         if session.id == id {
             cancel()
             session = ChatSession()
-            notice = nil
+            clearNotice()
             clearStaging()
         }
         history.remove(id: id)

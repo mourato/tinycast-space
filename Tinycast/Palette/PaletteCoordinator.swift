@@ -85,7 +85,8 @@ final class PaletteCoordinator {
 
     /// Shows the palette, honoring Pop to Root Search. See docs/features/palette.md#state-flow.
     func showPalette(
-        mode: PaletteMode, restoreAnyMode: Bool = false, seeding query: String? = nil
+        mode: PaletteMode, restoreAnyMode: Bool = false, seeding query: String? = nil,
+        takingKey: Bool = true
     ) {
         let preserved = windowController.consumePreservedState()
         let restoring = preserved && (restoreAnyMode || palette.mode == mode)
@@ -98,8 +99,14 @@ final class PaletteCoordinator {
         if let query { palette.query = query }
         // Before the show: `targetApp` must still name the app in front, and no row may pop in.
         onScreenOpening?(palette.mode)
-        windowController.show()
-        if palette.mode == .fileSearch { fileSearch.search(palette.query, filter: palette.fileSearchFilter) }
+        if takingKey {
+            windowController.show()
+        } else {
+            windowController.showWithoutTakingKey()
+        }
+        if palette.mode == .fileSearch {
+            fileSearch.search(palette.query, filter: palette.fileSearchFilter)
+        }
         if palette.mode == .menuSearch { menuSearch.filter(palette.query) }
         if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
         // Re-scan on open so an app uninstalled since the last scan drops out of the launcher.
@@ -107,6 +114,11 @@ final class PaletteCoordinator {
             Task { await appIndex.refresh() }
             onLauncherShown?()
         }
+    }
+
+    /// Keys the already-visible palette once admitted work finishes; never summons.
+    func claimKey() {
+        windowController.claimKey()
     }
 
     /// Root search onto `entry` alone, for a command whose shortcut lacks values.
