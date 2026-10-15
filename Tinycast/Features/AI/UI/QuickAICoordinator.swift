@@ -47,12 +47,14 @@ final class QuickAICoordinator {
         let snapshot = core.paletteContextSnapshot()
         // Auto context stages for review first: the first answer must see it, after the reader can.
         if core.aiChatCoordinator.contextCoordinator.autoApplies(snapshot: snapshot) {
+            chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
             chat.startNewChat()
             palette.query = prompt
             paletteCoordinator.showPalette(mode: .ai)
             core.aiChatCoordinator.contextCoordinator.enteredQuickAI(chat: chat, snapshot: snapshot)
             return
         }
+        chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
         chat.startNewChat()
         paletteCoordinator.showPalette(mode: .ai)
         send(prompt)
@@ -97,6 +99,7 @@ final class QuickAICoordinator {
         case .startNew:
             // An empty chat is already new; resetting it would only drop what is staged in it.
             guard hasTranscript else { return }
+            chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
             chat.startNewChat()
         }
     }
@@ -133,7 +136,7 @@ final class QuickAICoordinator {
     func continueInChat(id: UUID) {
         paletteCoordinator.hidePalette(restoreFocus: false)
         chatCoordinator.openChat(id: id)
-        chatCoordinator.showWindow()
+        chatCoordinator.showWindow(appSnapshot: core.paletteContextSnapshot())
     }
 
     func deleteChat(id: UUID) {

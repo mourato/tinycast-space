@@ -31,18 +31,25 @@ type the same picks as commands.
 - **One owned capture per destination and source.** App and browser captures own separate slots,
   so the two autos coexist instead of cancelling each other. A newer capture cancels the older in
   its slot; a late read publishes only while its ticket — operation, chat, source and staging
-  generation — is still current, capture is still enabled and nothing cancelled it. A send, clear,
+  generation — is still current, capture is still enabled and nothing cancelled it. Browser listing
+  belongs to that ticket before its first await, and automatic tickets also require their auto-attach
+  switch to remain on. A send, clear,
   chat switch or disable moves the generation on, so nothing lands in the next turn. Switching a
   master or source off cancels its in-flight reads and drops its staged quotes, never user files.
 - **The root target predates focus.** The palette records the front app before it takes key and
   keeps it across mode switches; the AI Chat window records it before it shows and keeps the
-  earlier snapshot across handoffs and re-shows. Tinycast itself is never a target. App context is
+  earlier snapshot on re-shows; a palette handoff replaces it with the palette's current target.
+  Tinycast itself is never a target. App context is
   metadata plus the focused element's accessible text — the selection when selection-only is on
   and one exists, else the bounded focused value — always read bounded and labelled as a focused
   element excerpt, marked partial when cut, never claimed complete. A mid-read window switch drops
   the quote. Secure fields (role and secure subrole), Secure Event Input and missing Accessibility
   trust refuse the text with guidance; the title may still be quoted. Enabling app context confirms
   first and raises the one Accessibility prompt from that gesture.
+- **Browsers never enter the generic app reader.** Apps registered to handle HTTPS, including
+  Helium, require the browser-tab path, so app capture cannot bypass private-window checks.
+  Blocking readers use `@concurrent` and inherit caller cancellation; they stop between native calls,
+  with a timeout bounding a call already running.
 - **Helium is the only browser, by its checked dictionary.** Tabs list on demand without
   launching Helium when it is not running; private windows never stage, and when the front window
   is private auto-attach refuses rather than swapping in a lower window. Capture binds the stable
@@ -61,7 +68,9 @@ type the same picks as commands.
   Tools menu already does.
 - **`@server` keeps its meaning.** A leading `@slug` still scopes the turn to that server; `@app`,
   `@tab`, `@action`, `@integration` and `@tool` stage their pick for review and keep the rest of
-  the draft, and any other mention stays plain text. Nothing a `@` command stages sends until the
+  the draft only after successful staging. Named choices consume the matched name and leave any
+  following prompt; failed captures and edited drafts stay intact. Any other mention stays plain
+  text. Nothing a `@` command stages sends until the
   next normal Return, after the chips are visible. Live browser and TCC behaviour is a manual gate: no probe runs during implementation
   or in the suite, whose fixtures stand in for Helium.
 

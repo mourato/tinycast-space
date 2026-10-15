@@ -37,7 +37,7 @@ extension AIContextCoordinator {
     {
         let options = options
         let activeSource: ContextSource? =
-            snapshot != nil ? .apps : (activeTab != nil ? .browserTabs : nil)
+            snapshot?.isBrowser == true ? .browserTabs : (snapshot != nil ? .apps : nil)
         var sections = ContextPolicy.orderedSources(options: options, activeSource: activeSource)
             .map { section(for: $0, chat: chat, snapshot: snapshot) }
         for source in ContextSource.allCases where !source.isAvailable {
@@ -94,11 +94,13 @@ extension AIContextCoordinator {
 
     /// Known running external apps, named; the picker caps how many it shows.
     var runningContextApps: [(pid: pid_t, bundleID: String, name: String)] {
-        NSWorkspace.shared.runningApplications.compactMap { app in
+        let browsers = ContextAppReader.browserBundleURLs
+        return NSWorkspace.shared.runningApplications.compactMap { app in
             guard app.processIdentifier != NSRunningApplication.current.processIdentifier,
                 let bundleID = app.bundleIdentifier, !bundleID.hasPrefix("com.tinycast.app"),
                 app.activationPolicy == .regular || app.activationPolicy == .accessory,
-                !app.isTerminated
+                !app.isTerminated, !ContextBrowser.isSupported(bundleID: bundleID),
+                app.bundleURL.map({ !browsers.contains($0.standardizedFileURL) }) ?? false
             else { return nil }
             return (app.processIdentifier, bundleID, app.localizedName ?? bundleID)
         }
@@ -127,7 +129,8 @@ extension AIContextCoordinator {
                 id: "apps-active", title: "Attach Active App",
                 subtitle: snapshot.map { appSubtitle($0) } ?? "No app in front",
                 action: snapshot == nil ? nil : .activeApp,
-                disabledReason: snapshot == nil ? "Summon Tinycast from an app to quote it." : reason)
+                disabledReason: snapshot == nil ? "Summon Tinycast from an app to quote it."
+                    : (snapshot?.isBrowser == true ? "Use Browser tabs for browser context." : reason))
         ]
         for app in runningContextApps.prefix(12) {
             items.append(

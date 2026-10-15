@@ -68,15 +68,17 @@ final class AIChatCoordinator {
     // MARK: - The window
 
     /// Reopens on whatever it last showed: the conversation is `AppCore`'s, not the window's.
-    func showWindow(applyingOpenPolicy: Bool = false) {
+    func showWindow(
+        applyingOpenPolicy: Bool = false, appSnapshot: ContextAppReader.Snapshot? = nil
+    ) {
         guard settings.aiEnabled else { return }
-        // Before the window takes anything: the app in front now is the quote's source.
-        // Tinycast frontmost means a handoff or re-show, so the earlier snapshot survives.
         let frontmost = NSWorkspace.shared.frontmostApplication
         let target =
             frontmost?.processIdentifier == NSRunningApplication.current.processIdentifier
             ? nil : frontmost
-        if let snapshot = ContextAppReader.snapshot(of: target) {
+        if let appSnapshot {
+            contextCoordinator.windowSnapshot = appSnapshot
+        } else if let snapshot = ContextAppReader.snapshot(of: target) {
             contextCoordinator.windowSnapshot = snapshot
         } else if contextCoordinator.windowSnapshot == nil,
             let carried = core.paletteContextSnapshot()
@@ -147,7 +149,7 @@ final class AIChatCoordinator {
     /// Quick AI's ⌘J: the conversation, its staged files and the half-typed line all move over.
     func continueInWindow(draft: String) {
         chats.continueQuickAIInWindow(draft: draft)
-        showWindow()
+        showWindow(appSnapshot: core.paletteContextSnapshot())
     }
 
     /// A chat with no message yet is unsaved, so it has nothing to pin, copy or delete.
@@ -301,12 +303,16 @@ final class AIChatCoordinator {
                 let (token, rest) = contextCoordinator.contextToken(in: address.rest)
             {
                 // A `@`-context command stages for review and keeps the draft; never auto-sends.
-                let staged = contextCoordinator.prepareWithToken(
-                    token, rest: rest, in: chat, snapshot: appSnapshot)
-                if chat === chats.window {
-                    chat.draft = staged
-                } else {
-                    core.palette.query = staged
+                let chatID = chat.session.id
+                contextCoordinator.prepareWithToken(
+                    token, rest: rest, in: chat, snapshot: appSnapshot
+                ) { [weak self, weak chat] remainder in
+                    guard let self, let chat, chat.session.id == chatID else { return }
+                    if chat === self.chats.window, chat.draft == input {
+                        chat.draft = remainder
+                    } else if chat === self.chats.quickAI, self.core.palette.query == input {
+                        self.core.palette.query = remainder
+                    }
                 }
                 return false
             }

@@ -358,6 +358,7 @@
 		6318EE7BB3E3AA6EF9C49115 /* RoomLayoutEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08BFAE12F7EC9C75E523FD9D /* RoomLayoutEngine.swift */; };
 		633DCA2F00A274C375EB4423 /* LauncherRankingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EDB1EEB97CC5F6B0B81FFD6 /* LauncherRankingStore.swift */; };
 		63731BC19179EB89D495A390 /* NoteRevealPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7D0725CF7068879F86F0AA /* NoteRevealPolicy.swift */; };
+		63CDB283AA012C020C4352D6 /* AIContextCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED1D5545B78E4BCF7776CDFD /* AIContextCommands.swift */; };
 		648D442C0C716DB622511436 /* AIChatWindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */; };
 		64AD2324BDA6293464C98913 /* EmojiCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45EB979ECD44738BCD9E2F90 /* EmojiCoordinator.swift */; };
 		6527B404C220924885C070B3 /* AppWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9979DED5579535D1F0A32DBF /* AppWindowController.swift */; };
@@ -1705,6 +1706,7 @@
 		EC3D5A5B8038C07FEE03F433 /* KeyboardRemapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardRemapper.swift; sourceTree = "<group>"; };
 		EC895E9AF76C4530E52C34BB /* WindowShortcutPresetCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowShortcutPresetCoordinator.swift; sourceTree = "<group>"; };
 		ECE4D3633895F0E27FE3252D /* NoteInlineScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteInlineScanner.swift; sourceTree = "<group>"; };
+		ED1D5545B78E4BCF7776CDFD /* AIContextCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIContextCommands.swift; sourceTree = "<group>"; };
 		ED5AAA98FFF7A4D34D7B490D /* ExtensionBootConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionBootConfig.swift; sourceTree = "<group>"; };
 		ED866D346B2D97A12AD15CE9 /* DictationSpectrum.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSpectrum.swift; sourceTree = "<group>"; };
 		EDBAD3F666C10A869A4EAADB /* MeetingDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetailsView.swift; sourceTree = "<group>"; };
@@ -2084,6 +2086,7 @@
 				EAC662BDA6856590DCF96B94 /* AIChatState.swift */,
 				C94312FFD26A2581BB691F9E /* AIChatSurfacesState.swift */,
 				37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */,
+				ED1D5545B78E4BCF7776CDFD /* AIContextCommands.swift */,
 				C5B3806D6A7AEBF0B529DBC5 /* AIContextCoordinator.swift */,
 				2459AEF35C7E5E11A019B479 /* AIContextPicker.swift */,
 				0F5730EA67D6E91ABAD8F446 /* AIEmptyState.swift */,
@@ -4002,6 +4005,7 @@
 				753FEBB891DBCE13C4C59935 /* AIConnection.swift in Sources */,
 				4756BD8CEF9FC57A0C016555 /* AIConnectionEditorPanel.swift in Sources */,
 				DEBA3D842236875993867A25 /* AIConnectionKeyPolicy.swift in Sources */,
+				63CDB283AA012C020C4352D6 /* AIContextCommands.swift in Sources */,
 				2DA24A765446CD569968552E /* AIContextCoordinator.swift in Sources */,
 				0D5EF8DEE301D862DF28859B /* AIContextPicker.swift in Sources */,
 				EEB7F6A6AC8B53FDD607ED03 /* AIConversationOpenPolicy.swift in Sources */,
