@@ -32,6 +32,9 @@ struct QuickActionTests {
         await answerFailuresStayInTheirWindow()
         await cancelDuringCaptureStagesNothing()
         await hideDuringCaptureReopensNothing()
+        await hideThenReopenDropsStaleCapture()
+        await hideThenReopenDropsStaleFailure()
+        await silentCaptureSurvivesHide()
         await newChatDuringCaptureKeepsItsOwn()
         await conflictingSendDropsTheCapture()
         await conflictingAttachmentIsNeverConsumed()
@@ -494,6 +497,79 @@ struct QuickActionTests {
         expect(!fixture.palette.visible, "a dropped capture never reopens the window")
     }
 
+    /// Hiding retires the capture even when the same empty chat reopens before it lands.
+    static func hideThenReopenDropsStaleCapture() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        let session = fixture.chat.session.id
+        let staging = fixture.chat.stagingGeneration
+        fixture.palette.hidePalette()
+        fixture.palette.showPalette(mode: .ai)
+        expect(fixture.chat.session.id == session, "reopen keeps the same empty chat")
+        expect(fixture.chat.stagingGeneration == staging, "reopen stages nothing new")
+        QuickActionRunner.resumeAll(with: "late text")
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed capture answers nothing")
+        expect(fixture.chat.session.messages.isEmpty, "a dismissed capture sends nothing")
+        expect(fixture.chat.pendingAttachments.isEmpty, "a dismissed capture stages nothing")
+        expect(fixture.chat.notice == nil, "a dismissed capture leaves no progress behind")
+        expect(fixture.palette.keyClaims == 0, "a dismissed capture never takes key")
+        expect(fixture.palette.visible, "the reopened window stays as the reader left it")
+        QuickActionRunner.behavior = .succeed("fresh words")
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(
+            fixture.core.aiChatCoordinator.answers.count == 1, "a later run still answers")
+        expect(fixture.palette.keyClaims == 1, "the later run takes key once")
+    }
+
+    /// A failure that lands after hide and reopen reports nowhere and reopens nothing new.
+    static func hideThenReopenDropsStaleFailure() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        fixture.palette.hidePalette()
+        fixture.palette.showPalette(mode: .ai)
+        QuickActionRunner.failAll(with: QuickActionFailure.noSelection)
+        try? await Task.sleep(for: .milliseconds(100))
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed failure answers nothing")
+        expect(fixture.chat.session.messages.isEmpty, "a dismissed failure sends nothing")
+        expect(fixture.chat.notice == nil, "a dismissed failure leaves no progress behind")
+        expect(fixture.palette.keyClaims == 0, "a dismissed failure never takes key")
+        expect(fixture.palette.visible, "the reopened window stays as the reader left it")
+    }
+
+    /// Silent work never prepares a chat, so hiding retires nothing.
+    static func silentCaptureSurvivesHide() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        fixture.store.settings.setReplacesOnly(true, for: .rewrite)
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.rewrite))
+        await waitUntil(!fixture.core.progresses.isEmpty, "the silent capture starts in the pill")
+        fixture.palette.hidePalette()
+        QuickActionRunner.resumeAll(with: "the selected words")
+        await waitUntil(
+            fixture.core.aiChatCoordinator.answers.count == 1, "silent work survives a hide")
+        expect(fixture.palette.shows == 0, "silent work never opens Quick AI")
+        expect(fixture.chat.session.messages.count == 2, "the silent turn still lands in history")
+    }
+
     /// A new chat mid-capture belongs to the reader; the late capture leaves it alone.
     static func newChatDuringCaptureKeepsItsOwn() async {
         let fixture = QuickActionFixture()
@@ -678,6 +754,7 @@ final class PaletteCoordinator {
     var shows = 0
     var passiveShows = 0
     var keyClaims = 0
+    var dismissalGeneration = 0
     var targetApp: NSRunningApplication?
     var previousOwnWindow: NSWindow?
     var isVisible: Bool { visible }
@@ -702,7 +779,11 @@ final class PaletteCoordinator {
     }
 
     func isShowing(_ mode: PaletteMode) -> Bool { visible && self.mode == mode }
-    func hidePalette(restoreFocus: Bool = true) { visible = false; key = false }
+    func hidePalette(restoreFocus: Bool = true) {
+        dismissalGeneration += 1
+        visible = false
+        key = false
+    }
 }
 
 enum PaletteMode { case launcher, ai }
@@ -749,6 +830,12 @@ enum QuickActionRunner {
         let pending = continuations
         continuations = []
         for continuation in pending { continuation.resume(returning: text) }
+    }
+
+    static func failAll(with failure: Error) {
+        let pending = continuations
+        continuations = []
+        for continuation in pending { continuation.resume(throwing: failure) }
     }
 }
 
