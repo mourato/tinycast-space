@@ -1,6 +1,6 @@
 import AppKit
 
-/// Reads the selection and transforms it; replacing the text is the coordinator's call, not this.
+/// Reads the text a quick action works on; the reply and any write-back belong to Quick AI.
 @MainActor
 final class QuickActionRunner {
     /// The ceiling lives here, not at the provider, where it returns as an opaque context error.
@@ -33,42 +33,5 @@ final class QuickActionRunner {
         }
         guard text.utf8.count <= maxSelectionBytes else { throw QuickActionFailure.tooLong }
         return text
-    }
-
-    /// No transcript to grow, so a caller showing progress reads `onDelta` and the rest just await.
-    static func run(
-        _ action: QuickAction, selection: String, using provider: any AIProvider,
-        instructionOverride: String?,
-        onDelta: @MainActor (String) -> Void = { _ in }
-    ) async throws -> String {
-        let request = AIRequest(
-            instructions: QuickActionPrompt.instructions(
-                for: action, override: instructionOverride),
-            messages: [
-                AIMessage(
-                    role: .user,
-                    text: QuickActionPrompt.message(for: action, selection: selection))
-            ],
-            maxOutputTokens: maxOutputTokens(for: action, selection: selection, on: provider))
-        var text = ""
-        for try await event in provider.stream(request) {
-            guard case .text(let delta) = event else { continue }
-            text += delta
-            onDelta(delta)
-        }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw AIProviderError.responseFailed("The model returned nothing.")
-        }
-        return trimmed
-    }
-
-    /// The on-device window counts the prompt and the reply against one budget, so both need a cap.
-    private static func maxOutputTokens(
-        for action: QuickAction, selection: String, on provider: any AIProvider
-    ) -> Int {
-        guard provider is AppleIntelligenceProvider else { return AIRequest.defaultMaxOutputTokens }
-        let approximateTokens = max(selection.count / 3, 64)
-        return action == .summarize ? min(approximateTokens, 512) : approximateTokens * 2
     }
 }

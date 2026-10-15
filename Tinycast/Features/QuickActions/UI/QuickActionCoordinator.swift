@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-/// The single funnel for every Quick Action, however it was started.
+/// The single funnel for every Quick Action, however it was started. Every result lands in Quick AI.
 @MainActor
 @Observable
 final class QuickActionCoordinator {
@@ -15,6 +15,19 @@ final class QuickActionCoordinator {
     private enum Target {
         case external(NSRunningApplication?)
         case note(NoteSelection)
+
+        var isNote: Bool {
+            if case .note = self { return true }
+            return false
+        }
+    }
+
+    /// The reply that may still be written back, and the chat it was written in.
+    private struct PendingReply {
+        let chatID: UUID
+        let messageID: UUID
+        let action: QuickAction
+        let target: Target
     }
 
     private let settings: AppSettings
@@ -28,16 +41,15 @@ final class QuickActionCoordinator {
     private let ranking: LauncherRankingStore
     private let aliases: AliasStore
     private let paletteCoordinator: PaletteCoordinator
-    private let panels = QuickActionPanelController()
     private unowned let core: AppCore
 
     private static let launcherCommands = Set(BuiltInQuickAction.allCases.map(CommandID.init))
+    private static let languageSettingsPane = "com.apple.Localization-Settings.extension"
 
-    /// One at a time: two runs race for one selection, and the second overwrites the first's work.
+    /// One at a time while the text is read: two reads race for one selection.
     @ObservationIgnored private var running: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
-    /// Cancellation is cooperative, so a cancelled run must not hide the pill a newer run showed.
-    @ObservationIgnored private var progressOwner: Int?
+    @ObservationIgnored private var pendingReply: PendingReply?
 
     init(
         settings: AppSettings, store: QuickActionSettingsStore,
@@ -70,9 +82,6 @@ final class QuickActionCoordinator {
             return
         }
         core.applyInstalledAILifecycle()
-        store.resolveModel(
-            appleIntelligenceAvailable: core.aiSettings.isAppleIntelligenceAvailable(),
-            fallback: core.aiSettings.defaultModel)
         loadLanguages()
     }
 
@@ -108,19 +117,14 @@ final class QuickActionCoordinator {
 
     // MARK: - The reader's own actions
 
-    /// The route is stored only once the record is on disk, so a refused save leaves neither behind.
-    func addCustomQuickAction(
-        _ draft: CustomQuickAction, model: AIModelSelection?
-    ) throws(CustomQuickActionError) {
-        let action = try customActions.add(draft)
-        store.setModelOverride(model, for: .custom(action))
+    // MARK: - The reader's own actions
+
+    func addCustomQuickAction(_ draft: CustomQuickAction) throws(CustomQuickActionError) {
+        _ = try customActions.add(draft)
     }
 
-    func updateCustomQuickAction(
-        _ draft: CustomQuickAction, model: AIModelSelection?
-    ) throws(CustomQuickActionError) {
+    func updateCustomQuickAction(_ draft: CustomQuickAction) throws(CustomQuickActionError) {
         try customActions.update(draft)
-        store.setModelOverride(model, for: .custom(draft))
     }
 
     func setPreviewsResult(_ previews: Bool, id: UUID) {
@@ -160,7 +164,6 @@ final class QuickActionCoordinator {
         let hotKeyAction = HotKeyAction.quickAction(id: action.id)
         if hotKeys.recordingAction == hotKeyAction { hotKeys.recordingAction = nil }
         hotKeys.setBinding(nil, for: hotKeyAction)
-        store.setModelOverride(nil, for: .custom(action))
         favorites.remove(keys: [action.entryID])
         visibility.removeItemKeys([action.entryID])
         aliases.removeKeys([action.entryID])
@@ -174,6 +177,14 @@ final class QuickActionCoordinator {
 
     func run(_ action: QuickAction) {
         guard settings.quickActionsEnabled, running == nil else { return }
+        guard settings.aiEnabled else {
+            core.showMessage("Turn on AI Chat to use Quick Actions.", tone: .neutral)
+            return
+        }
+        guard !core.aiChatCoordinator.chats.quickAI.isStreaming else {
+            core.showMessage("Quick AI is still answering.", tone: .neutral)
+            return
+        }
         let source =
             paletteCoordinator.isVisible
             ? InjectionTarget.behindPalette(
@@ -198,8 +209,6 @@ final class QuickActionCoordinator {
         generation += 1
         running?.cancel()
         running = nil
-        hideProgress(ownedBy: progressOwner)
-        panels.dismiss()
     }
 
     /// The generation stops a superseded task from clearing the newer handle as it finishes.
@@ -244,12 +253,18 @@ final class QuickActionCoordinator {
             return
         }
         guard !Task.isCancelled else { return }
-        let state = QuickActionPanelState(
-            action: action, original: selection, targetLanguage: targetLanguage)
-        // Typing over a page that had no selection would land in whatever happens to be focused.
-        let previews = fromPage || store.settings.previewsResult(action)
-        if previews { present(state, target: target) }
-        await perform(state, target: target, previewing: previews)
+        // A page has no selection to write back into, so its result is only ever read.
+        let writesBack = !fromPage && action.replacesSelection
+        let sourceName = fromPage ? "Page text" : "Selected text"
+        if action.usesTranslationFramework {
+            await translate(
+                selection, sourceName: sourceName, action: action, target: target,
+                writesBack: writesBack)
+        } else {
+            answer(
+                action, selection: selection, sourceName: sourceName, target: target,
+                writesBack: writesBack)
+        }
     }
 
     private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
@@ -314,58 +329,109 @@ final class QuickActionCoordinator {
         }
     }
 
-    private func perform(
-        _ state: QuickActionPanelState, target: Target, previewing: Bool
-    ) async {
-        do {
-            let text = try await produce(state, previewing: previewing)
-            guard !Task.isCancelled else { return }
-            state.finish(text)
-            if previewing { return }
-            deliver(text, to: target, action: state.action)
-        } catch is CancellationError {
+    /// A new conversation whose text rides as a staged document, answered by the chat's own route.
+    private func answer(
+        _ action: QuickAction, selection: String, sourceName: String, target: Target,
+        writesBack: Bool
+    ) {
+        let chat = core.aiChatCoordinator.chats.quickAI
+        chat.startNewChat()
+        pendingReply = nil
+        let attachment = ChatAttachment(
+            payload: .document(
+                AIDocument(data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)),
+            name: sourceName, preview: nil)
+        if let refusal = chat.attach(attachment) {
+            core.showMessage(refusal.message, tone: .neutral)
             return
-        } catch let error as TextTranslator.Failure where error.needsDownload {
-            // A HUD cannot say where the download lives, so this has to become a panel.
-            if !previewing { present(state, target: target) }
-            state.requireLanguageDownload()
+        }
+        let chatID = chat.session.id
+        if writesBack {
+            var automatic = false
+            if case .custom(let custom) = action { automatic = !custom.previewsResult }
+            chat.onNextReplyEnded = { [weak self] reply in
+                guard let self, let reply else { return }
+                self.finishedReply(
+                    reply, chatID: chatID, action: action, target: target, automatic: automatic)
+            }
+        }
+        paletteCoordinator.showPalette(mode: .ai)
+        let instructions = QuickActionPrompt.instructions(
+            for: action, override: store.settings.instructionOverride(for: action))
+        let sent = core.aiChatCoordinator.answerQuickAction(
+            prompt: action.title, instructions: instructions, in: chat)
+        if !sent { chat.onNextReplyEnded = nil }
+    }
+
+    /// Apple's translator does not stream, so its reply is recorded whole as a finished turn.
+    private func translate(
+        _ selection: String, sourceName: String, action: QuickAction, target: Target,
+        writesBack: Bool
+    ) async {
+        let chat = core.aiChatCoordinator.chats.quickAI
+        chat.startNewChat()
+        pendingReply = nil
+        paletteCoordinator.showPalette(mode: .ai)
+        let language = targetLanguage
+        let languageName = TextTranslator.displayName(of: language)
+        core.showProgress("Translating…")
+        defer { core.hideProgress() }
+        do {
+            let text = try await TextTranslator.translate(selection, to: language)
+            guard !Task.isCancelled else { return }
+            let document = AIDocument(
+                data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)
+            let messageID = chat.record(
+                prompt: "\(action.title) to \(languageName)", documents: [document], reply: text)
+            if writesBack {
+                pendingReply = PendingReply(
+                    chatID: chat.session.id, messageID: messageID, action: action, target: target)
+            }
+        } catch let failure as TextTranslator.Failure where failure.needsDownload {
+            guard
+                await core.reportFailure(
+                    title: "\(languageName) isn’t downloaded yet",
+                    message:
+                        "Download it in Language & Region, then translate again. Translation runs "
+                        + "on this Mac, so the text stays here.",
+                    symbol: "translate", recovery: "Open Language & Region")
+            else { return }
+            AppLauncher.openSettingsPane(bundleID: Self.languageSettingsPane)
         } catch {
-            report(error, state: state, previewing: previewing)
+            chat.report(error.localizedDescription)
         }
     }
 
-    /// Without a panel there is nothing on screen saying the model is working, so the pill says it.
-    private func produce(
-        _ state: QuickActionPanelState, previewing: Bool
-    ) async throws -> String {
-        guard !previewing else { return try await generate(state, streaming: true) }
-        let mine = generation
-        progressOwner = mine
-        core.showProgress(state.action.progressTitle, onCancel: { [weak self] in self?.cancel() })
-        defer { hideProgress(ownedBy: mine) }
-        return try await generate(state, streaming: false)
-    }
-
-    private func hideProgress(ownedBy owner: Int?) {
-        guard let owner, progressOwner == owner else { return }
-        progressOwner = nil
-        core.hideProgress()
-    }
-
-    private func generate(
-        _ state: QuickActionPanelState, streaming: Bool
-    ) async throws -> String {
-        if state.action.usesTranslationFramework {
-            return try await TextTranslator.translate(state.original, to: state.targetLanguage)
+    /// Automatic replacement leaves the palette, as a direct replacement always did; otherwise the reply waits for its button.
+    private func finishedReply(
+        _ reply: ChatMessage, chatID: UUID, action: QuickAction, target: Target, automatic: Bool
+    ) {
+        let text = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard automatic else {
+            pendingReply = PendingReply(
+                chatID: chatID, messageID: reply.id, action: action, target: target)
+            return
         }
-        let provider = try core.quickActionProvider(for: state.action)
-        return try await QuickActionRunner.run(
-            state.action, selection: state.original, using: provider,
-            instructionOverride: store.settings.instructionOverride(for: state.action),
-            onDelta: { delta in
-                guard streaming else { return }
-                state.append(delta)
-            })
+        paletteCoordinator.hidePalette(restoreFocus: target.isNote)
+        deliver(text, to: target, action: action)
+    }
+
+    /// Quick AI asks this before offering its Replace button for the reply on screen.
+    func canReplaceReply(in chat: AIChatState) -> Bool {
+        guard let pending = pendingReply, pending.chatID == chat.session.id, !chat.isStreaming
+        else { return false }
+        return chat.session.messages.last?.id == pending.messageID
+    }
+
+    func replaceReply(in chat: AIChatState) {
+        guard canReplaceReply(in: chat), let pending = pendingReply,
+            let reply = chat.session.messages.last
+        else { return }
+        pendingReply = nil
+        let text = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        paletteCoordinator.hidePalette(restoreFocus: pending.target.isNote)
+        deliver(text, to: pending.target, action: pending.action)
     }
 
     /// A replacement that never lands would otherwise lose the reply, so the clipboard keeps it.
@@ -391,34 +457,6 @@ final class QuickActionCoordinator {
             else { onFailed(); return }
             onDelivered()
         }
-    }
-
-    /// A failure the reader cannot see is a hotkey that silently did nothing.
-    private func report(_ error: Error, state: QuickActionPanelState, previewing: Bool) {
-        guard previewing else {
-            core.showMessage(error.localizedDescription, tone: .danger)
-            return
-        }
-        state.fail(error.localizedDescription)
-    }
-
-    private func present(_ state: QuickActionPanelState, target: Target) {
-        panels.present(
-            state,
-            metrics: settings.interfaceSize.metrics,
-            languages: offeredLanguages,
-            onRetranslate: { [weak self] language in
-                state.targetLanguage = language
-                self?.rerun(state, target: target)
-            },
-            onReplace: { [weak self] text in
-                self?.deliver(text, to: target, action: state.action)
-            })
-    }
-
-    private func rerun(_ state: QuickActionPanelState, target: Target) {
-        state.restart()
-        start { [weak self] in await self?.perform(state, target: target, previewing: true) }
     }
 
     private var targetLanguage: Locale.Language {

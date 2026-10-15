@@ -1,117 +1,111 @@
 # Quick Actions
 
-Act on whatever text is selected, in whatever app is frontmost. Four are shipped: Fix Grammar,
-Rewrite, Translate and Summarize, each with its own bindable shortcut **and its own launcher command**,
-both listed in **Settings → Quick Actions**. Three go through the AI provider layer; Translate goes to
-Apple's own translator. The result either replaces the selection or arrives in a floating panel, per
-action.
+Act on the text selected in whatever app is frontmost. Four are shipped: Fix Grammar, Rewrite,
+Translate and Summarize, each with its own bindable shortcut **and its own launcher command**, both
+listed in **Settings → Quick Actions**. A **custom Quick Action** is a name, a glyph and a prompt, and
+takes a shortcut and a launcher row like any other.
 
-A **custom Quick Action** is a name, a glyph and a prompt, run through the same provider. It takes a
-shortcut and a launcher row like any other.
+Every result opens in **Quick AI**, the palette's AI screen, and the chat's own model answers it. Fix
+Grammar, Rewrite, Translate and custom actions write their reply back over the selection through a
+**Replace** button on that reply. Summarize only reads. Translate is the one exception to the model:
+it runs on Apple's translator, which needs no account, and its reply joins the transcript the same way.
 
-Quick Actions is the provider layer's second consumer. It shares the provider connections and
-selectable Markdown renderer with AI Chat.
+Quick Actions depend on AI Chat. With AI Chat switched off, every shortcut and launcher row does
+nothing and says so with a HUD.
 
 ## Invariants
 
 - **Off out of the box, and off means the shortcuts do nothing.** `AppSettings.quickActionsEnabled`
-  is the flag and `QuickActionCoordinator` is the only place that reads it: no selection is read, no
-  provider is built, no panel opens. The four commands leave the launcher's Quick Actions slice
-  through `AppIndex.setCommandsVisible`, and the custom ones leave it through
-  `AppIndex.setCustomQuickActions`, the way Notes and AI Chat drop theirs. Carbon bindings stay
-  registered, so re-enabling restores every shortcut without touching the hotkey layer. The flag
-  grants keystroke delivery into other apps, so like `snippetsEnabled` it is excluded from settings
-  backups — an import must never arm it.
+  is the flag and `QuickActionCoordinator` is the only place that reads it: no selection is read and
+  no conversation starts. The four commands leave the launcher's Quick Actions slice through
+  `AppIndex.setCommandsVisible`, and the custom ones through `AppIndex.setCustomQuickActions`. Carbon
+  bindings stay registered, so re-enabling restores every shortcut without touching the hotkey layer.
+  The flag grants keystroke delivery into other apps, so like `snippetsEnabled` it is excluded from
+  settings backups — an import must never arm it.
+- **Quick Actions need AI Chat.** `AppSettings.aiEnabled` must also be on. `QuickActionCoordinator.run`
+  refuses with a HUD before it reads anything, so no text leaves the Mac through a route the reader
+  never turned on.
 - **One funnel, whichever way an action started.** A shortcut and a launcher row both land on
   `QuickActionCoordinator.run(_:)`, which captures the target **before** hiding the palette. An
   external app remains the usual target; a selected passage in the Notes editor is captured directly
-  from its text view. Hiding there rather than at each caller keeps the two paths identical.
+  from its text view.
 - **Enabling is consent, and it is the only place Accessibility is requested.** The toggle confirms
-  through `DialogController` first and then calls `Permissions.ensureAccessibility()`, the pattern
-  `SnippetCoordinator.setSnippetsEnabled` established. Everything else — a shortcut press, a
-  delivery — uses `isAccessibilityTrusted()` and degrades to a HUD.
+  through `DialogController` first and then calls `Permissions.ensureAccessibility()`. Everything else
+  uses `isAccessibilityTrusted()` and degrades to a HUD.
 - **Tinycast is never an event target.** `QuickActionRunner.selection(in:using:)` refuses our own
   bundle identifier, and `TextInjector.targetAcceptsInjection` refuses it again before every event post,
-  along with anything raised while Secure Event Input is up. Notes is the narrow in-process exception:
-  its own editor supplies and replaces a selected passage without Accessibility, clipboard or events.
-  A shortcut pressed with Settings frontmost, or in a password field, does nothing and says so.
+  along with anything raised while Secure Event Input is up. Notes is the narrow in-process exception.
+- **Results open in Quick AI and nowhere else.** `answer` starts a new conversation in
+  `AIChatSurfacesState.quickAI`, stages the text as one `text/plain` document, and sends the action's
+  title as the turn. Its instructions come from `QuickActionPrompt`, or the reader's override. The turn
+  goes through the chat's own route with no tools and no web search. The reply streams in the palette,
+  and ⌘J hands the conversation to the AI Chat window like any other.
+- **The text is bounded where it is read, not where it is sent.** The selection or page is capped at
+  `QuickActionRunner.maxSelectionBytes` (32 KB), the same ceiling `AIAttachmentBudget` gives a text
+  document, so a page that fits the reader fits the request. Chat's own 8,000-character page staging is
+  not involved.
+- **A new run waits for an answer already in progress.** `run` refuses while `quickAI` is streaming, so
+  a shortcut never cancels a reply the reader is still reading. A second run while text is being read
+  is refused the same way, because two reads race for one selection.
 - **A browser page stands in for a missing selection only where browser context is on.** When no
-  selection is found and the target is a supported browser, `QuickActionCoordinator` reads its
-  active tab through `ContextBrowserRunner` — only while `ContextPolicy.canCaptureBrowser` holds,
-  so the Context master switch and the Browser tabs source both gate it. The page's selection wins,
-  else its text, capped to `maxSelectionBytes`; it is the same untrusted material as any selection.
-  A page read always opens the result panel instead of typing over the page, and a private window,
-  a stale tab or a refused read reports instead. With browser context off nothing changes.
-- **One run at a time.** Two overlapping runs would race for one selection, and the second would
-  replace text the first had already changed. `QuickActionCoordinator` holds a single task and
-  refuses a second while it lives; a generation token stops a task that finishes after being
-  replaced — by a retranslate, say — from clearing the newer handle.
-- **`Model/` stays Foundation-only.** `quick-action-test` compiles that folder standalone, which is
-  what keeps `FoundationModels`, `Translation` and `NaturalLanguage` in `Service/` and `UI/`.
-- **Quick Actions route themselves.** `quickActionModel` is a second routing decision, defaulting to
-  Apple Intelligence and falling back to chat's model. A shortcut pressed all day should not bill an
-  API every time, and that is not a choice chat's default can make on its behalf.
-- **An action may override that route, and only by choice.** `quickActionModelOverrides` is keyed by
-  `QuickAction.id`, so the built-in four and custom actions share one lookup,
-  `QuickActionSettingsStore.model(for:)`. An absent entry follows `quickActionModel`, so nothing
-  changes until the reader picks a model in the action's sheet. Translate never takes one.
-- **A dead override is dropped, never rerouted.** Repair walks every override beside the shared
-  route: a vanished catalog model moves to its command's first model, like the shared route, but a
-  removed connection or an unavailable command deletes the entry instead of borrowing chat's model.
-  The action then follows the route its pane names, not one the reader never chose for it.
-- **Installed providers are ordinary routes.** The model picker reads the same live Codex, Claude, Grok,
-  OpenCode and Cursor catalogs as AI Settings. Execution still goes through `AIProviderFactory`, so Quick Actions
-  inherit the same installed login, tool restrictions and process cleanup without owning CLI logic.
-- **The model picker is the AI picker.** Both panes render `AIModelOption.groupedCatalog`, with the
-  same provider sections, model labels and provider-supported reasoning levels. An installed-model
-  selection stores its effort in `quickActionModel`, independently of chat's effort. The sheets use the
-  same `AIModelSelectionRows`, with **Same as Quick Actions** as the `nil` choice.
-- **The reader's own text gets permissive guardrails.** `AppCore.quickActionProvider()` asks for
-  `SystemLanguageModel.Guardrails.permissiveContentTransformations`. The default filter is tuned for
-  a model writing fresh prose and refuses to transform text somebody already wrote, which is the
-  whole feature.
-- **Built-in instructions treat the selection as untrusted input.** `QuickActionPrompt` tells the
-  model that the text is material to work on and never instructions to follow, and that only the
-  transformed text may come back — no preamble, no fences. Custom instructions replace these rules
-  too. The output is pasted into somebody's document.
+  selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
+  tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
+  selection wins, else its text, capped to `maxSelectionBytes`. **A page result is never written back**:
+  `begin` computes `writesBack = !fromPage && action.replacesSelection`, so no Replace button and no
+  automatic replacement is offered for it, whatever the action.
+- **Only the reply is written back, and only to where the text came from.** The target — the frontmost
+  app or the note editor and its range — is captured when the run starts. `replaceReply` writes the last
+  reply through `deliver`, and only while `canReplaceReply` finds it still the last message of the same
+  conversation. A regenerated or superseded reply has a new id, so its button disappears.
+- **Summarize never writes back.** `BuiltInQuickAction.replacesSelection` is false for it, so its
+  reply carries no Replace button and nothing replaces the text. The answer is about the text, and
+  replacing the text with it would destroy what the reader selected.
+- **A custom action chooses between Preview and Replace on its record.** Preview shows the reply in
+  Quick AI with a Replace button. Replace writes the reply back as soon as it finishes: `finishedReply`
+  leaves the palette, then calls `deliver`. Tinycast cannot know whether an arbitrary prompt transforms
+  the text or answers a question about it, so Preview stays the default.
+- **Translate uses Apple's translator and needs its language installed.** `TextTranslator` runs on
+  device. Its reply is recorded whole with `AIChatState.record`, since the translator does not stream.
+  A language that is supported but not downloaded raises a dialog that opens Language & Region, and
+  nothing is written.
+- **`Model/` stays Foundation-only.** `quick-action-test` compiles that folder standalone.
+- **Built-in instructions treat the text as untrusted input.** `QuickActionPrompt` tells the model that
+  the attached text is material to work on and never instructions to follow, and that only the
+  transformed text may come back — no preamble, no fences. Custom instructions replace these rules too.
+  The output is pasted into somebody's document.
 - **A custom prompt cannot drop that boundary.** An override on a shipped action may replace
   `boundary`, because the sheet shows the whole prompt. A custom action *is* the prompt, so `boundary`
   is prepended and no control removes it.
-- **Each model action owns its instructions and its route.** The pencil on Fix Grammar, Rewrite and
-  Summarize opens a sheet prefilled with the exact built-in prompt and the action's model. Saving
-  replaces both for only that action; Use Default restores the prompt. Translate has no editor because no model handles translation. The same
-  pencil on a custom action opens its editor, which owns the name and glyph too.
-- **A custom action never travels in a backup.** Neither the record, its shortcut nor its route, for
-  the reason `quickActionInstructions` already doesn't: an import must never change what a shortcut
-  does to somebody's documents. Its JSON sits outside `UserDefaults`, so no settings key can sweep it
-  up, and `quickActionModelOverrides` is excluded like `quickActionModel`.
+- **Each built-in action owns its instructions.** The pencil on Fix Grammar, Rewrite and Summarize
+  opens a sheet prefilled with the exact built-in prompt. Saving replaces it for only that action;
+  Use Default restores it. Translate has no editor, because it does not take model instructions.
+- **A custom action never travels in a backup.** Neither the record, its shortcut nor its Replace
+  choice, for the reason `quickActionInstructions` already doesn't: an import must never change what a
+  shortcut does to somebody's documents. Its JSON sits outside `UserDefaults`, so no settings key can
+  sweep it up.
 
 ## The actions
 
-`QuickAction` is `.builtIn(BuiltInQuickAction)` or `.custom(CustomQuickAction)`. Coordinator, panel,
-runner and prompt all take that one type, and neither half has a code path of its own.
+`QuickAction` is `.builtIn(BuiltInQuickAction)` or `.custom(CustomQuickAction)`. Coordinator, prompt and
+runner all take that one type.
 
 A fifth *shipped* action is one `BuiltInQuickAction` case, its prompt in `QuickActionPrompt`, and one
 `CommandID` case for its launcher row. `CommandID.init(_ action:)` is exhaustive, so it cannot compile
 without one.
 
-The custom case carries the record rather than an id, so a run uses the prompt as it was when it
-started.
-
-| Action | Engine | Default result | Diff |
+| Action | Engine | Result | Replace |
 | --- | --- | --- | --- |
-| Fix Grammar | provider | replaces directly | yes |
-| Rewrite | provider | panel | yes |
-| Translate | Apple Translation | panel | no |
-| Summarize | provider | panel, always | no |
-| a custom action | provider | panel | no |
+| Fix Grammar | chat model | Quick AI | button |
+| Rewrite | chat model | Quick AI | button |
+| Translate | Apple Translation | Quick AI | button |
+| Summarize | chat model | Quick AI | none — read only |
+| a custom action, Preview | chat model | Quick AI | button |
+| a custom action, Replace | chat model | Quick AI | written back on finish |
 
-A custom action previews by default, switchable to Replace per row: Tinycast cannot know whether an
-arbitrary prompt transforms the text or answers a question about it, and only the second destroys what
-it replaces. No diff, for the same reason.
+On a page with no selection, every row keeps its result and loses its write-back.
 
-Custom instructions stay on this Mac and are excluded from settings backups, like chat's system
-prompt, because importing them would change results without the reader seeing them first.
+Results no longer show a diff. The old panel marked what Fix Grammar and Rewrite changed; Quick AI
+is a transcript, and `TextDiffEngine` was removed with the panel. The reply is the whole text.
 
 ## Custom actions
 
@@ -120,9 +114,8 @@ prompt, because importing them would change results without the reader seeing th
 injected directory so the harness gets a throwaway one. Name and instructions must be non-empty;
 nothing else is rejected, including a name a shipped action already uses.
 
-**Replace / Preview rides the record.** `QuickActionSettings` keys on `BuiltInQuickAction`, which
-cannot hold a UUID, and a parallel dictionary would outlive what it described. On the record, a delete
-takes the choice with it.
+**Replace / Preview rides the record.** A parallel dictionary in settings would outlive the actions it
+described, and `BuiltInQuickAction` cannot hold a UUID. On the record, a delete takes the choice with it.
 
 **`AppEntry.Kind.quickAction` is one section for both halves**, ungated in
 `VisibilityStore.allowsHotKey` because `quickActionsEnabled` is the master switch. The four keep their
@@ -140,16 +133,8 @@ install; one that exists but will not decode sets `isAvailable` false and makes 
 `QuicklinkStore`'s rule: authored data is reported on, never written over.
 
 **Deleting unwinds only once the record is gone.** Confirm, remove, *then* drop the binding, the
-route override, the favorite, the alias, the visibility key and the ranking. `WindowLayoutCoordinator`'s order: a failed
+favorite, the alias, the visibility key and the ranking. `WindowLayoutCoordinator`'s order: a failed
 delete must never leave a kept record stripped of its shortcut.
-
-Only Fix Grammar applies unseen: it changes what was wrong, where a rewrite changes the voice.
-Summarize can never be told to replace text unseen — it answers a question *about* the text, so
-replacing the text with the answer has to be a choice made in the panel. Every other default is a
-**Replace / Preview** popup in the pane — a popup rather than a second checkbox, because the trailing
-checkbox column means "show in the launcher" in every pane the app has. `QuickActionSettings` stores
-only what the reader actually changed, so a new action arrives with its own default rather than
-whatever a missing key would have meant.
 
 ## Translation
 
@@ -162,62 +147,38 @@ source language, because `TranslationSession(installedSource:target:)` needs a c
 caught as plain `Error` and reported by what was asked rather than by matching its cases.
 
 **The picker offers Apple's own list, never the reader's preferred languages.** `supportedLanguages`
-is 47 entries on macOS 26 and is the framework's to change; building the menu from
-`Locale.preferredLanguages` instead would put a language the translator cannot reach in front of
-someone, where it could only fail at press time. Notably **Bengali is not among the 47**. The list
-loads asynchronously, so the coordinator holds it as observed state rather than a computed property.
-Names come from `minimalIdentifier` — the maximal form carries the script, and `es` would read
-"Spanish (Latin, Spain)" in a menu that should say "Spanish".
+is 47 entries on macOS 26 and is the framework's to change. Notably **Bengali is not among the 47**.
+Names come from `minimalIdentifier`, so `es` reads "Spanish", not "Spanish (Latin, Spain)".
 
-A pair that is supported but not downloaded **opens the panel**, whatever the action's usual result,
-so a shortcut never silently does nothing. **The download happens in System Settings.**
-`prepareTranslation` never showed its sheet over this non-activating panel, so the prompt says where
-to go — Language & Region → Translation Languages… — and its one button opens that pane and closes
-the panel. System Settings has no anchor for the sheet itself, so the last click stays the reader's.
+The target language is set in **Settings → Quick Actions → Translate to**. Quick AI has no language
+menu of its own: changing the language means changing the setting and running Translate again.
 
-## The panel
+A pair that is supported but not downloaded raises a dialog that names the language, and its one
+button opens Language & Region. **The download happens in System Settings**, because no sheet can
+appear over Quick AI from outside the app.
 
-`QuickActionPanel` is Tinycast's **fourth borderless surface**, beside the dialog, the notes panel
-and the join preview. It takes the same recipe — `panelScrim`, then `GlassEffectView`, then the
-clip — and sits at `.floating` like the join preview, so a failure report still lands on top of it.
-Its footer speaks the same button language as a dialog's — `ModalActionButtonStyle`, with Replace
-as the `.primary` role — so every borderless surface answers in one voice rather than dropping Aqua
-controls onto vibrancy.
+## Results in Quick AI
 
-It could not have been built on `HUDPresenter`: `HUDPanel` sets `ignoresMouseEvents` and returns
-`false` from `canBecomeKey`, so it is click-through and hosts no buttons. Nor on `DialogAccessory`,
-which is a closed two-case enum measured once at present time — a growing stream would clip.
+`QuickAICoordinator` owns the palette's AI screen, and Quick Actions reuse its chat state. A run
+calls `chats.quickAI.startNewChat()`, the same reset `ask(_:)` makes, so a result never lands in a
+conversation the reader was already in. The palette opens in `.ai` mode; the reply streams through
+`AIChatCoordinator.answerQuickAction`, which is the chat's send path without the `@`-token parsing
+and the tool loop.
 
-Non-activating, so the target app keeps its selection while the panel holds key. Keys go through
-`sendEvent`: `↵` replaces, `⌘C` copies, `esc` dismisses; click-away dismisses like every other
-borderless surface. The panel is anchored by its **top-left** and re-measured as the reply arrives —
-centring on every measure would walk it up the screen. Summarize and custom actions use chat's
-`ChatMarkdownText` and `MarkdownBlock.parse`, keeping the whole result selectable across paragraphs
-and headings, with the same math as chat; `midStream` is on while it runs, so an equation still
-arriving is held back.
+**Replace is an action on the reply, not a footer.** `ChatTranscriptView` offers a `ReplaceButton`
+beside the copy and regenerate buttons, on the last assistant message only. Both surfaces wire it:
+the palette's `AIChatView` and the AI Chat window's detail view. `canReplaceLastReply` decides whether
+the callback is passed at all, so an ordinary reply has no button.
 
-The body is a `ScrollView` with its height **set** rather than capped: a scroll view has no ideal
-height, so `NSHostingView.fittingSize` measures it as nothing and the body collapses to a slot. The
-content's ideal height is measured with `fixedSize` + `onGeometryChange`, the way the Support and
-Updates windows size themselves.
+**Automatic write-back waits for the reply to end.** A custom action set to Replace registers
+`AIChatState.onNextReplyEnded` before the turn starts. `finishLast` calls it once, however the turn
+ends, and only a completed reply reaches `finishedReply`. Clearing the hook on every end stops a
+failed run from writing into a later reply.
 
-The scroll view owns the **whole** panel and the bars are overlays on top, so a result dissolves
-beneath them rather than stopping at a line. The mask is clear for each bar's height, ramps over
-`quickActionScrollFade`, and the content is inset by bar + ramp — so the first line starts fully
-opaque and only dissolves once it has scrolled up into the gradient. It is skipped entirely when the
-result already fits, since dimming text that needs no scrolling reads as a defect.
+A failed reply keeps the chat's usual `failed` state and no button. Cancelling it through Quick AI
+behaves as cancelling any reply does.
 
-Three things here were settled by rendering them, not by reasoning:
-`scrollEdgeEffectStyle` draws nothing in this panel — it renders a material where a scroll view meets
-a safe area, and over `panelScrim` + `GlassEffectView` that composites to nothing. `safeAreaBar`
-makes it visible but lays its bars *over* the content instead of insetting it, so text runs through
-the buttons and escapes the corner clip. And a ramp starting at the panel edge rather than below the
-bar leaves text about 60% visible behind the title.
-
-`TextDiffEngine` shows what changed when the output is the input, edited. Its traceback is
-quadratic, so past `maxTokens` a side it degrades to whole-text rather than asking for gigabytes.
-It keeps one rolling `UInt16` score row and one insert-or-delete bit per token pair — equality is
-re-checked during traceback — so the cap costs about 2 MB where a full score matrix cost 32 MB.
+Quick AI has no progress pill of its own. The streaming reply is the progress.
 
 ## Reading the selection
 
@@ -277,35 +238,32 @@ failure handler, so automatic expansion stays silent as before.
 ### Manual sweep
 
 - Select text in Safari, Chrome, Brave, Slack, Mail, Notes, VS Code and Terminal, press Fix Grammar,
-  and confirm the selection is **replaced** rather than appended to.
+  and confirm the reply opens in Quick AI with the text as an attachment, and that its Replace button
+  writes the reply over the selection rather than appending to it.
 - Select text in a Tinycast floating note and run Fix Grammar by shortcut and launcher row. Confirm
-  replacement, Undo, and that changing the note before pressing Replace copies instead.
+  Replace, Undo, and that changing the note before pressing Replace copies instead.
 - In a Chromium target, run one on a **short** selection whose result stays under 100 characters on
   one line: the whole result lands, not its first four characters.
-- Replace mode, with a slow route selected: the message pill says `Fixing Grammar…` with a blue
-  spinner while the model works, and the result message takes its place.
-- Run one from the launcher (⌘Space → "Fix Grammar") with text selected behind it: the palette
-  closes and the selection in the displaced app is what gets acted on, not Tinycast's own field.
+- Run one from the launcher (⌘Space → "Fix Grammar") with text selected behind it: the palette opens
+  in AI mode, and Replace targets the displaced app's selection, not Tinycast's own field.
+- Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
+  text untouched.
+- Summarize a page in a browser with no selection: the reply streams, and nothing is typed into the
+  page.
+- Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
+- Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
+- Add a custom action in Preview mode, run it, and confirm Replace appears only after the reply.
+  Switch it to Replace, run it again, and confirm the selection changes as soon as the reply ends.
+- Translate into a language that has not been downloaded: a dialog names the language, and its
+  button opens Language & Region. Nothing is written.
+- Translate into a downloaded language: the reply appears as a finished turn, and Replace writes it.
 - Uncheck an action's launcher checkbox: the row leaves ⌘Space, and its shortcut still works.
 - Add a custom action, bind a shortcut, run it from the shortcut and from ⌘Space, then rename it and
-  confirm the shortcut, the Replace choice and the checkbox all survived.
+  confirm the shortcut and the Replace choice survived.
 - Delete a custom action with a shortcut bound: the dialog asks first, the row leaves both Settings
   and ⌘Space, and the chord is free for something else to take.
-- Type "quick actions" in ⌘Space: the section lists the shipped four beside the custom ones.
-- Give Fix Grammar and a custom action an alias in the pane, then type each alias in ⌘Space.
 - Press a shortcut with Tinycast's own Settings window frontmost: refused, with a HUD.
 - Press one in a password field: refused.
-- Summarize a long selection: the panel streams, grows without the title drifting, and scrolls past
-  `quickActionPanelBody`.
-- Replace Rewrite's instructions, confirm only Rewrite follows them after relaunch, then use the
-  modal's default and confirm the shipped behaviour returns.
-- Give Summarize its own model and effort: the row names them, only Summarize uses them, and they
-  survive a relaunch. Turn that provider off in AI Settings and Summarize follows the shared model.
-- Save a custom action with its own model, delete it, and confirm no route is left in
-  `quickActionModelOverrides`.
-- Translate into a language that has not been downloaded: the panel names the language, and its
-  button closes the panel and opens Language & Region.
 - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
-- Harnesses: `quick-action-test` (action metadata, prompt boundaries, preview choices, routes and
-  their repair) and
-  `text-diff-test` (exact chunks, coalescing, Unicode, ties, token boundaries and fast paths).
+- Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action
+  persistence and refusal of unreadable storage).

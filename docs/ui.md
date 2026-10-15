@@ -66,7 +66,7 @@ Add a token rather than a magic number when introducing a new value.
 ### Interface Size (`InterfaceMetrics`)
 
 `AppSettings.interfaceSize` scales the palette and the surfaces that float with it — the ⌘K menu, the
-extension list panel, Quick Actions, dialogs and HUDs. Settings, Onboarding,
+extension list panel, Quick AI, dialogs and HUDs. Settings, Onboarding,
 Support, Update, About and Notes never scale.
 
 `DesignSystem/InterfaceMetrics.swift` stores **only a scale** and derives every value from the `Theme`
@@ -581,9 +581,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
   outcome lands at a glance before the sentence is read. Auto-dismisses after
   `Duration.messageHUD` (2.4s) — longer than the volume box, since a sentence needs reading time and a
   level only needs a glance — and a repeat call replaces rather than stacks.
-- **The same pill reports work still running**, through `showProgress(message:onCancel:)`: a Quick Action set to
-  replace has no panel to watch the answer arrive in, so the pill says `Fixing Grammar…` in its place
-  and the result message replaces it when the model is done. Its leading mark is a spinner rather
+- **The same pill reports work still running**, through `showProgress(message:onCancel:)`: Translate
+  does not stream, so the pill says `Translating…` while Apple's translator works, and its reply
+  then appears in Quick AI. Model replies stream there and need no pill. Its leading mark is a spinner rather
   than a tone, which is why `MessageHUDView.Accessory` exists — a tone says how something *went*, and
   nothing has gone anywhere yet. When `onCancel` is provided, hovering over the pill lights it up,
   turns the spinner into an `xmark`, and clicking anywhere on the pill cancels the in-flight task.
@@ -737,7 +737,7 @@ system-drawn and a pane reads exactly as macOS System Settings does.
   **`FeatureSwitchSection`** (a feature's master switch plus its launcher-visibility companion),
   **`SettingsFilterField`** (the filter row above a long list), **`launcherVisibilityHelp()`**, and the
   Settings editor header, fields and surface. `ModalActionButtonStyle.swift` keeps every borderless surface's actions on one
-  implementation — dialogs, Settings editors, the camera footers and the Quick Action panel. `Onboarding/OnboardingCard.swift` keeps the older hand-drawn card,
+  implementation — dialogs, Settings editors and the camera footers. `Onboarding/OnboardingCard.swift` keeps the older hand-drawn card,
   which that window still uses.
 - **A Settings editor borrows the dialog language, not its job.** `SettingsEditorPresenter` hosts the
   existing form in an activating, transparent child `NSPanel`, with the same `panel 26` Liquid Glass

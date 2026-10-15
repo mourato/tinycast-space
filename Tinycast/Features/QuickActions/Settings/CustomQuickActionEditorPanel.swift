@@ -13,7 +13,6 @@ struct CustomQuickActionEditorPanel: View {
     @State private var name: String
     @State private var iconSymbol: String?
     @State private var instructions: String
-    @State private var model: AIModelSelection?
     @State private var failure: String?
     @State private var showingIconPicker = false
 
@@ -29,19 +28,18 @@ struct CustomQuickActionEditorPanel: View {
     private static let placeholder =
         "Make the text more concise, keeping the writer's voice and meaning."
 
-    init(request: CustomQuickActionEditRequest, model: AIModelSelection?) {
+    init(request: CustomQuickActionEditRequest) {
         existing = request.action
         _name = State(initialValue: request.action?.name ?? "")
         _iconSymbol = State(initialValue: request.action?.iconSymbol)
         _instructions = State(initialValue: request.action?.instructions ?? "")
-        _model = State(initialValue: model)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
             SettingsEditorHeader(
                 title: existing == nil ? "New Quick Action" : "Edit \(existing?.name ?? "")",
-                subtitle: "Tinycast sends your selected text to the model with these instructions."
+                subtitle: "Tinycast sends your selected text to the chat model with these instructions."
             )
 
             HStack(alignment: .bottom, spacing: Theme.Spacing.lg) {
@@ -50,8 +48,6 @@ struct CustomQuickActionEditorPanel: View {
             }
 
             instructionsField
-
-            QuickActionModelPicker(selection: $model)
 
             if let failure {
                 Text(failure)
@@ -154,9 +150,9 @@ struct CustomQuickActionEditorPanel: View {
             createdAt: existing?.createdAt ?? Date())
         do {
             if existing == nil {
-                try core.quickActionCoordinator.addCustomQuickAction(draft, model: model)
+                try core.quickActionCoordinator.addCustomQuickAction(draft)
             } else {
-                try core.quickActionCoordinator.updateCustomQuickAction(draft, model: model)
+                try core.quickActionCoordinator.updateCustomQuickAction(draft)
             }
             dismiss()
         } catch {

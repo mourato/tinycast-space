@@ -28,6 +28,8 @@ final class AIChatState {
     @ObservationIgnored private var reasoningStartedAt: Date?
     /// Told when a reply ends whole, which is when a chat has something to be named by.
     @ObservationIgnored var onReplyFinished: (@MainActor (AIChatState) -> Void)?
+    /// Asked once by the next turn to end, however it ends; a quick action writes its result back here.
+    @ObservationIgnored var onNextReplyEnded: (@MainActor (ChatMessage?) -> Void)?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var lastFlush = ContinuousClock().now
 
@@ -56,6 +58,18 @@ final class AIChatState {
             using: provider, webSearch: webSearch, instructions: instructions,
             contextBudget: contextBudget)
         return true
+    }
+
+    /// A reply the chat's model did not write, such as Apple's translator's, as a finished turn.
+    @discardableResult
+    func record(prompt: String, documents: [AIDocument], reply: String) -> UUID {
+        notice = nil
+        session.append(ChatMessage(role: .user, text: prompt, documents: documents))
+        let message = ChatMessage(role: .assistant, text: reply)
+        session.append(message)
+        clearStaging()
+        history.save(session)
+        return message.id
     }
 
     /// The chat's own route from now on; a saved chat records it at once, a new one on first send.
@@ -331,6 +345,9 @@ final class AIChatState {
         isStreaming = false
         isThinking = false
         replyTask = nil
+        let ended = onNextReplyEnded
+        onNextReplyEnded = nil
+        ended?(state == .complete ? session.messages.last : nil)
         if state == .complete { onReplyFinished?(self) }
     }
 

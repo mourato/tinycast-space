@@ -160,7 +160,6 @@ If a change touches anything in the right column, the harness on the left is man
 | `ext-icon-test` | `Extensions/Service/ExtensionIconCache.swift` — artwork sizing and its fallback |
 | `icon-cache-test` | `Platform/Images/IconCache.swift` — row sizing at 1×/2×, warm reuse, stamp and style invalidation, bitmap release, fitted geometry across all 256 alpha values, and that a row icon draws identically to the 96px one |
 | `entry-icon-test` | `EntryIcon` — that each case draws, caches and prints apart from the others, and that a moved `FileIconStamp` retires the bitmap decoded before it |
-| `text-diff-test` | `QuickActions/Model/TextDiffEngine.swift` — exact chunks, coalescing, Unicode, ties, token-cap boundaries and fast paths |
 | `settings-backup-test` | `Settings/AppSettingsKey.swift`, `Backup/Model/SettingsBackupCoverage.swift` |
 | `settings-file-test` | `Settings/Model/` and `Settings/Service/` — key paths, value tokens, the printer and parser, and the repository's import, replace, save, reload and symlink handling on a scratch folder |
 | `window-file-test` | `WindowManagement/Model/WindowManagementFileFormat.swift` — command shortcuts, custom sizes, layouts and rooms as settings.json spells them, hand edits and bad records |
@@ -282,10 +281,6 @@ swiftc -O -swift-version 6 Tinycast/Features/Calculator/Model/*.swift \
 /tmp/calc-performance --probe  # every answer as JSON, to diff two builds
 /tmp/calc-performance --cold "10kg to lb"   # first query, including catalog decode
 ```
-
-`Tests/text-diff-performance.swift` is the same shape for `TextDiffEngine`: build it with `-O`
-against the engine, pass a token count, a workload (`dense`, `sparse`, `equal`, `empty`) and an
-iteration count for timings, or `--probe` to diff every chunk between two builds.
 
 `Tests/clipboard-file-performance.swift` measures file capture with private pasteboards and temporary
 fixtures. It reports wall and process CPU time as JSON for modern and legacy formats, including

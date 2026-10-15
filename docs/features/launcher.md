@@ -639,8 +639,8 @@ them. **There is deliberately no `Enable Quick Actions` category toggle** either
 `LauncherItemsSection(kind: .quickAction)` would be a second switch over rows the pane already lists.
 
 Activation hands the action to `QuickActionCoordinator.run(_:)` **without** hiding the palette first:
-the coordinator reads the displaced app and then hides, because after the hide the frontmost app is
-Tinycast. See [quick-actions.md](quick-actions.md).
+the coordinator reads the displaced app, then hides, because after the hide the frontmost app is
+Tinycast. The result then opens in Quick AI. See [quick-actions.md](quick-actions.md).
 
 ## Notes commands
 

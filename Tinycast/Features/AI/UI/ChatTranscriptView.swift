@@ -24,6 +24,8 @@ struct ChatTranscriptView: View {
     var onRegenerate: (() -> Void)?
     /// Answers with one of the last reply's choices; nil leaves them unshown.
     var onChoose: ((String) -> Void)?
+    /// Writes the last reply back over the text it came from; nil where nothing can take it.
+    var onReplace: (() -> Void)?
     var find: ChatFindHighlight?
     /// Cleared when the reader scrolls up, so a streaming reply stops dragging them back down.
     @State private var followsTail = true
@@ -52,7 +54,8 @@ struct ChatTranscriptView: View {
                             onRegenerate: isLast && message.role == .assistant
                                 ? onRegenerate : nil,
                             // Only the latest reply's choices still answer anything.
-                            onChoose: isLast && message.state == .complete ? onChoose : nil
+                            onChoose: isLast && message.state == .complete ? onChoose : nil,
+                            onReplace: isLast && message.role == .assistant ? onReplace : nil
                         )
                         .equatable()
                         .environment(\.chatTextHighlight, highlight(for: message.id))
@@ -185,6 +188,7 @@ private struct ChatMessageView: View, @MainActor Equatable {
     let status: String?
     let onRegenerate: (() -> Void)?
     let onChoose: ((String) -> Void)?
+    let onReplace: (() -> Void)?
     @Environment(\.chatTextHighlight) private var highlight
 
     @State private var hovered = false
@@ -230,6 +234,7 @@ private struct ChatMessageView: View, @MainActor Equatable {
             if message.role == .user { timestamp }
             ChatCopyButton(text: parts.text)
             if let onRegenerate { RegenerateButton(action: onRegenerate) }
+            if let onReplace { ReplaceButton(action: onReplace) }
             if message.role == .assistant { timestamp }
         }
         .opacity(hovered ? 1 : 0)
@@ -339,6 +344,7 @@ extension ChatMessageView {
         lhs.message == rhs.message && lhs.surface == rhs.surface && lhs.status == rhs.status
             && (lhs.onRegenerate == nil) == (rhs.onRegenerate == nil)
             && (lhs.onChoose == nil) == (rhs.onChoose == nil)
+            && (lhs.onReplace == nil) == (rhs.onReplace == nil)
     }
 }
 
@@ -395,6 +401,24 @@ private struct ChatSourceChip: View {
         .buttonStyle(.plain)
         .help(reference.url.absoluteString)
         .accessibilityLabel("Source \(index): \(reference.title), \(reference.host)")
+    }
+}
+
+private struct ReplaceButton: View {
+    @Environment(\.metrics) private var metrics
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.2.squarepath")
+                .font(metrics.typography.keyCap)
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .frame(width: metrics.size.chatMessageAction, height: metrics.size.chatMessageAction)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Replace the Selection")
+        .accessibilityLabel("Replace the Selection")
     }
 }
 
