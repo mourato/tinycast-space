@@ -47,15 +47,25 @@ type the same picks as commands.
   trust refuse the text with guidance; the title may still be quoted. Enabling app context confirms
   first and raises the one Accessibility prompt from that gesture.
 - **Browsers never enter the generic app reader.** Apps registered to handle HTTPS, including
-  Helium, require the browser-tab path, so app capture cannot bypass private-window checks.
+  every supported browser, require the browser-tab path, so app capture cannot bypass private-window checks.
   Blocking readers use `@concurrent` and inherit caller cancellation; they stop between native calls,
   with a timeout bounding a call already running.
-- **Helium is the only browser, by its checked dictionary.** Tabs list on demand without
-  launching Helium when it is not running; private windows never stage, and when the front window
-  is private auto-attach refuses rather than swapping in a lower window. Capture binds the stable
-  tab and window ids and verifies the URL before publishing — a moved tab is stale, and stale is
-  refused, never sent as URL-only. Browser auto-attach applies only when summoned from Helium
-  itself. The page runs one fixed read-only reader reporting its full lengths; cuts in the reader,
+- **A browser is supported only by a dictionary checked with `sdef`.** `ContextBrowser.browsers`
+  is the whole table — bundle id, name and family. Chromium family: Helium, Google Chrome (and its
+  Beta, Dev and Canary channels, which ship Chrome's dictionary), Chromium and Arc. Safari family:
+  Safari and Safari Technology Preview. Brave, Edge, Vivaldi and Opera stay out until their
+  dictionaries are checked; Firefox has no tab dictionary and stays out. The target is the
+  summoning browser when it is running, else the first running supported browser in
+  `NSWorkspace` order; a browser that is not running is never launched to ask it.
+- **Chromium tabs bind stable ids; Safari tabs bind window id, tab index and URL.** Chromium
+  private windows never stage, and when the front window is private auto-attach refuses rather
+  than swapping in a lower window. Safari has no tab id, so its read re-checks the URL at that
+  index before running the reader, and every read verifies the page's own URL before publishing —
+  a moved tab is stale, and stale is refused, never sent as URL-only. **Safari's dictionary cannot
+  tell a private window from a normal one**, so Safari private tabs list and read like any other;
+  that gap is known and only browser context's master switch closes it. Browser auto-attach
+  applies only when summoned from a supported browser itself. A browser that refuses JavaScript
+  from Apple Events reports its own menu path to switch it on, as Automation denial does. The page runs one fixed read-only reader reporting its full lengths; cuts in the reader,
   the parser or the AX walk mark the quote partial. Its text is untrusted data in the attachment,
   its origin URL sanitized of queries, credentials and fragments — and withheld everywhere when
   include-origin is off — and nothing in it may imply instructions or tools.
@@ -72,7 +82,7 @@ type the same picks as commands.
   following prompt; failed captures and edited drafts stay intact. Any other mention stays plain
   text. Nothing a `@` command stages sends until the
   next normal Return, after the chips are visible. Live browser and TCC behaviour is a manual gate: no probe runs during implementation
-  or in the suite, whose fixtures stand in for Helium.
+  or in the suite, whose fixtures stand in for the browsers.
 
 ## Manual sweep
 
@@ -81,9 +91,12 @@ type the same picks as commands.
 - Enable app context, summon Quick AI from Notes with a selection: the quote chip names the note;
   send, and the transcript carries the quoted text marked untrusted.
 - `@app summarize` in either composer stages the app quote and keeps `summarize` as the draft;
-  `@tab` does the same for the active Helium tab, `@action` / `@integration` / `@tool` for a named
+  `@tab` does the same for the active tab of the summoning browser, `@action` / `@integration` / `@tool` for a named
   row. An unknown `@mention` sends as plain text. The staged chips send on the next normal Return.
-- Deny Automation for Helium (or quit it) and attach a tab: the notice names the fix, and nothing
-  is sent URL-only. Navigate the tab between listing and capture: stale is refused.
+- Deny Automation for a browser (or quit it) and attach a tab: the notice names that browser and
+  the fix, and nothing is sent URL-only. Navigate the tab between listing and capture: stale is
+  refused. In Safari, reorder tabs between listing and capture: stale is refused.
+- Switch off Allow JavaScript from Apple Events in Chrome and in Safari: each notice gives that
+  browser's own menu path.
 - Switch capture off mid-read: nothing lands. Remove an auto-staged quote and re-summon: it does
   not come back until a new chat.

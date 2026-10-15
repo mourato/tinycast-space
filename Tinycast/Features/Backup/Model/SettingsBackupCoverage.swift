@@ -198,7 +198,7 @@ enum SettingsBackupCoverage {
         AppSettingsKey.contextAppEnabled.rawValue:
             "Grants reading the front app's text for chat context; an import must not enable capture.",
         AppSettingsKey.contextBrowserEnabled.rawValue:
-            "Grants reading Helium tabs for chat context; an import must not enable capture.",
+            "Grants reading browser tabs for chat context; an import must not enable capture.",
         AppSettingsKey.contextAutoAttachApp.rawValue:
             "Stages app context without asking each time; an import must not switch that on.",
         AppSettingsKey.contextAutoAttachBrowser.rawValue:

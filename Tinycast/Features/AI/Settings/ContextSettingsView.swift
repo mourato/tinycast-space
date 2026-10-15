@@ -54,11 +54,11 @@ struct ContextSettingsView: View {
                 Toggle(isOn: $settings.contextBrowserEnabled) {
                     SettingsFeatureToggleLabel(
                         anchor: .contextBrowser, title: "Enable browser context",
-                        subtitle: "Let chats quote the Helium tab you attach.")
+                        subtitle: "Let chats and Quick Actions quote the browser tab you attach.")
                 }
                 Toggle(isOn: $settings.contextAutoAttachBrowser) {
                     SettingsRowTitle(.contextBrowser, "Automatically attach active tab")
-                    Text("Stage the active Helium tab whenever a chat opens.")
+                    Text("Stage the active browser tab whenever a chat opens.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -67,8 +67,8 @@ struct ContextSettingsView: View {
                 SettingsSectionHeader(.contextBrowser)
             } footer: {
                 Text(
-                    "Reads with Automation; the first read asks for Helium. "
-                        + "Private windows are never captured.")
+                    "Reads Chrome-family browsers and Safari with Automation; each asks once. "
+                        + "Private Chrome-family windows are never captured.")
             }
 
             Section {
@@ -98,7 +98,7 @@ struct ContextSettingsView: View {
                 contextSourceRow(
                     enabled: $settings.contextSourceBrowserTabsEnabled,
                     priority: $settings.contextPriorityBrowserTabs, source: .browserTabs,
-                    subtitle: "Helium tabs, read when you attach one."
+                    subtitle: "Browser tabs, read when you attach one."
                 ) {
                     SettingsRowTitle(.contextItems, "Browser tabs")
                 }
