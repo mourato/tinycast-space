@@ -194,14 +194,9 @@ nonisolated enum ContextAppReader {
     }
 
     private static func windowTitle(in application: AXUIElement) -> String? {
-        guard let element = focusedElement(in: application) else { return nil }
-        var window: CFTypeRef?
-        guard
-            AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &window)
-                == .success,
-            let window, CFGetTypeID(window) == AXUIElementGetTypeID()
+        guard let element = focusedElement(in: application),
+            let windowElement = windowElement(for: element)
         else { return nil }
-        let windowElement = unsafeDowncast(window as AnyObject, to: AXUIElement.self)
         AXUIElementSetMessagingTimeout(windowElement, 1)
         guard !Task.isCancelled else { return nil }
         var title: CFTypeRef?
