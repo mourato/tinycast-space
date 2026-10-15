@@ -154,7 +154,7 @@ extension AIContextCoordinator {
                 id: "tabs-active", title: "Attach Active Tab",
                 subtitle: activeTab.map { tabSubtitle($0) } ?? "No tab listed",
                 action: activeTab == nil ? nil : .activeTab,
-                disabledReason: activeTab == nil ? "Open Helium, then pick again." : reason)
+                disabledReason: activeTab == nil ? "Open a supported browser, then pick again." : reason)
         ]
         for tab in tabs.prefix(10) {
             items.append(

@@ -35,6 +35,13 @@ selectable Markdown renderer with AI Chat.
   along with anything raised while Secure Event Input is up. Notes is the narrow in-process exception:
   its own editor supplies and replaces a selected passage without Accessibility, clipboard or events.
   A shortcut pressed with Settings frontmost, or in a password field, does nothing and says so.
+- **A browser page stands in for a missing selection only where browser context is on.** When no
+  selection is found and the target is a supported browser, `QuickActionCoordinator` reads its
+  active tab through `ContextBrowserRunner` — only while `ContextPolicy.canCaptureBrowser` holds,
+  so the Context master switch and the Browser tabs source both gate it. The page's selection wins,
+  else its text, capped to `maxSelectionBytes`; it is the same untrusted material as any selection.
+  A page read always opens the result panel instead of typing over the page, and a private window,
+  a stale tab or a refused read reports instead. With browser context off nothing changes.
 - **One run at a time.** Two overlapping runs would race for one selection, and the second would
   replace text the first had already changed. `QuickActionCoordinator` holds a single task and
   refuses a second while it lives; a generation token stops a task that finishes after being

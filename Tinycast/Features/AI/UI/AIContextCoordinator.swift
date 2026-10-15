@@ -20,8 +20,10 @@ final class AIContextCoordinator {
 
     /// On-demand tab list; refreshed when a chat opens, read when a picker renders.
     private(set) var tabs: [ContextBrowser.BrowserTab] = []
-    /// True when the front Helium window reported private; auto-attach refuses, never swaps.
+    /// True when the listed browser's front window reported private; auto-attach refuses.
     private(set) var frontTabIsPrivate = false
+    /// The browser the last entry was summoned from; listing falls back to any running one.
+    @ObservationIgnored private var preferredBrowserID: String?
     @ObservationIgnored private var tabsTask: Task<Void, Never>?
     @ObservationIgnored private var captureTasks: [CaptureSlot: Task<Void, Never>] = [:]
     @ObservationIgnored private var captureTickets: [CaptureSlot: ContextPolicy.CaptureTicket] = [:]
@@ -66,6 +68,7 @@ final class AIContextCoordinator {
 
     /// Stages automatic context on entering Quick AI from an external app; never on keystrokes.
     func enteredQuickAI(chat: AIChatState, snapshot: ContextAppReader.Snapshot?) {
+        preferBrowser(of: snapshot)
         refreshTabsIfAllowed()
         let options = options
         guard ContextPolicy.canAutoAttachApp(options: options, aiEnabled: settings.aiEnabled),
@@ -80,6 +83,7 @@ final class AIContextCoordinator {
 
     /// Stages automatic context on opening the window; the snapshot predates the window.
     func enteredWindow(chat: AIChatState) {
+        preferBrowser(of: windowSnapshot)
         refreshTabsIfAllowed()
         if let snapshot = windowSnapshot,
             ContextPolicy.canAutoAttachApp(options: options, aiEnabled: settings.aiEnabled)
@@ -100,12 +104,17 @@ final class AIContextCoordinator {
         return browserAutoApplies(snapshot: snapshot)
     }
 
-    /// Browser auto reads Helium's own tab, so it applies only when summoned from Helium.
+    private func preferBrowser(of snapshot: ContextAppReader.Snapshot?) {
+        let bundleID = snapshot?.bundleIdentifier
+        preferredBrowserID = ContextBrowser.isSupported(bundleID: bundleID) ? bundleID : nil
+    }
+
+    /// Browser auto reads the summoning browser's own tab, so it applies only from one.
     private func browserAutoApplies(snapshot: ContextAppReader.Snapshot?) -> Bool {
         guard
             ContextPolicy.canAutoAttachBrowser(options: options, aiEnabled: settings.aiEnabled)
         else { return false }
-        return snapshot?.bundleIdentifier == ContextBrowser.heliumBundleID
+        return ContextBrowser.isSupported(bundleID: snapshot?.bundleIdentifier)
     }
 
     private func autoAttachBrowserIfAllowed(
@@ -121,15 +130,17 @@ final class AIContextCoordinator {
             guard let self else { return }
             defer { retire(ticket: ticket) }
             guard checkTicket(ticket, chat: chat) else { return }
-            let result = await ContextBrowserRunner.listTabs()
+            let result = await ContextBrowserRunner.listTabs(
+                preferredBundleID: snapshot?.bundleIdentifier)
             guard checkTicket(ticket, chat: chat) else { return }
             switch result {
             case .failure(let failure):
-                if failure == .automationDenied { core.showMessage(failure.message, tone: .neutral) }
+                if failure.needsUserFix { core.showMessage(failure.message, tone: .neutral) }
             case .success(let listed):
                 tabs = listed.tabs
                 frontTabIsPrivate = listed.frontIsPrivate
                 guard !listed.frontIsPrivate,
+                    listed.browser.bundleID == snapshot?.bundleIdentifier,
                     let active = ContextBrowser.activeTab(in: listed.tabs),
                     shouldAutoStage(chat: chat, sourceKey: active.sourceKey)
                 else { return }
@@ -138,8 +149,7 @@ final class AIContextCoordinator {
                     sourceKey: active.sourceKey, generation: ticket.generation,
                     source: .browserTabs, automatic: true)
                 captureTickets[slot] = resolved
-                let read = await ContextBrowserRunner.readTab(
-                    id: active.id, windowID: active.windowID, expectedURL: active.url)
+                let read = await ContextBrowserRunner.readTab(active)
                 publishTabRead(read, ticket: resolved, chat: chat, tab: active)
             }
         }
@@ -247,8 +257,7 @@ final class AIContextCoordinator {
             guard let self else { return }
             defer { retire(ticket: ticket) }
             guard checkTicket(ticket, chat: chat) else { return }
-            let result = await ContextBrowserRunner.readTab(
-                id: tab.id, windowID: tab.windowID, expectedURL: tab.url)
+            let result = await ContextBrowserRunner.readTab(tab)
             if publishTabRead(result, ticket: ticket, chat: chat, tab: tab) {
                 onStaged?()
             }
@@ -264,7 +273,7 @@ final class AIContextCoordinator {
         let current = options
         switch result {
         case .failure(let failure):
-            if !ticket.automatic || failure == .automationDenied {
+            if !ticket.automatic || failure.needsUserFix {
                 core.showMessage(failure.message, tone: .neutral)
             }
             return false
@@ -494,8 +503,9 @@ final class AIContextCoordinator {
             ContextPolicy.canCaptureBrowser(options: options, aiEnabled: settings.aiEnabled)
         else { return }
         tabsTask?.cancel()
+        let preferred = preferredBrowserID
         tabsTask = Task { [weak self] in
-            let result = await ContextBrowserRunner.listTabs()
+            let result = await ContextBrowserRunner.listTabs(preferredBundleID: preferred)
             guard let self, !Task.isCancelled else { return }
             if case .success(let listed) = result {
                 self.tabs = listed.tabs

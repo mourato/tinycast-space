@@ -24,6 +24,10 @@ struct ContextTests {
         payloadComposition()
         truncationPropagation()
         browserLookup()
+        browserTargeting()
+        failureMapping()
+        safariIdentity()
+        quickActionFallback()
         literalEscaping()
         tabValidation()
         tabListParsing()
@@ -250,12 +254,133 @@ struct ContextTests {
     }
 
     static func browserLookup() {
+        for id in [
+            "net.imput.helium", "com.google.Chrome", "com.google.Chrome.canary",
+            "org.chromium.Chromium", "company.thebrowser.Browser",
+        ] {
+            expect(ContextBrowser.browser(bundleID: id)?.family == .chromium, "\(id) is chromium")
+        }
+        expect(ContextBrowser.browser(bundleID: "com.apple.Safari")?.family == .safari, "safari")
+        expect(ContextBrowser.browser(bundleID: "com.apple.Safari")?.name == "Safari", "named")
+        expect(!ContextBrowser.isSupported(bundleID: "org.mozilla.firefox"), "firefox stays out")
         expect(
-            ContextBrowser.isSupported(bundleID: "net.imput.helium"), "helium is supported")
-        expect(!ContextBrowser.isSupported(bundleID: "com.apple.Safari"), "safari stays out")
-        expect(
-            !ContextBrowser.isSupported(bundleID: "com.google.Chrome"), "chromium stays out")
+            !ContextBrowser.isSupported(bundleID: "com.brave.Browser"),
+            "an unverified fork stays out")
         expect(!ContextBrowser.isSupported(bundleID: nil), "an unknown browser stays out")
+        let ids = ContextBrowser.browsers.map(\.bundleID)
+        expect(Set(ids).count == ids.count, "each bundle id names one browser")
+    }
+
+    static func browserTargeting() {
+        let running = ["com.apple.Notes", "com.apple.Safari", "com.google.Chrome"]
+        expect(
+            ContextBrowser.target(preferred: "com.google.Chrome", running: running)?.name
+                == "Google Chrome",
+            "the summoning browser wins")
+        expect(
+            ContextBrowser.target(preferred: "com.apple.Notes", running: running)?.name
+                == "Safari",
+            "a non-browser summoner falls back to the first running browser")
+        expect(
+            ContextBrowser.target(preferred: "net.imput.helium", running: running)?.name
+                == "Safari",
+            "a browser that isn't running is never the target")
+        expect(
+            ContextBrowser.target(preferred: nil, running: ["com.apple.Notes"]) == nil,
+            "no running browser means no target, never a launch")
+    }
+
+    static func failureMapping() {
+        let chrome = ContextBrowser.browser(bundleID: "com.google.Chrome")!
+        let safari = ContextBrowser.browser(bundleID: "com.apple.Safari")!
+        let denied = ContextBrowser.failure(errorNumber: -1743, message: "", browser: safari)
+        expect(denied == .automationDenied("Safari"), "denial names the browser")
+        expect(denied.message.contains("Safari"), "denial message names the browser")
+        expect(denied.needsUserFix, "denial needs the user")
+        expect(
+            ContextBrowser.failure(errorNumber: -1712, message: "", browser: chrome)
+                == .timeout("Google Chrome"),
+            "timeouts name the browser")
+        let chromeOff = ContextBrowser.failure(
+            errorNumber: 12,
+            message: "Executing JavaScript through AppleScript is turned off. To turn it on, "
+                + "from the menu bar, go to View > Developer > Allow JavaScript from Apple Events.",
+            browser: chrome)
+        expect(chromeOff == .javaScriptDisabled(chrome), "chrome's switched-off reader maps")
+        expect(chromeOff.message.contains("View → Developer"), "chrome gets its menu path")
+        expect(chromeOff.needsUserFix, "a switched-off reader needs the user")
+        let safariOff = ContextBrowser.failure(
+            errorNumber: 8,
+            message: "You must enable the 'Allow JavaScript from Apple Events' option in "
+                + "Safari's Develop menu to use 'do JavaScript'.",
+            browser: safari)
+        expect(safariOff == .javaScriptDisabled(safari), "safari's switched-off reader maps")
+        expect(safariOff.message.contains("Show features for web developers"), "safari path")
+        expect(
+            ContextBrowser.failure(errorNumber: -600, message: "", browser: safari) == .noSource,
+            "a quit browser is no source")
+        let other = ContextBrowser.failure(errorNumber: 1, message: "boom", browser: safari)
+        expect(other == .restrictedPage && !other.needsUserFix, "anything else is restricted")
+    }
+
+    static func safariIdentity() {
+        let rows: [[String]] = [
+            ["2", "41", "1", "Docs", "https://example.com/d", "normal"],
+            ["1", "41", "0", "Home", "https://example.com/", "normal"],
+        ]
+        let tabs = ContextBrowser.tabs(from: rows, bundleID: "com.apple.Safari")
+        expect(tabs.count == 2, "safari rows parse")
+        expect(ContextBrowser.activeTab(in: tabs)?.id == "2", "the current tab is active")
+        expect(
+            tabs[0].sourceKey == "tab:com.apple.Safari/41/2",
+            "identity is browser, window and tab index")
+        let moved = ContextBrowser.parsePageRead(
+            "{\"t\":\"x\",\"u\":\"https://example.com/\",\"b\":\"b\"}")!
+        expect(
+            !ContextBrowser.verified(moved, expectedURL: tabs[0].url),
+            "an index that now shows another page is stale")
+    }
+
+    static func quickActionFallback() {
+        var options = ContextPolicy.Options()
+        expect(
+            !ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.apple.Safari", options: options, aiEnabled: true),
+            "browser context off keeps quick actions on the selection")
+        options.browserEnabled = true
+        expect(
+            ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.apple.Safari", options: options, aiEnabled: true),
+            "browser context on lets a page stand in")
+        expect(
+            !ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.apple.Notes", options: options, aiEnabled: true),
+            "a non-browser never reads a page")
+        expect(
+            !ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.apple.Safari", options: options, aiEnabled: false),
+            "AI off keeps capture off")
+        options.enabledSources.remove(.browserTabs)
+        expect(
+            !ContextBrowser.quickActionFallbackApplies(
+                bundleID: "com.apple.Safari", options: options, aiEnabled: true),
+            "a hidden browser source never reads")
+        func page(_ selection: String, _ body: String) -> ContextBrowser.PageRead {
+            ContextBrowser.PageRead(
+                title: "", url: "https://example.com/", selection: selection, body: body,
+                isTruncated: false)
+        }
+        expect(
+            ContextBrowser.quickActionText(page("sel", "body"), limitBytes: 100) == "sel",
+            "a selection wins")
+        expect(
+            ContextBrowser.quickActionText(page("  ", "body"), limitBytes: 100) == "body",
+            "an empty selection falls back to the page")
+        expect(
+            ContextBrowser.quickActionText(page("", " \n"), limitBytes: 100) == nil,
+            "a blank page has nothing to act on")
+        let capped = ContextBrowser.quickActionText(page("", "aé€b"), limitBytes: 4)
+        expect(capped == "aé", "the cap stops on a character boundary")
     }
 
     static func literalEscaping() {
@@ -273,36 +398,36 @@ struct ContextTests {
     static func tabValidation() {
         expect(
             ContextBrowser.tab(
-                id: "7", windowID: "3", title: "T", url: "https://example.com/") != nil,
+                id: "7", windowID: "3", bundleID: "h", title: "T", url: "https://example.com/") != nil,
             "an https tab counts")
         expect(
-            ContextBrowser.tab(id: "7", windowID: "3", title: "T", url: "http://example.com/")
+            ContextBrowser.tab(id: "7", windowID: "3", bundleID: "h", title: "T", url: "http://example.com/")
                 != nil,
             "an http tab counts")
         expect(
-            ContextBrowser.tab(id: "7", windowID: "3", title: "T", url: "chrome://settings")
+            ContextBrowser.tab(id: "7", windowID: "3", bundleID: "h", title: "T", url: "chrome://settings")
                 == nil,
             "a protected page never lists")
         expect(
-            ContextBrowser.tab(id: "", windowID: "3", title: "T", url: "https://example.com/")
+            ContextBrowser.tab(id: "", windowID: "3", bundleID: "h", title: "T", url: "https://example.com/")
                 == nil,
             "a tab without a stable id never lists")
         expect(
-            ContextBrowser.tab(id: "7", windowID: "", title: "T", url: "https://example.com/")
+            ContextBrowser.tab(id: "7", windowID: "", bundleID: "h", title: "T", url: "https://example.com/")
                 == nil,
             "a tab without a window never lists")
     }
 
     static func tabListParsing() {
-        expect(ContextBrowser.tabs(from: []).isEmpty, "an empty list parses to no tabs")
+        expect(ContextBrowser.tabs(from: [], bundleID: "net.imput.helium").isEmpty, "an empty list parses to no tabs")
         expect(!ContextBrowser.frontIsPrivate(rows: []), "an empty list is not a private front")
         let short: [[String]] = [["7", "3", "1", "T"]]
-        expect(ContextBrowser.tabs(from: short).isEmpty, "a short row never counts")
+        expect(ContextBrowser.tabs(from: short, bundleID: "net.imput.helium").isEmpty, "a short row never counts")
         let normal: [[String]] = [
             ["7", "3", "1", "Title", "https://example.com/", "normal"],
             ["8", "3", "0", "Other", "https://example.com/o", "normal"],
         ]
-        let parsed = ContextBrowser.tabs(from: normal)
+        let parsed = ContextBrowser.tabs(from: normal, bundleID: "net.imput.helium")
         expect(parsed.count == 2, "normal rows parse")
         expect(parsed.first?.isActive == true, "the front window's pick stays active")
         expect(!ContextBrowser.frontIsPrivate(rows: normal), "a normal front is not private")
@@ -311,14 +436,14 @@ struct ContextTests {
             ["7", "3", "1", "Title", "https://example.com/", "normal"],
         ]
         expect(
-            ContextBrowser.tabs(from: privateFront).count == 1,
+            ContextBrowser.tabs(from: privateFront, bundleID: "net.imput.helium").count == 1,
             "private windows never list, lower normal windows still do")
         expect(
             ContextBrowser.frontIsPrivate(rows: privateFront),
             "a private front window reports private")
         let legacy: [[String]] = [["7", "3", "1", "Title", "https://example.com/"]]
         expect(
-            ContextBrowser.tabs(from: legacy).count == 1,
+            ContextBrowser.tabs(from: legacy, bundleID: "net.imput.helium").count == 1,
             "five-field rows without a mode still parse")
     }
 

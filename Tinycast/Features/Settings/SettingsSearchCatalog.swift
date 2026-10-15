@@ -348,10 +348,10 @@ enum SettingsSearchCatalog {
             keywords: ["auto", "capture", "frontmost"]),
         .init(
             .contextBrowser, "Enable browser context",
-            keywords: ["helium", "automation", "tab", "capture"]),
+            keywords: ["browser", "chrome", "safari", "helium", "automation", "tab", "capture"]),
         .init(
             .contextBrowser, "Automatically attach active tab",
-            keywords: ["auto", "capture", "helium"]),
+            keywords: ["auto", "capture", "browser", "chrome", "safari"]),
         .init(
             .contextOptions, "Use selected text only",
             keywords: ["selection", "full page", "whole"]),
@@ -366,7 +366,7 @@ enum SettingsSearchCatalog {
             keywords: ["sources", "priority", "ranking", "order"]),
         .init(
             .contextItems, "Browser tabs",
-            keywords: ["helium", "priority", "source"]),
+            keywords: ["browser", "chrome", "safari", "priority", "source"]),
         .init(
             .contextItems, "Apps",
             keywords: ["frontmost", "priority", "source"]),

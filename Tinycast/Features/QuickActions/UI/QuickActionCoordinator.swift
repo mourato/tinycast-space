@@ -219,10 +219,23 @@ final class QuickActionCoordinator {
 
     private func begin(_ action: QuickAction, target: Target) async {
         let selection: String
+        var fromPage = false
         do {
             switch target {
             case .external(let app):
-                selection = try await QuickActionRunner.selection(in: app, using: injector)
+                do {
+                    selection = try await QuickActionRunner.selection(in: app, using: injector)
+                } catch let failure as QuickActionFailure where Self.pageMayStandIn(for: failure) {
+                    guard let page = await pageText(in: app) else { throw failure }
+                    guard !Task.isCancelled else { return }
+                    switch page {
+                    case .success(let text): selection = text
+                    case .failure(let refusal):
+                        core.showMessage(refusal.message, tone: .neutral)
+                        return
+                    }
+                    fromPage = true
+                }
             case .note(let note):
                 selection = try QuickActionRunner.accepted(note.text)
             }
@@ -233,11 +246,54 @@ final class QuickActionCoordinator {
             core.showMessage(error.localizedDescription, tone: .danger)
             return
         }
+        guard !Task.isCancelled else { return }
         let state = QuickActionPanelState(
             action: action, original: selection, targetLanguage: targetLanguage)
-        let previews = store.settings.previewsResult(action)
+        // Typing over a page that had no selection would land in whatever happens to be focused.
+        let previews = fromPage || store.settings.previewsResult(action)
         if previews { present(state, target: target) }
         await perform(state, target: target, previewing: previews)
+    }
+
+    private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
+        switch failure {
+        case .noSelection, .unreadableApp: return true
+        default: return false
+        }
+    }
+
+    /// The active tab's selection or text; nil when browser context is off or the app isn't one.
+    private func pageText(
+        in app: NSRunningApplication?
+    ) async -> Result<String, ContextBrowser.ReadFailure>? {
+        let bundleID = app?.bundleIdentifier
+        guard
+            ContextBrowser.quickActionFallbackApplies(
+                bundleID: bundleID, options: settings.contextPolicyOptions,
+                aiEnabled: settings.aiEnabled)
+        else { return nil }
+        let listed = await ContextBrowserRunner.listTabs(preferredBundleID: bundleID)
+        guard !Task.isCancelled else { return nil }
+        switch listed {
+        case .failure(let failure):
+            return failure.needsUserFix ? .failure(failure) : nil
+        case .success(let list):
+            if list.frontIsPrivate { return .failure(.restrictedPage) }
+            guard list.browser.bundleID == bundleID,
+                let active = ContextBrowser.activeTab(in: list.tabs)
+            else { return nil }
+            let read = await ContextBrowserRunner.readTab(active)
+            guard !Task.isCancelled else { return nil }
+            switch read {
+            case .failure(let failure): return .failure(failure)
+            case .success(let page):
+                guard
+                    let text = ContextBrowser.quickActionText(
+                        page, limitBytes: QuickActionRunner.maxSelectionBytes)
+                else { return .failure(.empty) }
+                return .success(text)
+            }
+        }
     }
 
     /// A missing permission cannot be fixed from a pill that fades, so it earns a dialog instead.
