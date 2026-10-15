@@ -176,6 +176,9 @@ enum SettingsBackupCoverage {
         AppSettingsKey.quickActionsEnabled.rawValue:
             "Grants keystroke delivery into other apps through the Accessibility permission, and a "
             + "flag that grants a capability is never carried by a backup.",
+        AppSettingsKey.quickActionReplaceOnly.rawValue:
+            "Says which actions write a reply into the reader's document without a window to check it "
+            + "first, a decision each Mac makes about its own text.",
         AppSettingsKey.quickActionInstructions.rawValue:
             "Custom model instructions change transformed results and must not move unseen.",
         AppSettingsKey.quickActionLanguage.rawValue:

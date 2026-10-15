@@ -255,15 +255,17 @@ final class QuickActionCoordinator {
         guard !Task.isCancelled else { return }
         // A page has no selection to write back into, so its result is only ever read.
         let writesBack = !fromPage && action.replacesSelection
+        // Replace only needs a write-back target; a page result has none, so it opens Quick AI.
+        let silently = writesBack && store.settings.replacesOnly(action)
         let sourceName = fromPage ? "Page text" : "Selected text"
         if action.usesTranslationFramework {
             await translate(
                 selection, sourceName: sourceName, action: action, target: target,
-                writesBack: writesBack)
+                writesBack: writesBack, silently: silently)
         } else {
             answer(
                 action, selection: selection, sourceName: sourceName, target: target,
-                writesBack: writesBack)
+                writesBack: writesBack, silently: silently)
         }
     }
 
@@ -330,9 +332,10 @@ final class QuickActionCoordinator {
     }
 
     /// A new conversation whose text rides as a staged document, answered by the chat's own route.
+    /// Replace only keeps the window shut: progress in the pill, and any failure in a HUD.
     private func answer(
         _ action: QuickAction, selection: String, sourceName: String, target: Target,
-        writesBack: Bool
+        writesBack: Bool, silently: Bool
     ) {
         let chat = core.aiChatCoordinator.chats.quickAI
         chat.startNewChat()
@@ -347,34 +350,41 @@ final class QuickActionCoordinator {
         }
         let chatID = chat.session.id
         if writesBack {
-            var automatic = false
-            if case .custom(let custom) = action { automatic = !custom.previewsResult }
             chat.onNextReplyEnded = { [weak self] reply in
-                guard let self, let reply else { return }
-                self.finishedReply(
-                    reply, chatID: chatID, action: action, target: target, automatic: automatic)
+                self?.replyEnded(
+                    reply, chatID: chatID, action: action, target: target, silently: silently)
             }
         }
-        paletteCoordinator.showPalette(mode: .ai)
+        if silently {
+            core.showProgress(action.progressTitle, onCancel: { [weak chat] in chat?.cancel() })
+        } else {
+            paletteCoordinator.showPalette(mode: .ai)
+        }
         let instructions = QuickActionPrompt.instructions(
             for: action, override: store.settings.instructionOverride(for: action))
         let sent = core.aiChatCoordinator.answerQuickAction(
             prompt: action.title, instructions: instructions, in: chat)
-        if !sent { chat.onNextReplyEnded = nil }
+        if !sent {
+            chat.onNextReplyEnded = nil
+            if silently {
+                core.hideProgress()
+                core.showMessage(chat.notice ?? "\(action.title) didn't start", tone: .danger)
+            }
+        }
     }
 
     /// Apple's translator does not stream, so its reply is recorded whole as a finished turn.
     private func translate(
         _ selection: String, sourceName: String, action: QuickAction, target: Target,
-        writesBack: Bool
+        writesBack: Bool, silently: Bool
     ) async {
         let chat = core.aiChatCoordinator.chats.quickAI
         chat.startNewChat()
         pendingReply = nil
-        paletteCoordinator.showPalette(mode: .ai)
+        if !silently { paletteCoordinator.showPalette(mode: .ai) }
         let language = targetLanguage
         let languageName = TextTranslator.displayName(of: language)
-        core.showProgress("Translating…")
+        core.showProgress(action.progressTitle)
         defer { core.hideProgress() }
         do {
             let text = try await TextTranslator.translate(selection, to: language)
@@ -383,7 +393,10 @@ final class QuickActionCoordinator {
                 data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)
             let messageID = chat.record(
                 prompt: "\(action.title) to \(languageName)", documents: [document], reply: text)
-            if writesBack {
+            guard writesBack else { return }
+            if silently {
+                writeBack(text, to: target, action: action)
+            } else {
                 pendingReply = PendingReply(
                     chatID: chat.session.id, messageID: messageID, action: action, target: target)
             }
@@ -398,23 +411,50 @@ final class QuickActionCoordinator {
             else { return }
             AppLauncher.openSettingsPane(bundleID: Self.languageSettingsPane)
         } catch {
-            chat.report(error.localizedDescription)
+            if silently {
+                core.showMessage(error.localizedDescription, tone: .danger)
+            } else {
+                chat.report(error.localizedDescription)
+            }
         }
     }
 
-    /// Automatic replacement leaves the palette, as a direct replacement always did; otherwise the reply waits for its button.
-    private func finishedReply(
-        _ reply: ChatMessage, chatID: UUID, action: QuickAction, target: Target, automatic: Bool
+    /// The reply has ended, however it ended. Replace only writes it back here, with no window to show it.
+    private func replyEnded(
+        _ reply: ChatMessage, chatID: UUID, action: QuickAction, target: Target, silently: Bool
     ) {
+        if silently { core.hideProgress() }
         let text = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        guard automatic else {
+        guard reply.state == .complete, !text.isEmpty else {
+            if silently { core.showMessage("\(action.title) didn't finish", tone: .danger) }
+            return
+        }
+        guard silently else {
             pendingReply = PendingReply(
                 chatID: chatID, messageID: reply.id, action: action, target: target)
             return
         }
-        paletteCoordinator.hidePalette(restoreFocus: target.isNote)
+        writeBack(text, to: target, action: action)
+    }
+
+    /// A reply that lands in another app than the one it was asked of is copied, never pasted there.
+    private func writeBack(_ text: String, to target: Target, action: QuickAction) {
+        guard focusHeld(by: target) else {
+            Paster.copyPlainText(text)
+            core.showMessage("\(action.title) copied instead — the app changed", tone: .danger)
+            return
+        }
         deliver(text, to: target, action: action)
+    }
+
+    private func focusHeld(by target: Target) -> Bool {
+        switch target {
+        case .external(let app):
+            guard let app else { return false }
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
+        // The editor is checked again on delivery, against the very range it was asked about.
+        case .note: return true
+        }
     }
 
     /// Quick AI asks this before offering its Replace button for the reply on screen.

@@ -28,8 +28,8 @@ final class AIChatState {
     @ObservationIgnored private var reasoningStartedAt: Date?
     /// Told when a reply ends whole, which is when a chat has something to be named by.
     @ObservationIgnored var onReplyFinished: (@MainActor (AIChatState) -> Void)?
-    /// Asked once by the next turn to end, however it ends; a quick action writes its result back here.
-    @ObservationIgnored var onNextReplyEnded: (@MainActor (ChatMessage?) -> Void)?
+    /// Asked once by the next turn to end, however it ends; the reply's state says how it ended.
+    @ObservationIgnored var onNextReplyEnded: (@MainActor (ChatMessage) -> Void)?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var lastFlush = ContinuousClock().now
 
@@ -347,7 +347,7 @@ final class AIChatState {
         replyTask = nil
         let ended = onNextReplyEnded
         onNextReplyEnded = nil
-        ended?(state == .complete ? session.messages.last : nil)
+        if let reply = session.messages.last { ended?(reply) }
         if state == .complete { onReplyFinished?(self) }
     }
 

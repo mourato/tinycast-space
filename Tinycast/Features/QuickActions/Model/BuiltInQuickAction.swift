@@ -26,6 +26,15 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    var progressTitle: String {
+        switch self {
+        case .fixGrammar: return "Fixing Grammar…"
+        case .rewrite: return "Rewriting…"
+        case .translate: return "Translating…"
+        case .summarize: return "Summarizing…"
+        }
+    }
+
     /// A summary is read, never written over the reader's text.
     var replacesSelection: Bool { self != .summarize }
 

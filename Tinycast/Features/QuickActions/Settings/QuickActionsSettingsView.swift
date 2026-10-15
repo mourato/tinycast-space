@@ -74,10 +74,7 @@ struct QuickActionsSettingsView: View {
         Section {
             ForEach(BuiltInQuickAction.allCases, content: builtInRow)
             ForEach(customActions.actions) { action in
-                SettingsRow(
-                    title: action.name,
-                    subtitle: action.previewsResult ? nil : "Replaces at once"
-                ) {
+                SettingsRow(title: action.name, subtitle: nil) {
                     SymbolImage(name: action.symbol, size: Theme.Size.quickActionHeaderIcon)
                         .frame(width: Theme.Size.settingsRowIcon)
                 } trailing: {
@@ -100,8 +97,8 @@ struct QuickActionsSettingsView: View {
         } footer: {
             Text(
                 appSettings.aiEnabled
-                    ? "Results open in Quick AI, where Replace writes them back. A custom action set "
-                        + "to Replace writes back as soon as it finishes."
+                    ? "Quick AI shows each result, where Replace writes it back. Replace only writes "
+                        + "the result back as soon as it finishes, without opening Quick AI."
                     : "Turn on AI Chat to use Quick Actions."
             )
             .font(.caption)
@@ -120,6 +117,9 @@ struct QuickActionsSettingsView: View {
             }
             if let entry { AliasField(entry: entry) }
             ShortcutRecorder(action: .command(CommandID(action)), isQuiet: true)
+            if action.replacesSelection {
+                resultPicker(title: action.title, selection: previewBinding(action))
+            }
             if let entry { launcherToggle(title: action.title, entry: entry) }
         }
     }
@@ -133,10 +133,11 @@ struct QuickActionsSettingsView: View {
         .accessibilityLabel("Edit \(title)")
     }
 
+    /// `true` is Quick AI, `false` is Replace only: the same choice on a built-in and a custom action.
     private func resultPicker(title: String, selection: Binding<Bool>) -> some View {
         Picker("", selection: selection) {
-            Text("Replace").tag(false)
-            Text("Preview").tag(true)
+            Text("Quick AI").tag(true)
+            Text("Replace only").tag(false)
         }
         .labelsHidden()
         .fixedSize()
@@ -174,6 +175,12 @@ struct QuickActionsSettingsView: View {
         Binding(
             get: { appSettings.quickActionsEnabled },
             set: { core.quickActionCoordinator.setEnabled($0) })
+    }
+
+    private func previewBinding(_ action: BuiltInQuickAction) -> Binding<Bool> {
+        Binding(
+            get: { !store.settings.replacesOnly(action) },
+            set: { store.settings.setReplacesOnly(!$0, for: action) })
     }
 
     private func previewBinding(_ action: CustomQuickAction) -> Binding<Bool> {
