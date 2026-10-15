@@ -38,6 +38,7 @@ struct QuickActionTests {
         await newChatDuringCaptureKeepsItsOwn()
         await conflictingSendDropsTheCapture()
         await conflictingAttachmentIsNeverConsumed()
+        await supersededCaptureKeepsNewerProgress()
         pageTextKeepsItsOwnContract()
 
         print("\(passes) passed, \(failures) failed")
@@ -352,7 +353,8 @@ struct QuickActionTests {
         QuickActionRunner.behavior = .suspend
         let before = fixture.chat.session.id
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "Quick AI opens before the read starts")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "Quick AI opens before the read starts")
         expect(
             fixture.chat.session.id != before, "the read lands in a fresh chat, not the old one")
         expect(fixture.chat.notice == "Gathering selected text…", "progress names the capture")
@@ -364,8 +366,8 @@ struct QuickActionTests {
             QuickActionRunner.seenPIDs.first == fixture.app.processIdentifier,
             "the read keeps the source app for its borrowed copy")
         QuickActionRunner.resumeAll(with: "the selected words")
-        await waitUntil(
-            fixture.core.aiChatCoordinator.answers.count == 1, "the capture is answered")
+        await fixture.core.aiChatCoordinator.waitForAnswer()
+        expect(QuickActionRunner.continuations.isEmpty, "the read resumed exactly once")
         let answer = fixture.core.aiChatCoordinator.answers.first!
         expect(
             answer.session == fixture.chat.session.id,
@@ -386,9 +388,11 @@ struct QuickActionTests {
             let fixture = QuickActionFixture()
             QuickActionRunner.behavior = .fail(failure)
             fixture.coordinator.run(.builtIn(.summarize))
-            await waitUntil(
+            await QuickActionRunner.waitForStart()
+            expect(
                 fixture.chat.notice == failure.localizedDescription,
                 "a prepared capture keeps \(failure) in Quick AI")
+            expect(QuickActionRunner.seenPIDs.count == 1, "the read was attempted")
             expect(fixture.palette.visible, "the window stays open on its error")
             expect(fixture.palette.keyClaims == 1, "the error takes key so it is seen")
             expect(fixture.chat.session.messages.isEmpty, "a failure sends nothing")
@@ -411,9 +415,9 @@ struct QuickActionTests {
         fixture.store.settings.setReplacesOnly(true, for: .rewrite)
         QuickActionRunner.behavior = .fail(.noSelection)
         fixture.coordinator.run(.builtIn(.rewrite))
-        await waitUntil(!fixture.core.progresses.isEmpty, "the pill shows progress while silent")
+        await QuickActionRunner.waitForStart()
         expect(fixture.core.progresses == ["Rewriting…"], "the pill names the action")
-        await waitUntil(!fixture.core.messages.isEmpty, "the failure stays a fading pill")
+        expect(!fixture.core.messages.isEmpty, "the failure stays a fading pill")
         expect(
             fixture.core.messages.map { $0.text } == ["Select some text first."],
             "the pill carries the cause")
@@ -434,7 +438,8 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .fail(.unreadableApp("Figma"))
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(
+        await QuickActionRunner.waitForStart()
+        expect(
             fixture.chat.notice == QuickActionFailure.unreadableApp("Figma").localizedDescription,
             "an unreadable app is named in Quick AI")
         expect(ContextBrowserRunner.listCalls == 0, "a non-browser never lists tabs")
@@ -451,7 +456,8 @@ struct QuickActionTests {
         }
         fixture.core.aiChatCoordinator.failAnswer = true
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(
+        await QuickActionRunner.waitForStart()
+        expect(
             fixture.chat.notice == "Summarize didn't start", "a stalled turn says so in Quick AI")
         expect(!fixture.chat.noticeIsProgress, "the report replaces the progress, not the chat")
         expect(fixture.palette.visible, "the window stays open on its error")
@@ -467,10 +473,12 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         fixture.coordinator.cancel()
         QuickActionRunner.resumeAll(with: "late text")
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty, "a cancelled capture answers nothing")
         expect(fixture.chat.session.messages.isEmpty, "a cancelled capture sends nothing")
@@ -486,10 +494,12 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         fixture.palette.hidePalette()
         QuickActionRunner.resumeAll(with: "late text")
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty, "a hidden capture answers nothing")
         expect(fixture.chat.session.messages.isEmpty, "a hidden capture sends nothing")
@@ -506,7 +516,8 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         let session = fixture.chat.session.id
         let staging = fixture.chat.stagingGeneration
         fixture.palette.hidePalette()
@@ -514,7 +525,8 @@ struct QuickActionTests {
         expect(fixture.chat.session.id == session, "reopen keeps the same empty chat")
         expect(fixture.chat.stagingGeneration == staging, "reopen stages nothing new")
         QuickActionRunner.resumeAll(with: "late text")
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed capture answers nothing")
         expect(fixture.chat.session.messages.isEmpty, "a dismissed capture sends nothing")
@@ -524,8 +536,8 @@ struct QuickActionTests {
         expect(fixture.palette.visible, "the reopened window stays as the reader left it")
         QuickActionRunner.behavior = .succeed("fresh words")
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(
-            fixture.core.aiChatCoordinator.answers.count == 1, "a later run still answers")
+        await fixture.core.aiChatCoordinator.waitForAnswer()
+        expect(fixture.core.aiChatCoordinator.answers.count == 1, "a later run still answers")
         expect(fixture.palette.keyClaims == 1, "the later run takes key once")
     }
 
@@ -538,11 +550,13 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         fixture.palette.hidePalette()
         fixture.palette.showPalette(mode: .ai)
         QuickActionRunner.failAll(with: QuickActionFailure.noSelection)
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late failure was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed failure answers nothing")
         expect(fixture.chat.session.messages.isEmpty, "a dismissed failure sends nothing")
@@ -561,10 +575,13 @@ struct QuickActionTests {
         fixture.store.settings.setReplacesOnly(true, for: .rewrite)
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.rewrite))
-        await waitUntil(!fixture.core.progresses.isEmpty, "the silent capture starts in the pill")
+        await QuickActionRunner.waitForStart()
+        expect(!fixture.core.progresses.isEmpty, "the silent capture starts in the pill")
         fixture.palette.hidePalette()
         QuickActionRunner.resumeAll(with: "the selected words")
-        await waitUntil(
+        await fixture.core.aiChatCoordinator.waitForAnswer()
+        expect(QuickActionRunner.continuations.isEmpty, "the silent read was delivered")
+        expect(
             fixture.core.aiChatCoordinator.answers.count == 1, "silent work survives a hide")
         expect(fixture.palette.shows == 0, "silent work never opens Quick AI")
         expect(fixture.chat.session.messages.count == 2, "the silent turn still lands in history")
@@ -579,11 +596,13 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         fixture.chat.startNewChat()
         let own = fixture.chat.session.id
         QuickActionRunner.resumeAll(with: "late text")
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty, "a superseded capture answers nothing")
         expect(fixture.chat.session.id == own, "the reader's new chat is untouched")
@@ -600,10 +619,12 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         _ = fixture.chat.record(prompt: "their question", documents: [], reply: "their answer")
         QuickActionRunner.resumeAll(with: "late text")
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty,
             "a capture never answers over a conflicting send")
@@ -619,14 +640,16 @@ struct QuickActionTests {
         }
         QuickActionRunner.behavior = .suspend
         fixture.coordinator.run(.builtIn(.summarize))
-        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
+        await QuickActionRunner.waitForStart()
+        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
         let staged = ChatAttachment(
             payload: .document(
                 AIDocument(data: Data("theirs".utf8), mimeType: "text/plain", name: "Theirs")),
             name: "Theirs", preview: nil)
         expect(fixture.chat.attach(staged) == nil, "the reader's attachment stages")
         QuickActionRunner.resumeAll(with: "late text")
-        try? await Task.sleep(for: .milliseconds(100))
+        await captureSettled()
+        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
         expect(
             fixture.core.aiChatCoordinator.answers.isEmpty,
             "a capture never consumes a conflicting attachment")
@@ -634,6 +657,41 @@ struct QuickActionTests {
             fixture.chat.pendingAttachments.map(\.name) == ["Theirs"],
             "the reader's attachment waits for their own send")
         expect(fixture.chat.session.messages.isEmpty, "nothing is sent on their behalf")
+    }
+
+    /// A late capture retires only its own notice; the newer capture keeps its progress.
+    static func supersededCaptureKeepsNewerProgress() async {
+        let fixture = QuickActionFixture()
+        defer {
+            fixture.cleanUp()
+            QuickActionRunner.reset()
+        }
+        QuickActionRunner.behavior = .suspend
+        fixture.coordinator.run(.builtIn(.summarize))
+        await QuickActionRunner.waitForStart()
+        fixture.coordinator.cancel()
+        fixture.coordinator.run(.builtIn(.summarize))
+        await QuickActionRunner.waitForStart()
+        let newer = fixture.chat.session.id
+        expect(
+            fixture.chat.notice == "Gathering selected text…", "the newer capture shows progress")
+        QuickActionRunner.resumeOldest(with: "stale words")
+        await captureSettled()
+        expect(QuickActionRunner.continuations.count == 1, "only the stale read was delivered")
+        expect(fixture.chat.session.id == newer, "the stale capture never replaces the newer chat")
+        expect(
+            fixture.chat.notice == "Gathering selected text…",
+            "stale cleanup keeps the newer progress")
+        expect(
+            fixture.core.aiChatCoordinator.answers.isEmpty, "the stale capture answers nothing")
+        QuickActionRunner.resumeAll(with: "fresh words")
+        await fixture.core.aiChatCoordinator.waitForAnswer()
+        expect(
+            fixture.core.aiChatCoordinator.answers.count == 1, "the newer capture still answers")
+        expect(
+            fixture.core.aiChatCoordinator.answers.first?.session == newer,
+            "the answer continues the newer chat")
+        expect(fixture.palette.keyClaims == 1, "the newer capture takes key once")
     }
 
     /// A page stands in only where browser context already allows it, capped like a selection.
@@ -681,13 +739,9 @@ struct QuickActionTests {
         return options
     }
 
-    /// Polls for the event the run owes; a missing event fails here rather than hanging the suite.
-    static func waitUntil(_ condition: @autoclosure () -> Bool, _ message: String) async {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while !condition(), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(1))
-        }
-        expect(condition(), message)
+    /// Resumed capture work is synchronous on MainActor, so a hop enqueued after resume runs last.
+    static func captureSettled() async {
+        await Task { @MainActor in }.value
     }
 }
 
@@ -799,17 +853,36 @@ enum QuickActionRunner {
     static var behavior: Behavior = .succeed("selected text")
     static var seenPIDs: [pid_t] = []
     static var continuations: [CheckedContinuation<String, Error>] = []
+    static var started = 0
+    static var startWaiters: [CheckedContinuation<Void, Never>] = []
 
     static func reset() {
         behavior = .succeed("selected text")
         seenPIDs = []
         continuations = []
+        started = 0
+        startWaiters = []
+    }
+
+    /// The read owns the start event; prepare precedes this await, so waiting proves it ran.
+    static func notifyStarted() {
+        if !startWaiters.isEmpty {
+            startWaiters.removeFirst().resume()
+        } else {
+            started += 1
+        }
+    }
+
+    static func waitForStart() async {
+        if started > 0 { started -= 1; return }
+        await withCheckedContinuation { startWaiters.append($0) }
     }
 
     static func selection(
         in targetApp: NSRunningApplication?, using injector: TextInjector
     ) async throws -> String {
         seenPIDs.append(targetApp?.processIdentifier ?? -1)
+        notifyStarted()
         switch behavior {
         case .succeed(let text): return try accepted(text)
         case .fail(let failure): throw failure
@@ -830,6 +903,12 @@ enum QuickActionRunner {
         let pending = continuations
         continuations = []
         for continuation in pending { continuation.resume(returning: text) }
+    }
+
+    /// A superseded capture resumes alone, so the newer capture's progress can be checked first.
+    static func resumeOldest(with text: String) {
+        guard !continuations.isEmpty else { return }
+        continuations.removeFirst().resume(returning: text)
     }
 
     static func failAll(with failure: Error) {
@@ -959,8 +1038,13 @@ final class TestAIChatCoordinator {
     }
     let chats: TestChats
     var answers: [Answer] = []
+    var answerWaiters: [CheckedContinuation<Void, Never>] = []
     var failAnswer = false
     init(chat: AIChatState) { chats = TestChats(chat) }
+    func waitForAnswer() async {
+        if !answers.isEmpty { return }
+        await withCheckedContinuation { answerWaiters.append($0) }
+    }
     func answerQuickAction(prompt: String, instructions: String, in chat: AIChatState) -> Bool {
         guard !failAnswer else { return false }
         answers.append(
@@ -970,6 +1054,9 @@ final class TestAIChatCoordinator {
         _ = chat.record(
             prompt: prompt, documents: chat.pendingAttachments.compactMap(\.document),
             reply: "canned")
+        let waiters = answerWaiters
+        answerWaiters = []
+        for waiter in waiters { waiter.resume() }
         return true
     }
 }

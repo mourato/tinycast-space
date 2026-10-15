@@ -305,7 +305,7 @@ final class QuickActionCoordinator {
                 case .failure(let refusal):
                     guard let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine)
                     else {
-                        dropStaleCapture()
+                        if let expected = prepared { dropStaleCapture(matching: expected) }
                         return
                     }
                     paletteCoordinator.claimKey()
@@ -321,7 +321,7 @@ final class QuickActionCoordinator {
                 return
             }
             if previews {
-                dropStaleCapture()
+                if let expected = prepared { dropStaleCapture(matching: expected) }
                 return
             }
             core.hideProgress()
@@ -335,7 +335,7 @@ final class QuickActionCoordinator {
                 return
             }
             if previews {
-                dropStaleCapture()
+                if let expected = prepared { dropStaleCapture(matching: expected) }
                 return
             }
             core.hideProgress()
@@ -410,9 +410,11 @@ final class QuickActionCoordinator {
         return chat
     }
 
-    /// A dropped capture leaves no gathering notice for the next summon to explain.
-    private func dropStaleCapture() {
-        core.aiChatCoordinator.chats.quickAI.clearProgressNotice()
+    /// A dropped capture retires only its own gathering notice, never a newer capture's.
+    private func dropStaleCapture(matching expected: PreparedCapture) {
+        let chat = core.aiChatCoordinator.chats.quickAI
+        guard chat.session.id == expected.sessionID else { return }
+        chat.clearProgressNotice()
     }
 
     private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
@@ -491,7 +493,7 @@ final class QuickActionCoordinator {
         if isPrepared {
             guard let prepared, let mine, preparedChat(matching: prepared, mine: mine) != nil
             else {
-                dropStaleCapture()
+                if let expected = prepared { dropStaleCapture(matching: expected) }
                 return
             }
             pendingReply = nil
@@ -550,7 +552,7 @@ final class QuickActionCoordinator {
         let chat = core.aiChatCoordinator.chats.quickAI
         if let prepared, let mine {
             guard preparedChat(matching: prepared, mine: mine) != nil else {
-                dropStaleCapture()
+                dropStaleCapture(matching: prepared)
                 return
             }
             pendingReply = nil
@@ -568,7 +570,7 @@ final class QuickActionCoordinator {
             let text = try await TextTranslator.translate(selection, to: language)
             if let prepared, let mine {
                 guard preparedChat(matching: prepared, mine: mine) != nil else {
-                    dropStaleCapture()
+                    dropStaleCapture(matching: prepared)
                     return
                 }
             } else {
@@ -588,7 +590,7 @@ final class QuickActionCoordinator {
         } catch let failure as TextTranslator.Failure where failure.needsDownload {
             if let prepared, let mine {
                 guard preparedChat(matching: prepared, mine: mine) != nil else {
-                    dropStaleCapture()
+                    dropStaleCapture(matching: prepared)
                     return
                 }
             } else {
@@ -611,8 +613,8 @@ final class QuickActionCoordinator {
             {
                 paletteCoordinator.claimKey()
                 failedChat.report(error.localizedDescription)
-            } else if prepared != nil {
-                dropStaleCapture()
+            } else if let snapshot = prepared {
+                dropStaleCapture(matching: snapshot)
             } else {
                 chat.report(error.localizedDescription)
             }
