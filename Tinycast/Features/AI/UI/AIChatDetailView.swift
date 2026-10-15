@@ -85,6 +85,8 @@ struct AIChatDetailView: View {
                 messages: chat.session.messages, status: chat.liveStatus, usage: chat.usage,
                 surface: .window,
                 onRegenerate: chat.isStreaming ? nil : { coordinator.regenerate(in: chat) },
+                onReplace: coordinator.canReplaceLastReply(in: chat)
+                    ? { coordinator.replaceLastReply(in: chat) } : nil,
                 find: find.isSearching
                     ? ChatFindHighlight(
                         query: find.needle, matches: Set(occurrences.map(\.messageID)),

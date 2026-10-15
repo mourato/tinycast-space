@@ -615,8 +615,7 @@ final class AppCore {
     private func applyInstalledLaunches() {
         let revisions = aiSettings.launchRevisions
         let enabled =
-            settings.aiEnabled || settings.quickActionsEnabled
-            ? aiSettings.enabledInstalledProviders : []
+            settings.aiEnabled ? aiSettings.enabledInstalledProviders : []
         for kind in InstalledAIKind.allCases where appliedLaunchRevisions[kind] != revisions[kind] {
             guard enabled.contains(kind) else { continue }
             if kind == .codex {
@@ -632,8 +631,7 @@ final class AppCore {
     @discardableResult
     func applyInstalledAILifecycle() -> Task<Void, Never> {
         let enabledKinds =
-            settings.aiEnabled || settings.quickActionsEnabled
-            ? aiSettings.enabledInstalledProviders : []
+            settings.aiEnabled ? aiSettings.enabledInstalledProviders : []
         var tasks: [Task<Void, Never>] = []
         if enabledKinds.contains(.codex) {
             tasks.append(
@@ -645,21 +643,6 @@ final class AppCore {
         }
         tasks.append(installedAI.ensure(enabledKinds: enabledKinds))
         return Task { for task in tasks { await task.value } }
-    }
-
-    /// Permissive guardrails: the text transformed is the reader's own, which `.default` refuses.
-    func quickActionProvider(for action: QuickAction) throws -> any AIProvider {
-        quickActionSettings.repairModel(
-            against: aiSettings.connections, fallback: aiSettings.defaultModel)
-        guard let selection = quickActionSettings.model(for: action) ?? aiSettings.defaultModel
-        else {
-            throw AIProviderError.unavailable(
-                String(localized: "Choose a model in Settings \u{2192} Quick Actions."))
-        }
-        return try AIProviderFactory.make(
-            selection: selection, settings: aiSettings, subscription: chatGPTSubscription,
-            installedAI: installedAI,
-            guardrails: .permissiveContentTransformations)
     }
 
     /// The app the palette was summoned from, for context quotes; never Tinycast itself.

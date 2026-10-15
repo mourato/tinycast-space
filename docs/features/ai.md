@@ -4,7 +4,8 @@ Tinycast has one app-wide provider layer for features that need text generation.
 model from Quick AI's header or the AI Chat composer, and `AIChatCoordinator.provider(for:)`
 builds that chat's route through `AIProviderFactory` to stream an `AIRequest`.
 Chat is the first consumer and [Quick Actions](quick-actions.md) the second; the provider layer
-depends on neither, and Quick Actions carries its own route rather than borrowing this one.
+depends on neither. Quick Actions answer through the chat's own route, so a shortcut never picks a
+second model.
 
 Chat has two surfaces over one history, as Raycast's does. **Quick AI** is the palette screen: Tab
 from the launcher asks what you typed, and the answer appears in place. **AI Chat** is a window —
@@ -16,7 +17,7 @@ bottom with the model picker. ⌘J hands a Quick AI conversation to the window.
 - **AI is off out of the box, and off means fully off.** `AppSettings.aiEnabled` is the flag:
   no `Quick AI` or `AI Chat` command in the launcher, no history database opened or created, no Codex
   helper for chat, no stop for it on Tab's ring, the palette leaves `.ai` and the window closes.
-  Installed providers may still remain available for Quick Actions, which has its own switch and route. Turning AI off cancels
+  Quick Actions need this switch too, so turning AI off also stops them. Turning AI off cancels
   every streaming reply and drops both transcripts, but touches neither the saved conversations in
   `ai-chats.sqlite3` nor a Keychain key. `aiEnabled` is excluded from settings backups like every
   other AI key, so an import can never arm a feature it cannot configure.
@@ -176,8 +177,8 @@ bottom with the model picker. ⌘J hands a Quick AI conversation to the window.
   exactly as it did and `AIChatState` reduces one more pair of events. Codex and the Claude command
   run that loop themselves, so `AIModelSelection.runsItsOwnTools` hands them an
   `AIToolServerSession` instead of a wrapper — same servers, same trust, same rows, and the same
-  round cap counted in whatever unit the CLI counts in. Only chat wraps or arms: `quickActionProvider()`
-  rewrites the reader's own selected text and has nothing to call. A turn's tool messages stay inside
+  round cap counted in whatever unit the CLI counts in. Only chat wraps or arms: a Quick Action turn is
+  built with no tools, since it rewrites the reader's own text and has nothing to call. A turn's tool messages stay inside
   the loop — what the transcript keeps is a `ChatToolUse` record, pinned at a text offset like a
   search, so `boundedContext` can never separate a stored call from its result.
 - **Every HTTP request uses a private ephemeral `URLSession` with no URL cache.** Provider traffic must
@@ -402,10 +403,9 @@ messages in the OpenAI message array.
 `AIProviderFactory` resolves the selection, validates an API endpoint, reads an API key at the last
 possible moment and returns `AppleIntelligenceProvider`, `HTTPAIProvider`, `CodexInstalledProvider`
 or `InstalledCLIProvider`. A consumer should hold neither settings nor credentials itself. The
-`selection` and `guardrails` overload lets Quick Actions pick its own route and ask for permissive
-content transformations without a second factory.
+Quick Actions take the chat's selection, with no overload of their own.
 
-`AIModelOption.groupedCatalog` is the Settings picker catalog for both AI and Quick Actions. Provider
+`AIModelOption.groupedCatalog` is the Settings picker catalog for AI. Provider
 sections, ordering and model labels therefore cannot drift between the panes. Each route stores its
 own complete `AIModelSelection`, including the selected reasoning effort for installed models and
 OpenRouter models that offer one.
@@ -416,8 +416,8 @@ resumes rather than being replayed as one blob. Foundation Models reports the wh
 every snapshot while every other transport speaks in deltas; `AppleIntelligenceDelta` is the one place
 that difference lives. Guardrails are a construction parameter rather than a constant: chat writes
 fresh prose, where the default filter belongs, and a later text-rewrite feature transforms text the
-reader already wrote, which is what `permissiveContentTransformations` exists for — so that feature
-needs no second provider. `GenerationError` never reaches the transcript as-is; its `Context` carries
+reader already wrote. `permissiveContentTransformations` was built for that, and Quick Actions no
+longer use it; the chat's default filter now answers their text too. `GenerationError` never reaches the transcript as-is; its `Context` carries
 a debug description written for a log, so each case maps to a plain sentence instead.
 
 ## Chat surfaces
@@ -570,8 +570,8 @@ and the Actions menu's own chords, and dies with the window.
   `DictationCoordinator.toggle(into:)` for this field whatever the shortcut's hold-or-toggle mode or
   the window's focus; a second click or Return finishes, Escape cancels, and the transcript goes in
   at the caret, never to the clipboard. With no model installed the click opens Settings → Dictation.
-  The field is a `ComposerTextView`, an `InjectableTextView`, so the Dictation shortcut, snippets and
-  Quick Actions write into it in process, as they do into a note.
+  The field is a `ComposerTextView`, an `InjectableTextView`, so the Dictation shortcut and snippets
+  write into it in process, as they do into a note.
   Switching chats or closing the window cancels dictation targeting its composer before the editor
   is rebound or torn down; a queued transcript cannot land in another chat or a closed editor.
 
@@ -657,7 +657,7 @@ window, and every chat action either surface sends — is the nineteenth feature
 - With it switched off in System Settings, the pane says so and chat says so; neither moves the
   reader onto a configured API connection.
 - Install and sign in to each supported command outside Tinycast, choose one of its discovered models,
-  and confirm Chat and each model-backed Quick Action use it without showing a credential field.
+  and confirm Chat and Quick Actions use it without showing a credential field.
 - Sign out of an installed command, press Check Again, and confirm its models leave both pickers while
   the stored selection is repaired according to the normal routing rule.
 - On Codex and on the Claude command, with an MCP server enabled, a question answered with a tool
@@ -774,8 +774,8 @@ search context for follow-ups. A successful reply allows the next request to con
 only when its prior transcript, model, instructions and web-search permission still match. A
 regenerated, failed or cancelled reply, a trimmed transcript or a changed configuration starts a
 fresh thread and injects the supplied user/assistant history. Turns with attachments are not retained,
-so older attachments still leave the next request. Titles and Quick Actions have no conversation ID
-and always start fresh. Deleting a chat drops its retained context, and resetting or restarting the
+so older attachments still leave the next request. Titles have no conversation ID and always start
+fresh. A Quick Action opens a new conversation of its own, so its text is never retained here. Deleting a chat drops its retained context, and resetting or restarting the
 helper clears every retained thread.
 
 It streams agent-message deltas, plus `item/started` for the reasoning and web-search items that feed
@@ -939,7 +939,7 @@ Settings → AI is a normal grouped `Form` inside Tinycast's existing Settings w
 section owns the feature switch and the **Providers → Manage…** action, and **Default model** below
 it picks the app-wide route and its reasoning effort. A
 pick in Quick AI's header or the AI Chat composer sets that chat's model and moves this default with
-it, while Quick Actions keeps its own model selection.
+it. Quick Actions follow the chat's model, so there is no second selection to keep in step.
 
 Provider management opens as an editor panel laid out like Mail's Accounts: every route in a list on
 the left — **On This Mac**, **Installed**, **API Connections** — each with its mark and a one-line

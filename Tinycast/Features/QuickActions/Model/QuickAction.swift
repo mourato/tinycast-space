@@ -42,16 +42,8 @@ enum QuickAction: Hashable, Identifiable, Sendable {
         }
     }
 
-    var progressTitle: String {
-        switch self {
-        case .builtIn(let action): return action.progressTitle
-        case .custom(let action): return action.name + "…"
-        }
-    }
-
-    var alwaysPreviews: Bool { builtInAction?.alwaysPreviews ?? false }
-
-    var showsDiff: Bool { builtInAction?.showsDiff ?? false }
+    /// A custom action may always write back; only its own Replace choice decides whether it does.
+    var replacesSelection: Bool { builtInAction?.replacesSelection ?? true }
 
     var rendersMarkdown: Bool { builtInAction.map { $0 == .summarize } ?? true }
 

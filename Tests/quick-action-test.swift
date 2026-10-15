@@ -18,9 +18,7 @@ struct QuickActionTests {
     static func main() {
         everyActionDescribesItself()
         promptsForbidCommentaryAndInjection()
-        previewChoicesRememberOnlyWhatWasChosen()
-        settingsPersistAndRepairTheirRoute()
-        actionsOverrideTheirRoute()
+        settingsPersistTheirChoices()
         refusalsNameTheirOwnCause()
         customActionsCarryTheirOwnIdentity()
         customActionsKeepTheBoundary()
@@ -57,135 +55,22 @@ struct QuickActionTests {
             "only a missing permission opens System Settings")
     }
 
-    static func settingsPersistAndRepairTheirRoute() {
+    static func settingsPersistTheirChoices() {
         let suite = "QuickActionTests.settings"
         let defaults = isolatedDefaults(suite)
         defer { discardSuite(suite, defaults) }
 
         let store = QuickActionSettingsStore(defaults: defaults)
-        expect(store.model == nil, "a fresh store names no route until one is resolved")
-
-        // Nothing configured takes the route that needs no account, like chat's own default.
-        store.resolveModel(appleIntelligenceAvailable: true, fallback: nil)
-        expect(store.model == .appleIntelligence, "on-device is what an unconfigured Mac resolves to")
-
-        // Resolution never overrides a choice, and never re-runs over one.
-        let connectionID = UUID()
-        store.select(.api(connection: connectionID, model: "m", effort: nil))
-        store.resolveModel(appleIntelligenceAvailable: true, fallback: nil)
-        expect(
-            store.model == .api(connection: connectionID, model: "m", effort: nil),
-            "resolution leaves a route the reader chose alone")
-
-        store.settings.setPreviewsResult(true, for: .fixGrammar)
+        expect(store.settings.targetLanguage.isEmpty, "a fresh store follows this Mac's language")
         store.settings.targetLanguage = "de"
         store.settings.setInstructionOverride("Use British English.", for: .fixGrammar)
 
         let reopened = QuickActionSettingsStore(defaults: defaults)
-        expect(
-            reopened.model == .api(connection: connectionID, model: "m", effort: nil),
-            "the route survives a relaunch")
-        expect(
-            reopened.settings.previewsResult(BuiltInQuickAction.fixGrammar),
-            "a preview choice survives a relaunch")
         expect(reopened.settings.targetLanguage == "de", "the target language survives a relaunch")
         expect(
             reopened.settings.instructionOverride(for: BuiltInQuickAction.fixGrammar)
                 == "Use British English.",
             "an action's instructions survive a relaunch")
-
-        // A removed connection must not leave this pointing at a route that cannot answer.
-        reopened.repairModel(against: [], fallback: .appleIntelligence)
-        expect(
-            reopened.model == .appleIntelligence,
-            "a removed connection falls forward rather than failing at press time")
-
-        let onDevice = QuickActionSettingsStore(defaults: defaults)
-        onDevice.repairModel(against: [], fallback: nil)
-        expect(
-            onDevice.model == .appleIntelligence,
-            "repair leaves a route that names no connection untouched")
-
-        onDevice.select(.claude(model: "old", effort: nil))
-        onDevice.repairInstalledModel(
-            available: [.claude(model: "sonnet", effort: nil)], unavailableSources: [],
-            fallback: .appleIntelligence)
-        expect(
-            onDevice.model == .claude(model: "sonnet", effort: nil),
-            "an installed model removed from the catalog moves to that command's first model")
-        onDevice.select(.openCode(model: "provider/old", effort: nil))
-        onDevice.repairInstalledModel(
-            available: [], unavailableSources: [.openCode], fallback: .appleIntelligence)
-        expect(
-            onDevice.model == .appleIntelligence,
-            "an unavailable installed command does not leave Quick Actions on a dead route")
-        onDevice.select(.claude(model: "haiku", effort: nil))
-        onDevice.repairInstalledModel(
-            available: [], unavailableSources: [.claude],
-            fallback: .claude(model: "sonnet", effort: nil))
-        expect(
-            onDevice.model == nil,
-            "an unavailable installed command is not replaced by another dead model")
-        onDevice.select(.codex(model: "gpt", effort: "high"))
-        let withEffort = QuickActionSettingsStore(defaults: defaults)
-        expect(
-            withEffort.model == .codex(model: "gpt", effort: "high"),
-            "Quick Actions persist their own Codex reasoning effort")
-        onDevice.select(.openCode(model: "provider/model", effort: "max"))
-        let withOpenCodeEffort = QuickActionSettingsStore(defaults: defaults)
-        expect(
-            withOpenCodeEffort.model == .openCode(model: "provider/model", effort: "max"),
-            "Quick Actions persist their own OpenCode reasoning effort")
-    }
-
-    static func actionsOverrideTheirRoute() {
-        let suite = "QuickActionTests.overrides"
-        let defaults = isolatedDefaults(suite)
-        defer { discardSuite(suite, defaults) }
-
-        let connectionID = UUID()
-        let api = AIModelSelection.api(connection: connectionID, model: "m", effort: "low")
-        let custom = QuickAction.custom(CustomQuickAction(name: "Snark", instructions: "Bite."))
-        let store = QuickActionSettingsStore(defaults: defaults)
-        store.select(.appleIntelligence)
-        store.setModelOverride(.claude(model: "opus", effort: "high"), for: .summarize)
-        store.setModelOverride(api, for: custom)
-        store.setModelOverride(.codex(model: "gpt", effort: nil), for: .translate)
-
-        expect(
-            store.model(for: .summarize) == .claude(model: "opus", effort: "high"),
-            "an action with its own route uses it")
-        expect(store.model(for: .rewrite) == .appleIntelligence, "an action without one follows")
-        expect(store.model(for: custom) == api, "a custom action keeps a route of its own")
-        expect(store.modelOverride(for: .translate) == nil, "Translate never takes a model")
-
-        let reopened = QuickActionSettingsStore(defaults: defaults)
-        expect(
-            reopened.model(for: .summarize) == .claude(model: "opus", effort: "high")
-                && reopened.model(for: custom) == api,
-            "per-action routes and their efforts survive a relaunch")
-
-        reopened.repairModel(against: [], fallback: .codex(model: "gpt", effort: nil))
-        expect(
-            reopened.modelOverride(for: custom) == nil,
-            "a route through a removed connection is dropped, not rerouted to chat's model")
-        expect(reopened.model == .appleIntelligence, "and the shared route is left alone")
-
-        reopened.setModelOverride(.openCode(model: "old", effort: nil), for: .rewrite)
-        reopened.repairInstalledModel(
-            available: [.claude(model: "sonnet", effort: "medium")],
-            unavailableSources: [.openCode], fallback: .appleIntelligence)
-        expect(
-            reopened.modelOverride(for: .summarize) == .claude(model: "sonnet", effort: "medium"),
-            "a model removed from its catalog moves to that command's first model")
-        expect(
-            reopened.modelOverride(for: .rewrite) == nil,
-            "an unavailable command drops the route instead of borrowing the fallback")
-
-        reopened.setModelOverride(nil, for: .summarize)
-        expect(
-            defaults.data(forKey: AppSettingsKey.quickActionModelOverrides.rawValue) == nil,
-            "clearing the last route leaves nothing stored")
     }
 
     static func everyActionDescribesItself() {
@@ -198,29 +83,17 @@ struct QuickActionTests {
             Set(BuiltInQuickAction.allCases.map(\.title)).count == BuiltInQuickAction.allCases.count,
             "no two actions read the same in the shortcut list")
 
-        // Summarize answers a question about the text; replacing it unasked would destroy the text.
-        expect(BuiltInQuickAction.summarize.alwaysPreviews, "Summarize always shows its panel")
+        // A summary answers a question about the text; writing it back over the text would destroy it.
+        expect(!BuiltInQuickAction.summarize.replacesSelection, "a summary is never written back")
         expect(
-            BuiltInQuickAction.allCases.filter(\.alwaysPreviews) == [.summarize],
-            "only Summarize forces a panel")
-        expect(
-            BuiltInQuickAction.fixGrammar.replacesDirectlyByDefault,
-            "grammar is the one action safe to apply unseen")
-        expect(
-            !BuiltInQuickAction.rewrite.replacesDirectlyByDefault,
-            "a rewrite changes the voice, so it is previewed by default")
+            BuiltInQuickAction.allCases.filter { !$0.replacesSelection } == [.summarize],
+            "only Summarize is read-only")
         expect(
             BuiltInQuickAction.translate.usesTranslationFramework,
             "Translate goes to Apple's translator, not the model")
         expect(
             BuiltInQuickAction.allCases.filter(\.usesTranslationFramework) == [.translate],
             "nothing else claims the translator")
-        expect(
-            BuiltInQuickAction.summarize.showsDiff == false,
-            "a summary is not the input edited, so a diff would be noise")
-        expect(
-            QuickAction.allBuiltIn.filter(\.rendersMarkdown) == [.summarize],
-            "an edit or translation is shown as the literal text it would paste")
     }
 
     static func promptsForbidCommentaryAndInjection() {
@@ -238,18 +111,13 @@ struct QuickActionTests {
                 "\(action) treats the selection as material, not as instructions")
         }
 
-        // The delimiter is what stops a short selection reading as part of the instruction.
-        let message = QuickActionPrompt.message(for: .fixGrammar, selection: "teh cat")
-        expect(message.contains("Text:"), "the selection is delimited from the instruction")
-        expect(message.hasSuffix("teh cat"), "the selection goes last, unaltered")
-
-        // Only Summarize asks a question of the text; the rest just hand it over to be transformed.
+        // The text rides as an attached document, so the rules must name it rather than inline it.
         expect(
-            QuickActionPrompt.message(for: .summarize, selection: "hi").hasPrefix("Summarize"),
-            "a summary names the task above the text it is given")
+            QuickActionPrompt.instructions(for: BuiltInQuickAction.summarize).contains("attached text"),
+            "the summary rules point at the attached text")
         expect(
-            QuickActionPrompt.message(for: .rewrite, selection: "hi").hasPrefix("Text:"),
-            "an action whose instructions already say what to do adds no second request")
+            QuickActionPrompt.boundary.contains("attached text"),
+            "the boundary names the attached text it protects")
 
         expect(
             QuickActionPrompt.instructions(for: BuiltInQuickAction.rewrite, override: "My instructions")
@@ -277,34 +145,6 @@ struct QuickActionTests {
             "Translate cannot persist model instructions")
     }
 
-    static func previewChoicesRememberOnlyWhatWasChosen() {
-        var settings = QuickActionSettings()
-        expect(settings.previewChoices.isEmpty, "nothing is stored until the reader chooses")
-        expect(
-            !settings.previewsResult(BuiltInQuickAction.fixGrammar),
-            "grammar applies directly by default")
-        expect(settings.previewsResult(BuiltInQuickAction.rewrite), "a rewrite previews by default")
-        expect(
-            settings.previewsResult(BuiltInQuickAction.summarize),
-            "Summarize previews whatever is stored")
-
-        settings.setPreviewsResult(true, for: .fixGrammar)
-        expect(settings.previewsResult(BuiltInQuickAction.fixGrammar), "an explicit choice is honoured")
-        settings.setPreviewsResult(false, for: .summarize)
-        expect(
-            settings.previewsResult(BuiltInQuickAction.summarize),
-            "Summarize cannot be told to replace text unseen")
-
-        // Round-trips as a plain dictionary, and an action that no longer exists is dropped.
-        var restored = QuickActionSettings()
-        restored.storedPreviewChoices = settings.storedPreviewChoices
-        expect(
-            restored.previewsResult(BuiltInQuickAction.fixGrammar),
-            "a stored choice survives the trip through UserDefaults")
-        restored.storedPreviewChoices = ["notAnAction": true]
-        expect(restored.previewChoices.isEmpty, "an unknown key is a removed action, not a crash")
-    }
-
     /// A fixed suite name stops cfprefsd accumulating a plist per run; cleared at both ends.
     static func isolatedDefaults(_ name: String) -> UserDefaults {
         let defaults = UserDefaults(suiteName: name)!
@@ -327,10 +167,7 @@ struct QuickActionTests {
         let action = QuickAction.custom(record)
         expect(action.title == "Make Snarky", "a custom action is named by its record")
         expect(action.symbol == CustomQuickAction.sfSymbol, "an unset icon falls back to the default")
-        expect(action.progressTitle == "Make Snarky…", "the pill names the action the reader pressed")
-        expect(!action.alwaysPreviews, "nothing forces a custom action into a panel")
-        expect(!action.showsDiff, "an arbitrary prompt is not the input edited, so no diff")
-        expect(action.rendersMarkdown, "a custom prompt's Markdown reply renders like Summarize's")
+        expect(action.replacesSelection, "a custom action may write back, by its own choice")
         expect(
             !action.usesTranslationFramework,
             "only the shipped Translate reaches Apple's translator")
@@ -343,14 +180,7 @@ struct QuickActionTests {
             "another feature's entry id is not a Quick Action")
 
         // Preview is the default, because Tinycast cannot know what an arbitrary prompt returns.
-        expect(
-            QuickActionSettings().previewsResult(.custom(record)),
-            "a custom action previews until the reader says otherwise")
-        var replacing = record
-        replacing.previewsResult = false
-        expect(
-            !QuickActionSettings().previewsResult(.custom(replacing)),
-            "the choice travels on the record, so deleting it takes the choice too")
+        expect(record.previewsResult, "a custom action previews until the reader says otherwise")
     }
 
     static func customActionsKeepTheBoundary() {
@@ -367,9 +197,6 @@ struct QuickActionTests {
             QuickActionPrompt.instructions(for: .custom(record), override: "Something else")
                 == instructions,
             "a custom action has no separate override to be replaced by")
-        expect(
-            QuickActionPrompt.message(for: .custom(record), selection: "hi").hasPrefix("Text:"),
-            "only Summarize names a task above the text")
     }
 
     static func customActionsSurviveARelaunch() {

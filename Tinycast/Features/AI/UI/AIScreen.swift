@@ -187,7 +187,9 @@ struct AIScreen: PaletteScreen {
                 availability: { chatCoordinator.availability(for: chat) },
                 onConfigure: chatCoordinator.showSettings,
                 onAppear: chatCoordinator.prepareForChat,
-                onChoose: { coordinator.send($0) }))
+                onChoose: { coordinator.send($0) },
+                onReplace: chatCoordinator.canReplaceLastReply(in: chat)
+                    ? { chatCoordinator.replaceLastReply(in: chat) } : nil))
     }
 }
 
@@ -198,6 +200,7 @@ private struct AIChatView: View {
     let onConfigure: () -> Void
     let onAppear: () -> Void
     let onChoose: (String) -> Void
+    let onReplace: (() -> Void)?
 
     var body: some View {
         Group {
@@ -214,7 +217,8 @@ private struct AIChatView: View {
                     status: chat.liveStatus,
                     usage: chat.usage,
                     surface: .palette,
-                    onChoose: chat.isStreaming || !settings.choicesEnabled ? nil : onChoose)
+                    onChoose: chat.isStreaming || !settings.choicesEnabled ? nil : onChoose,
+                    onReplace: onReplace)
             }
         }
         .onAppear(perform: onAppear)

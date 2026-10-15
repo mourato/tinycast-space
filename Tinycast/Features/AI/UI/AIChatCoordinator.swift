@@ -333,6 +333,30 @@ final class AIChatCoordinator {
         }
     }
 
+    /// A quick action's turn: its text is the attached document and the chat's route answers without tools.
+    @discardableResult
+    func answerQuickAction(prompt: String, instructions: String, in chat: AIChatState) -> Bool {
+        guard settings.aiEnabled else { return false }
+        do {
+            let sent = chat.send(
+                prompt, using: try provider(for: chat), model: model(for: chat),
+                instructions: instructions, contextBudget: contextBudget(for: chat))
+            if sent { nameIfNeeded(chat) }
+            return sent
+        } catch {
+            chat.report(error.localizedDescription)
+            return false
+        }
+    }
+
+    func canReplaceLastReply(in chat: AIChatState) -> Bool {
+        core.quickActionCoordinator.canReplaceReply(in: chat)
+    }
+
+    func replaceLastReply(in chat: AIChatState) {
+        core.quickActionCoordinator.replaceReply(in: chat)
+    }
+
     /// The same question, asked of whichever model is selected now, of the server it named.
     func regenerate(in chat: AIChatState) {
         guard settings.aiEnabled else { return }

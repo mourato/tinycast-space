@@ -401,9 +401,6 @@ enum SettingsSearchCatalog {
             .quickActionsActions, "Add Quick Action",
             keywords: ["new", "custom", "prompt", "instructions", "alias"]),
         .init(
-            .quickActionsModel, "Model",
-            keywords: ["llm", "ai", "default"]),
-        .init(
             .quickActionsTranslate, "Translate to",
             keywords: ["language", "locale"])
     ]
