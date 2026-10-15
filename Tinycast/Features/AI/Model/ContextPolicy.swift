@@ -52,8 +52,8 @@ enum ContextPolicy {
         return nil
     }
 
-    static func canCaptureApp(options: Options, aiEnabled: Bool) -> Bool {
-        aiEnabled && options.appEnabled && options.enabledSources.contains(.apps)
+    static func canCaptureApp(options: Options, aiEnabled: Bool, isBrowser: Bool = false) -> Bool {
+        aiEnabled && options.appEnabled && options.enabledSources.contains(.apps) && !isBrowser
     }
 
     static func canCaptureBrowser(options: Options, aiEnabled: Bool) -> Bool {
@@ -181,14 +181,53 @@ enum ContextPolicy {
         /// The chat's staging generation when capture started; a send or clear moves it on.
         let generation: Int
         let source: ContextSource
+        let automatic: Bool
 
-        init(operationID: UUID, chatID: UUID, sourceKey: String, generation: Int = 0, source: ContextSource = .apps) {
+        init(
+            operationID: UUID, chatID: UUID, sourceKey: String, generation: Int = 0,
+            source: ContextSource = .apps, automatic: Bool = false
+        ) {
             self.operationID = operationID
             self.chatID = chatID
             self.sourceKey = sourceKey
             self.generation = generation
             self.source = source
+            self.automatic = automatic
         }
+    }
+
+    static func allowsCapture(ticket: CaptureTicket, options: Options, aiEnabled: Bool) -> Bool {
+        switch ticket.source {
+        case .apps:
+            return ticket.automatic
+                ? canAutoAttachApp(options: options, aiEnabled: aiEnabled)
+                : canCaptureApp(options: options, aiEnabled: aiEnabled)
+        case .browserTabs:
+            return ticket.automatic
+                ? canAutoAttachBrowser(options: options, aiEnabled: aiEnabled)
+                : canCaptureBrowser(options: options, aiEnabled: aiEnabled)
+        default:
+            return false
+        }
+    }
+
+    struct NamedChoice: Equatable {
+        let name: String
+        let remainder: String
+    }
+
+    static func namedChoice(in query: String, names: [String]) -> NamedChoice? {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        for name in names.filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
+            guard let range = query.range(of: name, options: [.caseInsensitive, .anchored]) else {
+                continue
+            }
+            let suffix = query[range.upperBound...]
+            guard suffix.isEmpty || suffix.first?.isWhitespace == true else { continue }
+            return NamedChoice(
+                name: name, remainder: String(suffix.drop(while: \.isWhitespace)))
+        }
+        return nil
     }
 
     static func shouldPublish(

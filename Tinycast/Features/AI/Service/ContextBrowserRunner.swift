@@ -18,7 +18,7 @@ enum ContextBrowserRunner {
 
     /// Every tab of every normal window, front to back; private windows never listed.
     static func listTabs() async -> Result<TabList, ContextBrowser.ReadFailure> {
-        guard isHeliumRunning() else { return .failure(.noSource) }
+        guard !Task.isCancelled, isHeliumRunning() else { return .failure(.noSource) }
         let rows = await runList(script: listScript())
         switch rows {
         case .failure(let failure): return .failure(failure)
@@ -34,7 +34,7 @@ enum ContextBrowserRunner {
     static func readTab(
         id: String, windowID: String, expectedURL: String
     ) async -> Result<ContextBrowser.PageRead, ContextBrowser.ReadFailure> {
-        guard isHeliumRunning() else { return .failure(.noSource) }
+        guard !Task.isCancelled, isHeliumRunning() else { return .failure(.noSource) }
         let result = await runScalar(script: readScript(tabID: id, windowID: windowID))
         switch result {
         case .failure(let failure): return .failure(failure)
@@ -63,12 +63,15 @@ enum ContextBrowserRunner {
         set out to {}
         repeat with w in windows
         set wmode to mode of w
+        set wid to id of w
+        if wmode is "incognito" then
+        set end of out to {"", wid, "0", "", "", wmode}
+        else
         try
         set activeID to id of active tab of w
         on error
         set activeID to ""
         end try
-        set wid to id of w
         repeat with t in tabs of w
         set tid to id of t
         if tid is activeID then
@@ -78,6 +81,7 @@ enum ContextBrowserRunner {
         end if
         set end of out to {tid, wid, flag, title of t, URL of t, wmode}
         end repeat
+        end if
         end repeat
         return out
         end tell
@@ -109,50 +113,48 @@ enum ContextBrowserRunner {
             """
     }
 
-    private static func runScalar(script: String) async -> Result<String, ContextBrowser.ReadFailure>
-    {
-        await Task.detached(priority: .userInitiated) {
-            guard let compiled = NSAppleScript(source: script) else {
-                return Result<String, ContextBrowser.ReadFailure>.failure(.noSource)
-            }
-            var errorInfo: NSDictionary?
-            let result = compiled.executeAndReturnError(&errorInfo)
-            if let errorInfo {
-                return .failure(mapError(errorInfo))
-            }
-            return .success(result.stringValue ?? "")
-        }.value
+    @concurrent private static func runScalar(
+        script: String
+    ) async -> Result<String, ContextBrowser.ReadFailure> {
+        guard !Task.isCancelled, let compiled = NSAppleScript(source: script) else {
+            return .failure(.noSource)
+        }
+        guard !Task.isCancelled else { return .failure(.noSource) }
+        var errorInfo: NSDictionary?
+        let result = compiled.executeAndReturnError(&errorInfo)
+        guard !Task.isCancelled else { return .failure(.noSource) }
+        if let errorInfo { return .failure(mapError(errorInfo)) }
+        return .success(result.stringValue ?? "")
     }
 
-    private static func runList(script: String) async -> Result<
-        [[String]], ContextBrowser.ReadFailure
-    > {
-        await Task.detached(priority: .userInitiated) {
-            guard let compiled = NSAppleScript(source: script) else {
-                return Result<[[String]], ContextBrowser.ReadFailure>.failure(.noSource)
-            }
-            var errorInfo: NSDictionary?
-            let result = compiled.executeAndReturnError(&errorInfo)
-            if let errorInfo {
-                return .failure(mapError(errorInfo))
-            }
-            var rows: [[String]] = []
-            let rowCount = result.numberOfItems
-            if rowCount > 0 {
-                for index in 1...rowCount {
-                    guard let row = result.atIndex(index) else { continue }
-                    var fields: [String] = []
-                    let fieldCount = row.numberOfItems
-                    if fieldCount > 0 {
-                        for field in 1...fieldCount {
-                            fields.append(row.atIndex(field)?.stringValue ?? "")
-                        }
+    @concurrent private static func runList(
+        script: String
+    ) async -> Result<[[String]], ContextBrowser.ReadFailure> {
+        guard !Task.isCancelled, let compiled = NSAppleScript(source: script) else {
+            return .failure(.noSource)
+        }
+        guard !Task.isCancelled else { return .failure(.noSource) }
+        var errorInfo: NSDictionary?
+        let result = compiled.executeAndReturnError(&errorInfo)
+        guard !Task.isCancelled else { return .failure(.noSource) }
+        if let errorInfo { return .failure(mapError(errorInfo)) }
+        var rows: [[String]] = []
+        let rowCount = result.numberOfItems
+        if rowCount > 0 {
+            for index in 1...rowCount {
+                guard !Task.isCancelled else { return .failure(.noSource) }
+                guard let row = result.atIndex(index) else { continue }
+                var fields: [String] = []
+                let fieldCount = row.numberOfItems
+                if fieldCount > 0 {
+                    for field in 1...fieldCount {
+                        fields.append(row.atIndex(field)?.stringValue ?? "")
                     }
-                    rows.append(fields)
                 }
+                rows.append(fields)
             }
-            return .success(rows)
-        }.value
+        }
+        return .success(rows)
     }
 
     /// Descriptors never cross the await; only strings and the mapped failure do.

@@ -31,6 +31,8 @@ struct ContextTests {
         originStripping()
         staleCaptureBoundaries()
         generationBoundaries()
+        automaticCaptureRevocation()
+        namedContextChoices()
         priorityNormalization()
 
         print("\(passes) passed, \(failures) failed")
@@ -420,6 +422,62 @@ struct ContextTests {
                 ticket: first, latest: otherSource, latestCancelled: false,
                 captureAllowed: true),
             "an app ticket never validates a browser slot")
+    }
+
+    static func automaticCaptureRevocation() {
+        var options = ContextPolicy.Options()
+        options.appEnabled = true
+        options.browserEnabled = true
+        options.autoAttachApp = true
+        options.autoAttachBrowser = true
+        for source in [ContextSource.apps, .browserTabs] {
+            let ticket = ContextPolicy.CaptureTicket(
+                operationID: UUID(), chatID: UUID(), sourceKey: "source", generation: 7,
+                source: source, automatic: true)
+            expect(
+                ContextPolicy.allowsCapture(ticket: ticket, options: options, aiEnabled: true),
+                "enabled automatic capture admits \(source)")
+            var revoked = options
+            revoked.autoAttachApp = false
+            revoked.autoAttachBrowser = false
+            expect(
+                !ContextPolicy.allowsCapture(ticket: ticket, options: revoked, aiEnabled: true),
+                "turning automatic attachment off revokes an existing \(source) ticket")
+            let manual = ContextPolicy.CaptureTicket(
+                operationID: UUID(), chatID: ticket.chatID, sourceKey: "source", generation: 7,
+                source: source)
+            expect(
+                ContextPolicy.allowsCapture(ticket: manual, options: revoked, aiEnabled: true),
+                "turning automatic attachment off preserves manual \(source) capture")
+        }
+        expect(
+            !ContextPolicy.canCaptureApp(options: options, aiEnabled: true, isBrowser: true),
+            "a browser cannot bypass private-window checks through generic app capture")
+        expect(
+            ContextPolicy.canCaptureApp(options: options, aiEnabled: true, isBrowser: false),
+            "ordinary apps remain available through the app reader")
+    }
+
+    static func namedContextChoices() {
+        let names = ["Summarize", "Fix Grammar", "Summarize Selection"]
+        expect(
+            ContextPolicy.namedChoice(in: "Summarize", names: names)
+                == .init(name: "Summarize", remainder: ""),
+            "a named action consumes its name instead of sending it as the prompt")
+        expect(
+            ContextPolicy.namedChoice(in: "fix grammar  explain the changes", names: names)
+                == .init(name: "Fix Grammar", remainder: "explain the changes"),
+            "a named context choice preserves only the user's following prompt")
+        expect(
+            ContextPolicy.namedChoice(in: "Summarize Selection briefly", names: names)
+                == .init(name: "Summarize Selection", remainder: "briefly"),
+            "the longest complete name wins when choices share a prefix")
+        expect(
+            ContextPolicy.namedChoice(in: "SummarizeLater", names: names) == nil,
+            "a partial word cannot silently choose an action")
+        expect(
+            ContextPolicy.namedChoice(in: "Unknown", names: names) == nil,
+            "a missing choice has no replacement draft")
     }
 
     static func priorityNormalization() {
