@@ -132,9 +132,18 @@ enum ContextBrowser {
         let isTruncated: Bool
     }
 
+    /// Arc JSON-encodes what `execute` returns, so its reader report arrives as a string literal.
+    static func unwrappedScriptResult(_ text: String) -> String {
+        guard text.hasPrefix("\""), let data = text.data(using: .utf8),
+            let inner = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+                as? String
+        else { return text }
+        return inner
+    }
+
     /// Parses the fixed reader's JSON; anything else is a restricted or failed page.
     static func parsePageRead(_ json: String) -> PageRead? {
-        guard let data = json.data(using: .utf8),
+        guard let data = unwrappedScriptResult(json).data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             object["e"] == nil,
             let url = object["u"] as? String, !url.isEmpty
