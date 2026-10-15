@@ -32,7 +32,9 @@ nothing and says so with a HUD.
 - **One funnel, whichever way an action started.** A shortcut and a launcher row both land on
   `QuickActionCoordinator.run(_:)`, which captures the target **before** hiding the palette. An
   external app remains the usual target; a selected passage in the Notes editor is captured directly
-  from its text view.
+  from its text view. A preview action prepares its Quick AI conversation before the read starts —
+  a fresh chat saying it is gathering the text — so the window is already open while capture blocks.
+  The borrowed ⌘C still posts to the retained app's process, never to the palette.
 - **Enabling is consent, and it is the only place Accessibility is requested.** The toggle confirms
   through `DialogController` first and then calls `Permissions.ensureAccessibility()`. Everything else
   uses `isAccessibilityTrusted()` and degrades to a HUD.
@@ -45,20 +47,28 @@ nothing and says so with a HUD.
   goes through the chat's own route with no tools and no web search. By default the reply streams in
   the palette, and ⌘J hands the conversation to the AI Chat window like any other. A Replace only
   action keeps the palette shut and shows the pill instead; the conversation is still kept in
-  history, so the reader can open it later.
+  history, so the reader can open it later. A prepared run reports a capture failure in that same
+  chat, so the error persists where the reader already looks; a successful capture is staged and
+  answered in the same prepared conversation.
 - **The text is bounded where it is read, not where it is sent.** The selection or page is capped at
   `QuickActionRunner.maxSelectionBytes` (32 KB), the same ceiling `AIAttachmentBudget` gives a text
   document, so a page that fits the reader fits the request. Chat's own 8,000-character page staging is
   not involved.
 - **A new run waits for an answer already in progress.** `run` refuses while `quickAI` is streaming, so
   a shortcut never cancels a reply the reader is still reading. A second run while text is being read
-  is refused the same way, because two reads race for one selection.
+  is refused the same way, because two reads race for one selection. A capture that outlives its run
+  stages nothing: cancellation, a new chat, a hidden or handed-off conversation, a conflicting send
+  or attachment, or either switch going off all drop it, and a dismissed window is never reopened.
+  `QuickActionCapturePlan.allowsStaging` is the single predicate.
 - **A browser page stands in for a missing selection only where browser context is on.** When no
   selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
   tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
   selection wins, else its text, capped to `maxSelectionBytes`. **A page result is never written back**:
   `begin` computes `writesBack = !fromPage && action.replacesSelection`, so no Replace button and no
-  automatic replacement is offered for it, whatever the action.
+  automatic replacement is offered for it, whatever the action. The fallback runs under the same
+  progress: a preview shows its gathering notice before the tab list is read, and a Replace only run
+  trades its pill for that same prepared chat first, reporting a page failure there. Consent, browser
+  policy and the text cap are unchanged.
 - **Replace only is a per-action choice, and it needs a write-back target.** `QuickActionSettings`
   keeps the built-in choice, and a custom action keeps its own on its record, so
   `replacesOnly(_:)` answers for both. A page result has no selection to write into, so it opens Quick
@@ -198,7 +208,8 @@ failed run from writing into a later reply.
 A failed reply keeps the chat's usual `failed` state and no button. Cancelling it through Quick AI
 behaves as cancelling any reply does.
 
-Quick AI has no progress pill of its own. The streaming reply is the progress.
+Quick AI has no progress pill of its own. The streaming reply is the progress. While a preview
+capture is still in flight, the empty chat says it is gathering the text.
 
 ## Reading the selection
 
@@ -268,8 +279,13 @@ failure handler, so automatic expansion stays silent as before.
   in AI mode, and Replace targets the displaced app's selection, not Tinycast's own field.
 - Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
   text untouched.
-- Summarize a page in a browser with no selection: the reply streams, and nothing is typed into the
-  page.
+- Press Summarize with text selected: Quick AI opens at once saying it is gathering the text, then
+  streams the summary. With no selection in a browser it reads the page under the same notice, and
+  nothing is typed into the page.
+- Set a writing action to Replace only and run it in a browser with no selection: the pill shows
+  first, then Quick AI opens with the gathering notice, and a page failure reports there.
+- Start a preview action, then hide the palette or start a new chat before capture lands: nothing
+  is staged, sent or reported, and the window stays as the reader left it.
 - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
 - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
 - Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.
@@ -292,4 +308,5 @@ failure handler, so automatic expansion stays silent as before.
 - Press one in a password field: refused.
 - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
 - Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action
-  persistence and refusal of unreadable storage).
+  persistence and refusal of unreadable storage, and the capture plan: preview routing, the
+  read-only page, error destinations and stale guards).

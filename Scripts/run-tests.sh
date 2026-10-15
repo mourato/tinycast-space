@@ -814,6 +814,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
                            Tinycast/Features/QuickActions/Model/CustomQuickAction.swift \
                            Tinycast/Features/QuickActions/Model/CustomQuickActionStore.swift \
                            Tinycast/Features/QuickActions/Model/QuickAction.swift \
+                           Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionFailure.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
