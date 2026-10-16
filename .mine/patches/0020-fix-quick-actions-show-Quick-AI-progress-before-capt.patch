@@ -1,0 +1,645 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Thu, 15 Oct 2026 12:47:46 -0300
+Subject: [PATCH] fix(quick-actions): show Quick AI progress before capture,
+ keep errors in-window
+
+---
+ Scripts/run-tests.sh                          |   1 +
+ Tests/quick-action-test.swift                 | 146 ++++++++++++
+ .../Model/QuickActionCapturePlan.swift        |  66 ++++++
+ .../UI/QuickActionCoordinator.swift           | 221 +++++++++++++++---
+ docs/features/quick-actions.md                |  33 ++-
+ 5 files changed, 423 insertions(+), 44 deletions(-)
+ create mode 100644 Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 93299fb0..de8d84b7 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -731,6 +731,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
+                            Tinycast/Features/QuickActions/Model/CustomQuickAction.swift \
+                            Tinycast/Features/QuickActions/Model/CustomQuickActionStore.swift \
+                            Tinycast/Features/QuickActions/Model/QuickAction.swift \
++                           Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionFailure.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
+diff --git a/Tests/quick-action-test.swift b/Tests/quick-action-test.swift
+index 529c86ce..4e9d372e 100644
+--- a/Tests/quick-action-test.swift
++++ b/Tests/quick-action-test.swift
+@@ -24,6 +24,10 @@ struct QuickActionTests {
+         customActionsKeepTheBoundary()
+         customActionsSurviveARelaunch()
+         customActionsNeverWriteOverWhatTheyCouldNotRead()
++        captureShowsProgressBeforeReading()
++        captureKeepsPageResultsReadable()
++        captureErrorsStayInTheirWindow()
++        staleCapturesNeverReachTheWrongChat()
+ 
+         print("\(passes) passed, \(failures) failed")
+         if failures > 0 { exit(1) }
+@@ -326,4 +330,146 @@ struct QuickActionTests {
+         expect(writeFailure == .storageUnavailable, "a write that cannot land is reported")
+         expect(unwritable.actions.isEmpty, "and the list never moved ahead of the file")
+     }
++
++    /// Quick AI opens before the read, so its progress is already on screen when capture blocks.
++    static func captureShowsProgressBeforeReading() {
++        expect(
++            QuickActionCapturePlan.previews(
++                replacesOnly: QuickActionSettings().replacesOnly(.builtIn(.summarize))),
++            "Summarize always previews, so its progress shows before the read")
++        expect(
++            QuickActionCapturePlan.previews(
++                replacesOnly: QuickActionSettings().replacesOnly(.builtIn(.rewrite))),
++            "a writing action previews until it is set to Replace only")
++        var replacing = QuickActionSettings()
++        replacing.setReplacesOnly(true, for: .rewrite)
++        expect(
++            !QuickActionCapturePlan.previews(
++                replacesOnly: replacing.replacesOnly(.builtIn(.rewrite))),
++            "a Replace only writing action stays silent")
++        let custom = CustomQuickAction(
++            name: "Terse", instructions: "Trim.", previewsResult: false)
++        expect(
++            !QuickActionCapturePlan.previews(
++                replacesOnly: QuickActionSettings().replacesOnly(.custom(custom))),
++            "a custom Replace only stays silent too")
++    }
++
++    /// A page has no selection to write into, so it is always read, even for Replace only.
++    static func captureKeepsPageResultsReadable() {
++        expect(
++            !QuickActionCapturePlan.writesBack(replacesSelection: true, fromPage: true),
++            "a page result is never written back")
++        expect(
++            QuickActionCapturePlan.writesBack(replacesSelection: true, fromPage: false),
++            "a selection keeps its write-back")
++        expect(
++            !QuickActionCapturePlan.writesBack(replacesSelection: false, fromPage: false),
++            "Summarize never writes back")
++        expect(
++            !QuickActionCapturePlan.silently(writesBack: false, replacesOnly: true),
++            "a page result opens Quick AI even for Replace only")
++        expect(
++            QuickActionCapturePlan.silently(writesBack: true, replacesOnly: true),
++            "Replace only with a target stays silent")
++        expect(
++            !QuickActionCapturePlan.silently(writesBack: true, replacesOnly: false),
++            "a preview is never silent")
++        expect(
++            QuickActionCapturePlan.sourceName(fromPage: true) == "Page text",
++            "a page rides under its own name")
++        expect(
++            QuickActionCapturePlan.sourceName(fromPage: false) == "Selected text",
++            "a selection keeps its name")
++    }
++
++    /// A prepared Quick AI keeps every capture failure; silence keeps the old pill and dialog.
++    static func captureErrorsStayInTheirWindow() {
++        let failures: [QuickActionFailure] = [
++            .needsAccessibility, .noTarget, .unreadableApp("Chrome"), .noSelection, .tooLong
++        ]
++        for failure in failures {
++            expect(
++                QuickActionCapturePlan.destination(for: failure, previews: true) == .chat,
++                "a prepared capture keeps its failure in Quick AI")
++        }
++        expect(
++            QuickActionCapturePlan.destination(for: .needsAccessibility, previews: false)
++                == .dialog,
++            "a silent permission failure still earns its dialog")
++        for failure in failures where failure != .needsAccessibility {
++            expect(
++                QuickActionCapturePlan.destination(for: failure, previews: false) == .pill,
++                "a silent failure stays a fading pill")
++        }
++        expect(
++            QuickActionCapturePlan.destinationForPageFailure(previews: true) == .chat,
++            "a page read failure stays in Quick AI")
++    }
++
++    /// A capture that outlives its chat, window or switch must stage nothing and reopen nothing.
++    static func staleCapturesNeverReachTheWrongChat() {
++        let session = UUID()
++        let prepared = QuickActionCapturePlan.ChatSnapshot(
++            sessionID: session, stagingGeneration: 3, messageCount: 0, isStreaming: false,
++            pendingAttachmentCount: 0)
++        func ui(
++            mine: Int = 7, generation: Int = 7, cancelled: Bool = false,
++            showing: Bool = true, ai: Bool = true, quickActions: Bool = true
++        ) -> QuickActionCapturePlan.UIState {
++            QuickActionCapturePlan.UIState(
++                mine: mine, generation: generation, cancelled: cancelled,
++                paletteShowingAI: showing, aiEnabled: ai, quickActionsEnabled: quickActions)
++        }
++        expect(
++            QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(), previews: true),
++            "an untouched prepared chat still takes its capture")
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(cancelled: true), previews: true),
++            "a cancelled capture stages nothing")
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(generation: 8), previews: true),
++            "a superseded capture stages nothing")
++        let newChat = QuickActionCapturePlan.ChatSnapshot(
++            sessionID: UUID(), stagingGeneration: 3, messageCount: 0, isStreaming: false,
++            pendingAttachmentCount: 0)
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: newChat, ui: ui(), previews: true),
++            "a new chat never receives the old capture")
++        let restaged = QuickActionCapturePlan.ChatSnapshot(
++            sessionID: session, stagingGeneration: 4, messageCount: 0, isStreaming: false,
++            pendingAttachmentCount: 1)
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: restaged, ui: ui(), previews: true),
++            "a conflicting attachment is never consumed by the capture")
++        let answering = QuickActionCapturePlan.ChatSnapshot(
++            sessionID: session, stagingGeneration: 3, messageCount: 1, isStreaming: true,
++            pendingAttachmentCount: 0)
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: answering, ui: ui(), previews: true),
++            "a conflicting send is never answered over by the capture")
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(showing: false), previews: true),
++            "a dismissed window is never reopened by the capture")
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(ai: false), previews: true),
++            "a disabled chat never receives the capture")
++        expect(
++            !QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(quickActions: false),
++                previews: true),
++            "a disabled feature drops its capture")
++        expect(
++            QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: prepared, ui: ui(showing: false), previews: false),
++            "silence needs no window, so a hidden palette does not stop it")
++    }
+ }
+diff --git a/Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift b/Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
+new file mode 100644
+index 00000000..2716423a
+--- /dev/null
++++ b/Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
+@@ -0,0 +1,66 @@
++import Foundation
++
++/// What a run shows and where its failures land, decided before anything is read.
++enum QuickActionCapturePlan {
++    static let capturingMessage = "Gathering selected text…"
++
++    static func previews(replacesOnly: Bool) -> Bool { !replacesOnly }
++
++    static func writesBack(replacesSelection: Bool, fromPage: Bool) -> Bool {
++        replacesSelection && !fromPage
++    }
++
++    static func silently(writesBack: Bool, replacesOnly: Bool) -> Bool {
++        writesBack && replacesOnly
++    }
++
++    static func sourceName(fromPage: Bool) -> String {
++        fromPage ? "Page text" : "Selected text"
++    }
++
++    enum ErrorDestination: Equatable, Sendable {
++        case chat
++        case pill
++        case dialog
++    }
++
++    static func destination(for failure: QuickActionFailure, previews: Bool) -> ErrorDestination {
++        guard previews else { return failure.opensAccessibilitySettings ? .dialog : .pill }
++        return .chat
++    }
++
++    static func destinationForPageFailure(previews: Bool) -> ErrorDestination {
++        previews ? .chat : .pill
++    }
++
++    struct ChatSnapshot: Equatable, Sendable {
++        let sessionID: UUID
++        let stagingGeneration: Int
++        let messageCount: Int
++        let isStreaming: Bool
++        let pendingAttachmentCount: Int
++    }
++
++    struct UIState: Equatable, Sendable {
++        let mine: Int
++        let generation: Int
++        let cancelled: Bool
++        let paletteShowingAI: Bool
++        let aiEnabled: Bool
++        let quickActionsEnabled: Bool
++    }
++
++    /// True only while the prepared chat is still the one on screen and empty.
++    static func allowsStaging(
++        prepared: ChatSnapshot, current: ChatSnapshot, ui: UIState, previews: Bool
++    ) -> Bool {
++        guard !ui.cancelled, ui.mine == ui.generation else { return false }
++        guard ui.aiEnabled, ui.quickActionsEnabled else { return false }
++        guard current.sessionID == prepared.sessionID else { return false }
++        guard current.stagingGeneration == prepared.stagingGeneration else { return false }
++        guard !current.isStreaming, current.messageCount == 0 else { return false }
++        guard current.pendingAttachmentCount == 0 else { return false }
++        if previews { guard ui.paletteShowingAI else { return false } }
++        return true
++    }
++}
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
+index ef889980..167f6607 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
+@@ -209,6 +209,7 @@ final class QuickActionCoordinator {
+         generation += 1
+         running?.cancel()
+         running = nil
++        core.hideProgress()
+     }
+ 
+     /// The generation stops a superseded task from clearing the newer handle as it finishes.
+@@ -224,40 +225,131 @@ final class QuickActionCoordinator {
+     }
+ 
+     private func begin(_ action: QuickAction, target: Target) async {
++        switch target {
++        case .note(let note):
++            await beginFromNote(action, note: note, target: target)
++        case .external(let app):
++            await beginExternal(action, app: app, target: target)
++        }
++    }
++
++    private func beginFromNote(_ action: QuickAction, note: NoteSelection, target: Target) async {
++        let selection: String
++        do {
++            selection = try QuickActionRunner.accepted(note.text)
++        } catch let failure as QuickActionFailure {
++            reportRefusal(failure)
++            return
++        } catch {
++            core.showMessage(error.localizedDescription, tone: .danger)
++            return
++        }
++        guard !Task.isCancelled else { return }
++        let writesBack = QuickActionCapturePlan.writesBack(
++            replacesSelection: action.replacesSelection, fromPage: false)
++        let silently = QuickActionCapturePlan.silently(
++            writesBack: writesBack, replacesOnly: store.settings.replacesOnly(action))
++        let sourceName = QuickActionCapturePlan.sourceName(fromPage: false)
++        if action.usesTranslationFramework {
++            await translate(
++                selection, sourceName: sourceName, action: action, target: target,
++                writesBack: writesBack, silently: silently)
++        } else {
++            answer(
++                action, selection: selection, sourceName: sourceName, target: target,
++                writesBack: writesBack, silently: silently)
++        }
++    }
++
++    private func beginExternal(
++        _ action: QuickAction, app: NSRunningApplication?, target: Target
++    ) async {
++        let replacesOnly = store.settings.replacesOnly(action)
++        var previews = QuickActionCapturePlan.previews(replacesOnly: replacesOnly)
++        let mine = generation
++        var prepared: QuickActionCapturePlan.ChatSnapshot?
++        if previews {
++            guard !Task.isCancelled, mine == generation else { return }
++            guard settings.quickActionsEnabled, settings.aiEnabled else { return }
++            prepared = preparePreview()
++        } else {
++            guard !Task.isCancelled, mine == generation else { return }
++            guard settings.quickActionsEnabled, settings.aiEnabled else { return }
++            core.showProgress(action.progressTitle, onCancel: { [weak self] in self?.cancel() })
++        }
++        // The palette may now be key: capture still posts to the retained app's pid.
+         let selection: String
+         var fromPage = false
+         do {
+-            switch target {
+-            case .external(let app):
+-                do {
+-                    selection = try await QuickActionRunner.selection(in: app, using: injector)
+-                } catch let failure as QuickActionFailure where Self.pageMayStandIn(for: failure) {
+-                    guard let page = await pageText(in: app) else { throw failure }
+-                    guard !Task.isCancelled else { return }
+-                    switch page {
+-                    case .success(let text): selection = text
+-                    case .failure(let refusal):
+-                        core.showMessage(refusal.message, tone: .neutral)
+-                        return
+-                    }
+-                    fromPage = true
++            do {
++                selection = try await QuickActionRunner.selection(in: app, using: injector)
++            } catch let failure as QuickActionFailure where Self.pageMayStandIn(for: failure) {
++                if !previews {
++                    guard
++                        ContextBrowser.quickActionFallbackApplies(
++                            bundleID: app?.bundleIdentifier,
++                            options: settings.contextPolicyOptions,
++                            aiEnabled: settings.aiEnabled)
++                    else { throw failure }
++                    core.hideProgress()
++                    guard !Task.isCancelled, mine == generation else { return }
++                    guard settings.quickActionsEnabled, settings.aiEnabled else { return }
++                    prepared = preparePreview()
++                    previews = true
++                }
++                guard let page = await pageText(in: app) else { throw failure }
++                switch page {
++                case .success(let text): selection = text
++                case .failure(let refusal):
++                    guard let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine)
++                    else { return }
++                    chat.report(refusal.message)
++                    return
+                 }
+-            case .note(let note):
+-                selection = try QuickActionRunner.accepted(note.text)
++                fromPage = true
+             }
+         } catch let failure as QuickActionFailure {
++            if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
++                chat.report(failure.localizedDescription)
++                return
++            }
++            if previews { return }
++            core.hideProgress()
++            guard !Task.isCancelled, mine == generation else { return }
+             reportRefusal(failure)
+             return
+         } catch {
++            if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
++                chat.report(error.localizedDescription)
++                return
++            }
++            if previews { return }
++            core.hideProgress()
++            guard !Task.isCancelled, mine == generation else { return }
+             core.showMessage(error.localizedDescription, tone: .danger)
+             return
+         }
+-        guard !Task.isCancelled else { return }
+-        // A page has no selection to write back into, so its result is only ever read.
+-        let writesBack = !fromPage && action.replacesSelection
+-        // Replace only needs a write-back target; a page result has none, so it opens Quick AI.
+-        let silently = writesBack && store.settings.replacesOnly(action)
+-        let sourceName = fromPage ? "Page text" : "Selected text"
++        let writesBack = QuickActionCapturePlan.writesBack(
++            replacesSelection: action.replacesSelection, fromPage: fromPage)
++        let silently = QuickActionCapturePlan.silently(
++            writesBack: writesBack, replacesOnly: replacesOnly)
++        let sourceName = QuickActionCapturePlan.sourceName(fromPage: fromPage)
++        if previews {
++            guard let snapshot = prepared else { return }
++            if action.usesTranslationFramework {
++                await translate(
++                    selection, sourceName: sourceName, action: action, target: target,
++                    writesBack: writesBack, silently: silently, prepared: snapshot, mine: mine)
++            } else {
++                answer(
++                    action, selection: selection, sourceName: sourceName, target: target,
++                    writesBack: writesBack, silently: silently, prepared: snapshot, mine: mine)
++            }
++            return
++        }
++        core.hideProgress()
++        guard !Task.isCancelled, mine == generation else { return }
++        guard settings.quickActionsEnabled, settings.aiEnabled else { return }
+         if action.usesTranslationFramework {
+             await translate(
+                 selection, sourceName: sourceName, action: action, target: target,
+@@ -269,6 +361,37 @@ final class QuickActionCoordinator {
+         }
+     }
+ 
++    private func preparePreview() -> QuickActionCapturePlan.ChatSnapshot {
++        let chat = core.aiChatCoordinator.chats.quickAI
++        chat.startNewChat()
++        pendingReply = nil
++        chat.report(QuickActionCapturePlan.capturingMessage)
++        paletteCoordinator.showPalette(mode: .ai)
++        return QuickActionCapturePlan.ChatSnapshot(
++            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
++            messageCount: chat.session.messages.count, isStreaming: chat.isStreaming,
++            pendingAttachmentCount: chat.pendingAttachments.count)
++    }
++
++    private func preparedChat(
++        matching prepared: QuickActionCapturePlan.ChatSnapshot, mine: Int
++    ) -> AIChatState? {
++        let chat = core.aiChatCoordinator.chats.quickAI
++        let current = QuickActionCapturePlan.ChatSnapshot(
++            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
++            messageCount: chat.session.messages.count, isStreaming: chat.isStreaming,
++            pendingAttachmentCount: chat.pendingAttachments.count)
++        let ui = QuickActionCapturePlan.UIState(
++            mine: mine, generation: generation, cancelled: Task.isCancelled,
++            paletteShowingAI: paletteCoordinator.isShowing(.ai),
++            aiEnabled: settings.aiEnabled, quickActionsEnabled: settings.quickActionsEnabled)
++        guard
++            QuickActionCapturePlan.allowsStaging(
++                prepared: prepared, current: current, ui: ui, previews: true)
++        else { return nil }
++        return chat
++    }
++
+     private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
+         switch failure {
+         case .noSelection, .unreadableApp: return true
+@@ -335,17 +458,29 @@ final class QuickActionCoordinator {
+     /// Replace only keeps the window shut: progress in the pill, and any failure in a HUD.
+     private func answer(
+         _ action: QuickAction, selection: String, sourceName: String, target: Target,
+-        writesBack: Bool, silently: Bool
++        writesBack: Bool, silently: Bool,
++        prepared: QuickActionCapturePlan.ChatSnapshot? = nil, mine: Int? = nil
+     ) {
+         let chat = core.aiChatCoordinator.chats.quickAI
+-        chat.startNewChat()
+-        pendingReply = nil
++        let isPrepared = prepared != nil && mine != nil
++        if isPrepared {
++            guard let prepared, let mine, preparedChat(matching: prepared, mine: mine) != nil
++            else { return }
++            pendingReply = nil
++        } else {
++            chat.startNewChat()
++            pendingReply = nil
++        }
+         let attachment = ChatAttachment(
+             payload: .document(
+                 AIDocument(data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)),
+             name: sourceName, preview: nil)
+         if let refusal = chat.attach(attachment) {
+-            core.showMessage(refusal.message, tone: .neutral)
++            if isPrepared {
++                chat.report(refusal.message)
++            } else {
++                core.showMessage(refusal.message, tone: .neutral)
++            }
+             return
+         }
+         let chatID = chat.session.id
+@@ -355,10 +490,12 @@ final class QuickActionCoordinator {
+                     reply, chatID: chatID, action: action, target: target, silently: silently)
+             }
+         }
+-        if silently {
+-            core.showProgress(action.progressTitle, onCancel: { [weak chat] in chat?.cancel() })
+-        } else {
+-            paletteCoordinator.showPalette(mode: .ai)
++        if !isPrepared {
++            if silently {
++                core.showProgress(action.progressTitle, onCancel: { [weak chat] in chat?.cancel() })
++            } else {
++                paletteCoordinator.showPalette(mode: .ai)
++            }
+         }
+         let instructions = QuickActionPrompt.instructions(
+             for: action, override: store.settings.instructionOverride(for: action))
+@@ -366,7 +503,9 @@ final class QuickActionCoordinator {
+             prompt: action.title, instructions: instructions, in: chat)
+         if !sent {
+             chat.onNextReplyEnded = nil
+-            if silently {
++            if isPrepared {
++                if chat.notice == nil { chat.report("\(action.title) didn't start") }
++            } else if silently {
+                 core.hideProgress()
+                 core.showMessage(chat.notice ?? "\(action.title) didn't start", tone: .danger)
+             }
+@@ -376,19 +515,29 @@ final class QuickActionCoordinator {
+     /// Apple's translator does not stream, so its reply is recorded whole as a finished turn.
+     private func translate(
+         _ selection: String, sourceName: String, action: QuickAction, target: Target,
+-        writesBack: Bool, silently: Bool
++        writesBack: Bool, silently: Bool,
++        prepared: QuickActionCapturePlan.ChatSnapshot? = nil, mine: Int? = nil
+     ) async {
+         let chat = core.aiChatCoordinator.chats.quickAI
+-        chat.startNewChat()
+-        pendingReply = nil
+-        if !silently { paletteCoordinator.showPalette(mode: .ai) }
++        if let prepared, let mine {
++            guard preparedChat(matching: prepared, mine: mine) != nil else { return }
++            pendingReply = nil
++        } else {
++            chat.startNewChat()
++            pendingReply = nil
++            if !silently { paletteCoordinator.showPalette(mode: .ai) }
++        }
+         let language = targetLanguage
+         let languageName = TextTranslator.displayName(of: language)
+         core.showProgress(action.progressTitle)
+         defer { core.hideProgress() }
+         do {
+             let text = try await TextTranslator.translate(selection, to: language)
+-            guard !Task.isCancelled else { return }
++            if let prepared, let mine {
++                guard preparedChat(matching: prepared, mine: mine) != nil else { return }
++            } else {
++                guard !Task.isCancelled else { return }
++            }
+             let document = AIDocument(
+                 data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)
+             let messageID = chat.record(
+diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
+index 184eeed9..e17ec783 100644
+--- a/docs/features/quick-actions.md
++++ b/docs/features/quick-actions.md
+@@ -32,7 +32,9 @@ nothing and says so with a HUD.
+ - **One funnel, whichever way an action started.** A shortcut and a launcher row both land on
+   `QuickActionCoordinator.run(_:)`, which captures the target **before** hiding the palette. An
+   external app remains the usual target; a selected passage in the Notes editor is captured directly
+-  from its text view.
++  from its text view. A preview action prepares its Quick AI conversation before the read starts —
++  a fresh chat saying it is gathering the text — so the window is already open while capture blocks.
++  The borrowed ⌘C still posts to the retained app's process, never to the palette.
+ - **Enabling is consent, and it is the only place Accessibility is requested.** The toggle confirms
+   through `DialogController` first and then calls `Permissions.ensureAccessibility()`. Everything else
+   uses `isAccessibilityTrusted()` and degrades to a HUD.
+@@ -45,20 +47,28 @@ nothing and says so with a HUD.
+   goes through the chat's own route with no tools and no web search. By default the reply streams in
+   the palette, and ⌘J hands the conversation to the AI Chat window like any other. A Replace only
+   action keeps the palette shut and shows the pill instead; the conversation is still kept in
+-  history, so the reader can open it later.
++  history, so the reader can open it later. A prepared run reports a capture failure in that same
++  chat, so the error persists where the reader already looks; a successful capture is staged and
++  answered in the same prepared conversation.
+ - **The text is bounded where it is read, not where it is sent.** The selection or page is capped at
+   `QuickActionRunner.maxSelectionBytes` (32 KB), the same ceiling `AIAttachmentBudget` gives a text
+   document, so a page that fits the reader fits the request. Chat's own 8,000-character page staging is
+   not involved.
+ - **A new run waits for an answer already in progress.** `run` refuses while `quickAI` is streaming, so
+   a shortcut never cancels a reply the reader is still reading. A second run while text is being read
+-  is refused the same way, because two reads race for one selection.
++  is refused the same way, because two reads race for one selection. A capture that outlives its run
++  stages nothing: cancellation, a new chat, a hidden or handed-off conversation, a conflicting send
++  or attachment, or either switch going off all drop it, and a dismissed window is never reopened.
++  `QuickActionCapturePlan.allowsStaging` is the single predicate.
+ - **A browser page stands in for a missing selection only where browser context is on.** When no
+   selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
+   tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
+   selection wins, else its text, capped to `maxSelectionBytes`. **A page result is never written back**:
+   `begin` computes `writesBack = !fromPage && action.replacesSelection`, so no Replace button and no
+-  automatic replacement is offered for it, whatever the action.
++  automatic replacement is offered for it, whatever the action. The fallback runs under the same
++  progress: a preview shows its gathering notice before the tab list is read, and a Replace only run
++  trades its pill for that same prepared chat first, reporting a page failure there. Consent, browser
++  policy and the text cap are unchanged.
+ - **Replace only is a per-action choice, and it needs a write-back target.** `QuickActionSettings`
+   keeps the built-in choice, and a custom action keeps its own on its record, so
+   `replacesOnly(_:)` answers for both. A page result has no selection to write into, so it opens Quick
+@@ -192,7 +202,8 @@ failed run from writing into a later reply.
+ A failed reply keeps the chat's usual `failed` state and no button. Cancelling it through Quick AI
+ behaves as cancelling any reply does.
+ 
+-Quick AI has no progress pill of its own. The streaming reply is the progress.
++Quick AI has no progress pill of its own. The streaming reply is the progress. While a preview
++capture is still in flight, the empty chat says it is gathering the text.
+ 
+ ## Reading the selection
+ 
+@@ -262,8 +273,13 @@ failure handler, so automatic expansion stays silent as before.
+   in AI mode, and Replace targets the displaced app's selection, not Tinycast's own field.
+ - Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
+   text untouched.
+-- Summarize a page in a browser with no selection: the reply streams, and nothing is typed into the
+-  page.
++- Press Summarize with text selected: Quick AI opens at once saying it is gathering the text, then
++  streams the summary. With no selection in a browser it reads the page under the same notice, and
++  nothing is typed into the page.
++- Set a writing action to Replace only and run it in a browser with no selection: the pill shows
++  first, then Quick AI opens with the gathering notice, and a page failure reports there.
++- Start a preview action, then hide the palette or start a new chat before capture lands: nothing
++  is staged, sent or reported, and the window stays as the reader left it.
+ - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
+ - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
+ - Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.
+@@ -286,4 +302,5 @@ failure handler, so automatic expansion stays silent as before.
+ - Press one in a password field: refused.
+ - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
+ - Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action
+-  persistence and refusal of unreadable storage).
++  persistence and refusal of unreadable storage, and the capture plan: preview routing, the
++  read-only page, error destinations and stale guards).
+-- 
+2.56.0
+

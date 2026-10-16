@@ -1,0 +1,1136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Wed, 14 Oct 2026 23:44:04 -0300
+Subject: [PATCH] feat(context): read Chromium-family browsers and Safari, and
+ let Quick Actions use the page
+
+Browser context now targets a checked table of browsers (Helium, Chrome channels, Chromium,
+Arc, Safari, Safari Technology Preview) instead of Helium alone. Safari tabs bind window id,
+tab index and URL and re-verify the URL before reading. A switched-off "Allow JavaScript from
+Apple Events" maps to its own failure with the browser's menu path, and every failure names the
+browser. Quick Actions fall back to the active tab's selection or text when no selection is
+found and browser context is on, always opening the result panel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Tests/context-test.swift                      | 153 ++++++++++--
+ .../Features/AI/Model/ContextBrowser.swift    | 136 +++++++++--
+ .../AI/Service/ContextBrowserRunner.swift     | 224 ++++++++++++------
+ .../AI/Settings/ContextSettingsView.swift     |  10 +-
+ .../Features/AI/UI/AIContextCoordinator.swift |  32 ++-
+ Tinycast/Features/AI/UI/AIContextPicker.swift |   2 +-
+ .../Backup/Model/SettingsBackupCoverage.swift |   2 +-
+ .../UI/QuickActionCoordinator.swift           |  60 ++++-
+ .../Settings/SettingsSearchCatalog.swift      |   6 +-
+ Tinycast/Info.plist                           |   2 +-
+ docs/features/context.md                      |  35 ++-
+ docs/features/quick-actions.md                |   7 +
+ 12 files changed, 527 insertions(+), 142 deletions(-)
+
+diff --git a/Tests/context-test.swift b/Tests/context-test.swift
+index 843e8344..17f54df1 100644
+--- a/Tests/context-test.swift
++++ b/Tests/context-test.swift
+@@ -24,6 +24,10 @@ struct ContextTests {
+         payloadComposition()
+         truncationPropagation()
+         browserLookup()
++        browserTargeting()
++        failureMapping()
++        safariIdentity()
++        quickActionFallback()
+         literalEscaping()
+         tabValidation()
+         tabListParsing()
+@@ -250,12 +254,133 @@ struct ContextTests {
+     }
+ 
+     static func browserLookup() {
++        for id in [
++            "net.imput.helium", "com.google.Chrome", "com.google.Chrome.canary",
++            "org.chromium.Chromium", "company.thebrowser.Browser",
++        ] {
++            expect(ContextBrowser.browser(bundleID: id)?.family == .chromium, "\(id) is chromium")
++        }
++        expect(ContextBrowser.browser(bundleID: "com.apple.Safari")?.family == .safari, "safari")
++        expect(ContextBrowser.browser(bundleID: "com.apple.Safari")?.name == "Safari", "named")
++        expect(!ContextBrowser.isSupported(bundleID: "org.mozilla.firefox"), "firefox stays out")
+         expect(
+-            ContextBrowser.isSupported(bundleID: "net.imput.helium"), "helium is supported")
+-        expect(!ContextBrowser.isSupported(bundleID: "com.apple.Safari"), "safari stays out")
+-        expect(
+-            !ContextBrowser.isSupported(bundleID: "com.google.Chrome"), "chromium stays out")
++            !ContextBrowser.isSupported(bundleID: "com.brave.Browser"),
++            "an unverified fork stays out")
+         expect(!ContextBrowser.isSupported(bundleID: nil), "an unknown browser stays out")
++        let ids = ContextBrowser.browsers.map(\.bundleID)
++        expect(Set(ids).count == ids.count, "each bundle id names one browser")
++    }
++
++    static func browserTargeting() {
++        let running = ["com.apple.Notes", "com.apple.Safari", "com.google.Chrome"]
++        expect(
++            ContextBrowser.target(preferred: "com.google.Chrome", running: running)?.name
++                == "Google Chrome",
++            "the summoning browser wins")
++        expect(
++            ContextBrowser.target(preferred: "com.apple.Notes", running: running)?.name
++                == "Safari",
++            "a non-browser summoner falls back to the first running browser")
++        expect(
++            ContextBrowser.target(preferred: "net.imput.helium", running: running)?.name
++                == "Safari",
++            "a browser that isn't running is never the target")
++        expect(
++            ContextBrowser.target(preferred: nil, running: ["com.apple.Notes"]) == nil,
++            "no running browser means no target, never a launch")
++    }
++
++    static func failureMapping() {
++        let chrome = ContextBrowser.browser(bundleID: "com.google.Chrome")!
++        let safari = ContextBrowser.browser(bundleID: "com.apple.Safari")!
++        let denied = ContextBrowser.failure(errorNumber: -1743, message: "", browser: safari)
++        expect(denied == .automationDenied("Safari"), "denial names the browser")
++        expect(denied.message.contains("Safari"), "denial message names the browser")
++        expect(denied.needsUserFix, "denial needs the user")
++        expect(
++            ContextBrowser.failure(errorNumber: -1712, message: "", browser: chrome)
++                == .timeout("Google Chrome"),
++            "timeouts name the browser")
++        let chromeOff = ContextBrowser.failure(
++            errorNumber: 12,
++            message: "Executing JavaScript through AppleScript is turned off. To turn it on, "
++                + "from the menu bar, go to View > Developer > Allow JavaScript from Apple Events.",
++            browser: chrome)
++        expect(chromeOff == .javaScriptDisabled(chrome), "chrome's switched-off reader maps")
++        expect(chromeOff.message.contains("View → Developer"), "chrome gets its menu path")
++        expect(chromeOff.needsUserFix, "a switched-off reader needs the user")
++        let safariOff = ContextBrowser.failure(
++            errorNumber: 8,
++            message: "You must enable the 'Allow JavaScript from Apple Events' option in "
++                + "Safari's Develop menu to use 'do JavaScript'.",
++            browser: safari)
++        expect(safariOff == .javaScriptDisabled(safari), "safari's switched-off reader maps")
++        expect(safariOff.message.contains("Show features for web developers"), "safari path")
++        expect(
++            ContextBrowser.failure(errorNumber: -600, message: "", browser: safari) == .noSource,
++            "a quit browser is no source")
++        let other = ContextBrowser.failure(errorNumber: 1, message: "boom", browser: safari)
++        expect(other == .restrictedPage && !other.needsUserFix, "anything else is restricted")
++    }
++
++    static func safariIdentity() {
++        let rows: [[String]] = [
++            ["2", "41", "1", "Docs", "https://example.com/d", "normal"],
++            ["1", "41", "0", "Home", "https://example.com/", "normal"],
++        ]
++        let tabs = ContextBrowser.tabs(from: rows, bundleID: "com.apple.Safari")
++        expect(tabs.count == 2, "safari rows parse")
++        expect(ContextBrowser.activeTab(in: tabs)?.id == "2", "the current tab is active")
++        expect(
++            tabs[0].sourceKey == "tab:com.apple.Safari/41/2",
++            "identity is browser, window and tab index")
++        let moved = ContextBrowser.parsePageRead(
++            "{\"t\":\"x\",\"u\":\"https://example.com/\",\"b\":\"b\"}")!
++        expect(
++            !ContextBrowser.verified(moved, expectedURL: tabs[0].url),
++            "an index that now shows another page is stale")
++    }
++
++    static func quickActionFallback() {
++        var options = ContextPolicy.Options()
++        expect(
++            !ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.apple.Safari", options: options, aiEnabled: true),
++            "browser context off keeps quick actions on the selection")
++        options.browserEnabled = true
++        expect(
++            ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.apple.Safari", options: options, aiEnabled: true),
++            "browser context on lets a page stand in")
++        expect(
++            !ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.apple.Notes", options: options, aiEnabled: true),
++            "a non-browser never reads a page")
++        expect(
++            !ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.apple.Safari", options: options, aiEnabled: false),
++            "AI off keeps capture off")
++        options.enabledSources.remove(.browserTabs)
++        expect(
++            !ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.apple.Safari", options: options, aiEnabled: true),
++            "a hidden browser source never reads")
++        func page(_ selection: String, _ body: String) -> ContextBrowser.PageRead {
++            ContextBrowser.PageRead(
++                title: "", url: "https://example.com/", selection: selection, body: body,
++                isTruncated: false)
++        }
++        expect(
++            ContextBrowser.quickActionText(page("sel", "body"), limitBytes: 100) == "sel",
++            "a selection wins")
++        expect(
++            ContextBrowser.quickActionText(page("  ", "body"), limitBytes: 100) == "body",
++            "an empty selection falls back to the page")
++        expect(
++            ContextBrowser.quickActionText(page("", " \n"), limitBytes: 100) == nil,
++            "a blank page has nothing to act on")
++        let capped = ContextBrowser.quickActionText(page("", "aé€b"), limitBytes: 4)
++        expect(capped == "aé", "the cap stops on a character boundary")
+     }
+ 
+     static func literalEscaping() {
+@@ -273,36 +398,36 @@ struct ContextTests {
+     static func tabValidation() {
+         expect(
+             ContextBrowser.tab(
+-                id: "7", windowID: "3", title: "T", url: "https://example.com/") != nil,
++                id: "7", windowID: "3", bundleID: "h", title: "T", url: "https://example.com/") != nil,
+             "an https tab counts")
+         expect(
+-            ContextBrowser.tab(id: "7", windowID: "3", title: "T", url: "http://example.com/")
++            ContextBrowser.tab(id: "7", windowID: "3", bundleID: "h", title: "T", url: "http://example.com/")
+                 != nil,
+             "an http tab counts")
+         expect(
+-            ContextBrowser.tab(id: "7", windowID: "3", title: "T", url: "chrome://settings")
++            ContextBrowser.tab(id: "7", windowID: "3", bundleID: "h", title: "T", url: "chrome://settings")
+                 == nil,
+             "a protected page never lists")
+         expect(
+-            ContextBrowser.tab(id: "", windowID: "3", title: "T", url: "https://example.com/")
++            ContextBrowser.tab(id: "", windowID: "3", bundleID: "h", title: "T", url: "https://example.com/")
+                 == nil,
+             "a tab without a stable id never lists")
+         expect(
+-            ContextBrowser.tab(id: "7", windowID: "", title: "T", url: "https://example.com/")
++            ContextBrowser.tab(id: "7", windowID: "", bundleID: "h", title: "T", url: "https://example.com/")
+                 == nil,
+             "a tab without a window never lists")
+     }
+ 
+     static func tabListParsing() {
+-        expect(ContextBrowser.tabs(from: []).isEmpty, "an empty list parses to no tabs")
++        expect(ContextBrowser.tabs(from: [], bundleID: "net.imput.helium").isEmpty, "an empty list parses to no tabs")
+         expect(!ContextBrowser.frontIsPrivate(rows: []), "an empty list is not a private front")
+         let short: [[String]] = [["7", "3", "1", "T"]]
+-        expect(ContextBrowser.tabs(from: short).isEmpty, "a short row never counts")
++        expect(ContextBrowser.tabs(from: short, bundleID: "net.imput.helium").isEmpty, "a short row never counts")
+         let normal: [[String]] = [
+             ["7", "3", "1", "Title", "https://example.com/", "normal"],
+             ["8", "3", "0", "Other", "https://example.com/o", "normal"],
+         ]
+-        let parsed = ContextBrowser.tabs(from: normal)
++        let parsed = ContextBrowser.tabs(from: normal, bundleID: "net.imput.helium")
+         expect(parsed.count == 2, "normal rows parse")
+         expect(parsed.first?.isActive == true, "the front window's pick stays active")
+         expect(!ContextBrowser.frontIsPrivate(rows: normal), "a normal front is not private")
+@@ -311,14 +436,14 @@ struct ContextTests {
+             ["7", "3", "1", "Title", "https://example.com/", "normal"],
+         ]
+         expect(
+-            ContextBrowser.tabs(from: privateFront).count == 1,
++            ContextBrowser.tabs(from: privateFront, bundleID: "net.imput.helium").count == 1,
+             "private windows never list, lower normal windows still do")
+         expect(
+             ContextBrowser.frontIsPrivate(rows: privateFront),
+             "a private front window reports private")
+         let legacy: [[String]] = [["7", "3", "1", "Title", "https://example.com/"]]
+         expect(
+-            ContextBrowser.tabs(from: legacy).count == 1,
++            ContextBrowser.tabs(from: legacy, bundleID: "net.imput.helium").count == 1,
+             "five-field rows without a mode still parse")
+     }
+ 
+diff --git a/Tinycast/Features/AI/Model/ContextBrowser.swift b/Tinycast/Features/AI/Model/ContextBrowser.swift
+index d4f75e78..0492ab47 100644
+--- a/Tinycast/Features/AI/Model/ContextBrowser.swift
++++ b/Tinycast/Features/AI/Model/ContextBrowser.swift
+@@ -1,14 +1,55 @@
+ import Foundation
+ 
+-/// Helium's verifiable scripting surface: tab identities, one fixed reader, literal escaping. Pure.
++/// The verifiable browser scripting surface: tab identities, one fixed reader, literal escaping. Pure.
+ enum ContextBrowser {
+-    static let heliumBundleID = "net.imput.helium"
+     static let captureTimeoutSeconds = 8
+     static let maxFieldChars = 8_000
+ 
+-    /// Only Helium ships a checked dictionary; other browsers stay out until theirs is verified.
++    /// Which scripting dictionary a browser speaks; it decides identity and the read script.
++    enum Family: Equatable, Sendable {
++        /// Stable window and tab ids, `mode` for incognito, `execute … javascript`.
++        case chromium
++        /// No tab id and no private flag: identity is window id, tab index and URL.
++        case safari
++    }
++
++    struct Browser: Equatable, Sendable {
++        let bundleID: String
++        let name: String
++        let family: Family
++    }
++
++    /// Only dictionaries checked with `sdef` belong here; an unverified fork stays out.
++    static let browsers: [Browser] = [
++        Browser(bundleID: "net.imput.helium", name: "Helium", family: .chromium),
++        Browser(bundleID: "com.google.Chrome", name: "Google Chrome", family: .chromium),
++        Browser(bundleID: "com.google.Chrome.beta", name: "Google Chrome Beta", family: .chromium),
++        Browser(bundleID: "com.google.Chrome.dev", name: "Google Chrome Dev", family: .chromium),
++        Browser(
++            bundleID: "com.google.Chrome.canary", name: "Google Chrome Canary", family: .chromium),
++        Browser(bundleID: "org.chromium.Chromium", name: "Chromium", family: .chromium),
++        Browser(bundleID: "company.thebrowser.Browser", name: "Arc", family: .chromium),
++        Browser(bundleID: "com.apple.Safari", name: "Safari", family: .safari),
++        Browser(
++            bundleID: "com.apple.SafariTechnologyPreview", name: "Safari Technology Preview",
++            family: .safari),
++    ]
++
++    static func browser(bundleID: String?) -> Browser? {
++        guard let bundleID else { return nil }
++        return browsers.first { $0.bundleID == bundleID }
++    }
++
+     static func isSupported(bundleID: String?) -> Bool {
+-        bundleID == heliumBundleID
++        browser(bundleID: bundleID) != nil
++    }
++
++    /// The summoning browser when it is running, else the first running supported one.
++    static func target(preferred: String?, running: [String]) -> Browser? {
++        if let preferred, running.contains(preferred), let browser = browser(bundleID: preferred) {
++            return browser
++        }
++        return running.lazy.compactMap { browser(bundleID: $0) }.first
+     }
+ 
+     /// An AppleScript string literal: backslash and quote escaped, controls neutralized.
+@@ -31,36 +72,41 @@ enum ContextBrowser {
+ 
+     /// One tab, as the list script reports it: stable ids first, human text after.
+     struct BrowserTab: Equatable, Sendable, Identifiable {
++        /// A Chromium tab id, or a Safari tab index that only the URL check makes safe.
+         let id: String
+         let windowID: String
++        let bundleID: String
+         let title: String
+         let url: String
+         /// This window's selected tab, so the front window's pick is the active one.
+         let isActive: Bool
+ 
+-        var identity: String { "\(id)" }
+-        var sourceKey: String { "tab:\(windowID)/\(id)" }
++        var sourceKey: String { "tab:\(bundleID)/\(windowID)/\(id)" }
+         var host: String? { URL(string: url)?.host }
+     }
+ 
+     /// A reported row counts only with stable ids and a readable page URL.
+     static func tab(
+-        id: String, windowID: String, title: String, url: String, isActive: Bool = false
++        id: String, windowID: String, bundleID: String, title: String, url: String,
++        isActive: Bool = false
+     ) -> BrowserTab? {
+         guard !id.isEmpty, !windowID.isEmpty else { return nil }
+         guard let scheme = URL(string: url)?.scheme?.lowercased(),
+             scheme == "http" || scheme == "https"
+         else { return nil }
+-        return BrowserTab(id: id, windowID: windowID, title: title, url: url, isActive: isActive)
++        return BrowserTab(
++            id: id, windowID: windowID, bundleID: bundleID, title: title, url: url,
++            isActive: isActive)
+     }
+ 
+     /// Listing rows into tabs: private windows never list, and short rows never count.
+-    static func tabs(from rows: [[String]]) -> [BrowserTab] {
++    static func tabs(from rows: [[String]], bundleID: String) -> [BrowserTab] {
+         rows.compactMap { fields in
+             guard fields.count >= 5 else { return nil }
+             if fields.count >= 6, fields[5] == "incognito" { return nil }
+             return tab(
+-                id: fields[0], windowID: fields[1], title: fields[3], url: fields[4],
++                id: fields[0], windowID: fields[1], bundleID: bundleID, title: fields[3],
++                url: fields[4],
+                 isActive: fields[2] == "1")
+         }
+     }
+@@ -131,9 +177,52 @@ enum ContextBrowser {
+         return ContextPolicy.sanitizedOrigin(text)
+     }
+ 
++    /// Selection first, else the page text, capped to `limitBytes` on a character boundary.
++    static func quickActionText(_ read: PageRead, limitBytes: Int) -> String? {
++        let selection = read.selection.trimmingCharacters(in: .whitespacesAndNewlines)
++        let text = selection.isEmpty ? read.body : read.selection
++        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
++        var used = 0
++        var out = ""
++        for character in text {
++            used += character.utf8.count
++            if used > limitBytes { break }
++            out.append(character)
++        }
++        return out
++    }
++
++    /// Quick Actions read a page only where browser context is already on and the app is a browser.
++    static func quickActionFallbackApplies(
++        bundleID: String?, options: ContextPolicy.Options, aiEnabled: Bool
++    ) -> Bool {
++        isSupported(bundleID: bundleID)
++            && ContextPolicy.canCaptureBrowser(options: options, aiEnabled: aiEnabled)
++    }
++
++    /// Both dictionaries word the switched-off reader around this phrase.
++    private static let javaScriptOffPhrase = "javascript from apple events"
++
++    /// An AppleScript error as the user's fix; `browser` names who refused.
++    static func failure(errorNumber: Int?, message: String, browser: Browser) -> ReadFailure {
++        if errorNumber == -1743 { return .automationDenied(browser.name) }
++        if errorNumber == -1712 { return .timeout(browser.name) }
++        let lowered = message.lowercased()
++        if lowered.contains(javaScriptOffPhrase)
++            || lowered.contains("executing javascript through applescript is turned off")
++        {
++            return .javaScriptDisabled(browser)
++        }
++        if errorNumber == -600 || lowered.contains("isn't running") || lowered.contains("not running") {
++            return .noSource
++        }
++        return .restrictedPage
++    }
++
+     enum ReadFailure: Equatable, Sendable, Error {
+-        case automationDenied
+-        case timeout
++        case automationDenied(String)
++        case timeout(String)
++        case javaScriptDisabled(Browser)
+         case noSource
+         case loading
+         case restrictedPage
+@@ -142,10 +231,19 @@ enum ContextBrowser {
+ 
+         var message: String {
+             switch self {
+-            case .automationDenied:
++            case .automationDenied(let name):
+                 return
+-                    "Allow Tinycast to control Helium in System Settings → Privacy & Security → Automation, then try again."
+-            case .timeout: return "Helium took too long to answer. Try again."
++                    "Allow Tinycast to control \(name) in System Settings → Privacy & Security → Automation, then try again."
++            case .timeout(let name): return "\(name) took too long to answer. Try again."
++            case .javaScriptDisabled(let browser):
++                switch browser.family {
++                case .chromium:
++                    return
++                        "Turn on View → Developer → Allow JavaScript from Apple Events in \(browser.name), then try again."
++                case .safari:
++                    return "In \(browser.name), turn on Settings → Advanced → Show features for web "
++                        + "developers, then Develop → Allow JavaScript from Apple Events."
++                }
+             case .noSource: return "There's no browser tab to attach right now."
+             case .loading: return "That tab is still loading. Try again once it finishes."
+             case .restrictedPage:
+@@ -155,6 +253,14 @@ enum ContextBrowser {
+             case .empty: return "That tab has no readable text to attach."
+             }
+         }
++
++        /// Only the user can fix these, so even an automatic capture says so.
++        var needsUserFix: Bool {
++            switch self {
++            case .automationDenied, .javaScriptDisabled: return true
++            default: return false
++            }
++        }
+     }
+ 
+     /// The only JavaScript Tinycast runs in a page: title, URL, selection and readable text.
+diff --git a/Tinycast/Features/AI/Service/ContextBrowserRunner.swift b/Tinycast/Features/AI/Service/ContextBrowserRunner.swift
+index 0d26be94..a24ff921 100644
+--- a/Tinycast/Features/AI/Service/ContextBrowserRunner.swift
++++ b/Tinycast/Features/AI/Service/ContextBrowserRunner.swift
+@@ -1,41 +1,57 @@
+ import AppKit
+ import Foundation
+ 
+-/// AppleScript against Helium, off-main, returning Sendable values like SystemActionRunner.
++/// AppleScript against the supported browsers, off-main, returning Sendable values.
+ enum ContextBrowserRunner {
+     /// Every tab of every normal window, front to back, plus whether the front window is private.
+     struct TabList: Sendable {
++        let browser: ContextBrowser.Browser
+         let tabs: [ContextBrowser.BrowserTab]
+         let frontIsPrivate: Bool
+     }
+ 
+-    /// Never launches Helium to ask it: a listing with it absent is an empty answer, not a launch.
+-    static func isHeliumRunning() -> Bool {
++    /// Never launches a browser to ask it: only running ones are candidates.
++    static func targetBrowser(preferred: String?) -> ContextBrowser.Browser? {
++        let running = NSWorkspace.shared.runningApplications.compactMap {
++            $0.isTerminated ? nil : $0.bundleIdentifier
++        }
++        return ContextBrowser.target(preferred: preferred, running: running)
++    }
++
++    private static func isRunning(_ bundleID: String) -> Bool {
+         NSWorkspace.shared.runningApplications.contains {
+-            $0.bundleIdentifier == ContextBrowser.heliumBundleID && !$0.isTerminated
++            $0.bundleIdentifier == bundleID && !$0.isTerminated
+         }
+     }
+ 
+     /// Every tab of every normal window, front to back; private windows never listed.
+-    static func listTabs() async -> Result<TabList, ContextBrowser.ReadFailure> {
+-        guard !Task.isCancelled, isHeliumRunning() else { return .failure(.noSource) }
+-        let rows = await runList(script: listScript())
++    static func listTabs(
++        preferredBundleID: String?
++    ) async -> Result<TabList, ContextBrowser.ReadFailure> {
++        guard !Task.isCancelled, let browser = targetBrowser(preferred: preferredBundleID) else {
++            return .failure(.noSource)
++        }
++        let rows = await runList(script: listScript(for: browser), browser: browser)
+         switch rows {
+         case .failure(let failure): return .failure(failure)
+         case .success(let rows):
+             return .success(
+                 TabList(
+-                    tabs: ContextBrowser.tabs(from: rows),
++                    browser: browser,
++                    tabs: ContextBrowser.tabs(from: rows, bundleID: browser.bundleID),
+                     frontIsPrivate: ContextBrowser.frontIsPrivate(rows: rows)))
+         }
+     }
+ 
+-    /// Reads one tab by its stable ids; a moved tab is stale, never substituted.
++    /// Reads one listed tab; a moved tab is stale, never substituted.
+     static func readTab(
+-        id: String, windowID: String, expectedURL: String
++        _ tab: ContextBrowser.BrowserTab
+     ) async -> Result<ContextBrowser.PageRead, ContextBrowser.ReadFailure> {
+-        guard !Task.isCancelled, isHeliumRunning() else { return .failure(.noSource) }
+-        let result = await runScalar(script: readScript(tabID: id, windowID: windowID))
++        guard !Task.isCancelled, let browser = ContextBrowser.browser(bundleID: tab.bundleID),
++            isRunning(browser.bundleID)
++        else { return .failure(.noSource) }
++        guard let script = readScript(for: browser, tab: tab) else { return .failure(.staleTab) }
++        let result = await runScalar(script: script, browser: browser)
+         switch result {
+         case .failure(let failure): return .failure(failure)
+         case .success(let text):
+@@ -45,7 +61,7 @@ enum ContextBrowserRunner {
+             guard text.hasPrefix("{"), let read = ContextBrowser.parsePageRead(text) else {
+                 return .failure(.restrictedPage)
+             }
+-            guard ContextBrowser.verified(read, expectedURL: expectedURL) else {
++            guard ContextBrowser.verified(read, expectedURL: tab.url) else {
+                 return .failure(.staleTab)
+             }
+             let hasText =
+@@ -56,65 +72,120 @@ enum ContextBrowserRunner {
+         }
+     }
+ 
+-    private static func listScript() -> String {
+-        """
+-        with timeout of \(ContextBrowser.captureTimeoutSeconds) seconds
+-        tell application id \(ContextBrowser.appleScriptLiteral(ContextBrowser.heliumBundleID))
+-        set out to {}
+-        repeat with w in windows
+-        set wmode to mode of w
+-        set wid to id of w
+-        if wmode is "incognito" then
+-        set end of out to {"", wid, "0", "", "", wmode}
+-        else
+-        try
+-        set activeID to id of active tab of w
+-        on error
+-        set activeID to ""
+-        end try
+-        repeat with t in tabs of w
+-        set tid to id of t
+-        if tid is activeID then
+-        set flag to "1"
+-        else
+-        set flag to "0"
+-        end if
+-        set end of out to {tid, wid, flag, title of t, URL of t, wmode}
+-        end repeat
+-        end if
+-        end repeat
+-        return out
+-        end tell
+-        end timeout
+-        """
++    private static func listScript(for browser: ContextBrowser.Browser) -> String {
++        let app = ContextBrowser.appleScriptLiteral(browser.bundleID)
++        switch browser.family {
++        case .chromium:
++            return """
++                with timeout of \(ContextBrowser.captureTimeoutSeconds) seconds
++                tell application id \(app)
++                set out to {}
++                repeat with w in windows
++                set wmode to mode of w
++                set wid to (id of w) as text
++                if wmode is "incognito" then
++                set end of out to {"", wid, "0", "", "", wmode}
++                else
++                try
++                set activeID to (id of active tab of w) as text
++                on error
++                set activeID to ""
++                end try
++                repeat with t in tabs of w
++                set tid to (id of t) as text
++                if tid is activeID then
++                set flag to "1"
++                else
++                set flag to "0"
++                end if
++                set end of out to {tid, wid, flag, title of t, URL of t, wmode}
++                end repeat
++                end if
++                end repeat
++                return out
++                end tell
++                end timeout
++                """
++        case .safari:
++            return """
++                with timeout of \(ContextBrowser.captureTimeoutSeconds) seconds
++                tell application id \(app)
++                set out to {}
++                repeat with w in windows
++                try
++                set wid to (id of w) as text
++                set cur to index of current tab of w
++                repeat with t in tabs of w
++                try
++                set ti to index of t
++                if ti is cur then
++                set flag to "1"
++                else
++                set flag to "0"
++                end if
++                set end of out to {ti as text, wid, flag, name of t, URL of t, "normal"}
++                end try
++                end repeat
++                end try
++                end repeat
++                return out
++                end tell
++                end timeout
++                """
++        }
+     }
+ 
+-    private static func readScript(tabID: String, windowID: String) -> String {
+-        let tid = ContextBrowser.appleScriptLiteral(tabID)
+-        let wid = ContextBrowser.appleScriptLiteral(windowID)
++    /// Safari has no tab id, so its read re-checks the URL at that index before running anything.
++    private static func readScript(
++        for browser: ContextBrowser.Browser, tab: ContextBrowser.BrowserTab
++    ) -> String? {
++        let app = ContextBrowser.appleScriptLiteral(browser.bundleID)
++        let tid = ContextBrowser.appleScriptLiteral(tab.id)
++        let wid = ContextBrowser.appleScriptLiteral(tab.windowID)
++        let url = ContextBrowser.appleScriptLiteral(tab.url)
+         let js = ContextBrowser.appleScriptLiteral(ContextBrowser.readerJavaScript)
+-        return """
+-            with timeout of \(ContextBrowser.captureTimeoutSeconds) seconds
+-            tell application id \(ContextBrowser.appleScriptLiteral(ContextBrowser.heliumBundleID))
+-            repeat with w in windows
+-            if id of w is \(wid) then
+-            if mode of w is "incognito" then return "INCOGNITO"
+-            repeat with t in tabs of w
+-            if id of t is \(tid) then
+-            if loading of t is true then return "LOADING"
+-            return execute t javascript \(js)
+-            end if
+-            end repeat
+-            end if
+-            end repeat
+-            return "NOTFOUND"
+-            end tell
+-            end timeout
+-            """
++        switch browser.family {
++        case .chromium:
++            return """
++                with timeout of \(ContextBrowser.captureTimeoutSeconds) seconds
++                tell application id \(app)
++                repeat with w in windows
++                if ((id of w) as text) is \(wid) then
++                if mode of w is "incognito" then return "INCOGNITO"
++                repeat with t in tabs of w
++                if ((id of t) as text) is \(tid) then
++                if loading of t is true then return "LOADING"
++                return execute t javascript \(js)
++                end if
++                end repeat
++                end if
++                end repeat
++                return "NOTFOUND"
++                end tell
++                end timeout
++                """
++        case .safari:
++            guard let index = Int(tab.id), index > 0 else { return nil }
++            return """
++                with timeout of \(ContextBrowser.captureTimeoutSeconds) seconds
++                tell application id \(app)
++                repeat with w in windows
++                if ((id of w) as text) is \(wid) then
++                if (count of tabs of w) < \(index) then return "NOTFOUND"
++                set t to tab \(index) of w
++                if (URL of t) is not \(url) then return "NOTFOUND"
++                return do JavaScript \(js) in t
++                end if
++                end repeat
++                return "NOTFOUND"
++                end tell
++                end timeout
++                """
++        }
+     }
+ 
+     @concurrent private static func runScalar(
+-        script: String
++        script: String, browser: ContextBrowser.Browser
+     ) async -> Result<String, ContextBrowser.ReadFailure> {
+         guard !Task.isCancelled, let compiled = NSAppleScript(source: script) else {
+             return .failure(.noSource)
+@@ -123,12 +194,12 @@ enum ContextBrowserRunner {
+         var errorInfo: NSDictionary?
+         let result = compiled.executeAndReturnError(&errorInfo)
+         guard !Task.isCancelled else { return .failure(.noSource) }
+-        if let errorInfo { return .failure(mapError(errorInfo)) }
++        if let errorInfo { return .failure(mapError(errorInfo, browser: browser)) }
+         return .success(result.stringValue ?? "")
+     }
+ 
+     @concurrent private static func runList(
+-        script: String
++        script: String, browser: ContextBrowser.Browser
+     ) async -> Result<[[String]], ContextBrowser.ReadFailure> {
+         guard !Task.isCancelled, let compiled = NSAppleScript(source: script) else {
+             return .failure(.noSource)
+@@ -137,7 +208,7 @@ enum ContextBrowserRunner {
+         var errorInfo: NSDictionary?
+         let result = compiled.executeAndReturnError(&errorInfo)
+         guard !Task.isCancelled else { return .failure(.noSource) }
+-        if let errorInfo { return .failure(mapError(errorInfo)) }
++        if let errorInfo { return .failure(mapError(errorInfo, browser: browser)) }
+         var rows: [[String]] = []
+         let rowCount = result.numberOfItems
+         if rowCount > 0 {
+@@ -158,14 +229,11 @@ enum ContextBrowserRunner {
+     }
+ 
+     /// Descriptors never cross the await; only strings and the mapped failure do.
+-    static func mapError(_ errorInfo: NSDictionary) -> ContextBrowser.ReadFailure {
+-        let number = errorInfo[NSAppleScript.errorNumber] as? Int
+-        if number == -1743 { return .automationDenied }
+-        if number == -1712 { return .timeout }
+-        let message = errorInfo[NSAppleScript.errorMessage] as? String ?? ""
+-        if number == -600 || message.contains("isn't running") || message.contains("not running") {
+-            return .noSource
+-        }
+-        return .restrictedPage
++    static func mapError(
++        _ errorInfo: NSDictionary, browser: ContextBrowser.Browser
++    ) -> ContextBrowser.ReadFailure {
++        ContextBrowser.failure(
++            errorNumber: errorInfo[NSAppleScript.errorNumber] as? Int,
++            message: errorInfo[NSAppleScript.errorMessage] as? String ?? "", browser: browser)
+     }
+ }
+diff --git a/Tinycast/Features/AI/Settings/ContextSettingsView.swift b/Tinycast/Features/AI/Settings/ContextSettingsView.swift
+index 3817a788..300b2ffd 100644
+--- a/Tinycast/Features/AI/Settings/ContextSettingsView.swift
++++ b/Tinycast/Features/AI/Settings/ContextSettingsView.swift
+@@ -54,11 +54,11 @@ struct ContextSettingsView: View {
+                 Toggle(isOn: $settings.contextBrowserEnabled) {
+                     SettingsFeatureToggleLabel(
+                         anchor: .contextBrowser, title: "Enable browser context",
+-                        subtitle: "Let chats quote the Helium tab you attach.")
++                        subtitle: "Let chats and Quick Actions quote the browser tab you attach.")
+                 }
+                 Toggle(isOn: $settings.contextAutoAttachBrowser) {
+                     SettingsRowTitle(.contextBrowser, "Automatically attach active tab")
+-                    Text("Stage the active Helium tab whenever a chat opens.")
++                    Text("Stage the active browser tab whenever a chat opens.")
+                         .font(.subheadline)
+                         .foregroundStyle(.secondary)
+                 }
+@@ -67,8 +67,8 @@ struct ContextSettingsView: View {
+                 SettingsSectionHeader(.contextBrowser)
+             } footer: {
+                 Text(
+-                    "Reads with Automation; the first read asks for Helium. "
+-                        + "Private windows are never captured.")
++                    "Reads Chrome-family browsers and Safari with Automation; each asks once. "
++                        + "Private Chrome-family windows are never captured.")
+             }
+ 
+             Section {
+@@ -98,7 +98,7 @@ struct ContextSettingsView: View {
+                 contextSourceRow(
+                     enabled: $settings.contextSourceBrowserTabsEnabled,
+                     priority: $settings.contextPriorityBrowserTabs, source: .browserTabs,
+-                    subtitle: "Helium tabs, read when you attach one."
++                    subtitle: "Browser tabs, read when you attach one."
+                 ) {
+                     SettingsRowTitle(.contextItems, "Browser tabs")
+                 }
+diff --git a/Tinycast/Features/AI/UI/AIContextCoordinator.swift b/Tinycast/Features/AI/UI/AIContextCoordinator.swift
+index 09b718ec..f34a3887 100644
+--- a/Tinycast/Features/AI/UI/AIContextCoordinator.swift
++++ b/Tinycast/Features/AI/UI/AIContextCoordinator.swift
+@@ -20,8 +20,10 @@ final class AIContextCoordinator {
+ 
+     /// On-demand tab list; refreshed when a chat opens, read when a picker renders.
+     private(set) var tabs: [ContextBrowser.BrowserTab] = []
+-    /// True when the front Helium window reported private; auto-attach refuses, never swaps.
++    /// True when the listed browser's front window reported private; auto-attach refuses.
+     private(set) var frontTabIsPrivate = false
++    /// The browser the last entry was summoned from; listing falls back to any running one.
++    @ObservationIgnored private var preferredBrowserID: String?
+     @ObservationIgnored private var tabsTask: Task<Void, Never>?
+     @ObservationIgnored private var captureTasks: [CaptureSlot: Task<Void, Never>] = [:]
+     @ObservationIgnored private var captureTickets: [CaptureSlot: ContextPolicy.CaptureTicket] = [:]
+@@ -66,6 +68,7 @@ final class AIContextCoordinator {
+ 
+     /// Stages automatic context on entering Quick AI from an external app; never on keystrokes.
+     func enteredQuickAI(chat: AIChatState, snapshot: ContextAppReader.Snapshot?) {
++        preferBrowser(of: snapshot)
+         refreshTabsIfAllowed()
+         let options = options
+         guard ContextPolicy.canAutoAttachApp(options: options, aiEnabled: settings.aiEnabled),
+@@ -80,6 +83,7 @@ final class AIContextCoordinator {
+ 
+     /// Stages automatic context on opening the window; the snapshot predates the window.
+     func enteredWindow(chat: AIChatState) {
++        preferBrowser(of: windowSnapshot)
+         refreshTabsIfAllowed()
+         if let snapshot = windowSnapshot,
+             ContextPolicy.canAutoAttachApp(options: options, aiEnabled: settings.aiEnabled)
+@@ -100,12 +104,17 @@ final class AIContextCoordinator {
+         return browserAutoApplies(snapshot: snapshot)
+     }
+ 
+-    /// Browser auto reads Helium's own tab, so it applies only when summoned from Helium.
++    private func preferBrowser(of snapshot: ContextAppReader.Snapshot?) {
++        let bundleID = snapshot?.bundleIdentifier
++        preferredBrowserID = ContextBrowser.isSupported(bundleID: bundleID) ? bundleID : nil
++    }
++
++    /// Browser auto reads the summoning browser's own tab, so it applies only from one.
+     private func browserAutoApplies(snapshot: ContextAppReader.Snapshot?) -> Bool {
+         guard
+             ContextPolicy.canAutoAttachBrowser(options: options, aiEnabled: settings.aiEnabled)
+         else { return false }
+-        return snapshot?.bundleIdentifier == ContextBrowser.heliumBundleID
++        return ContextBrowser.isSupported(bundleID: snapshot?.bundleIdentifier)
+     }
+ 
+     private func autoAttachBrowserIfAllowed(
+@@ -121,15 +130,17 @@ final class AIContextCoordinator {
+             guard let self else { return }
+             defer { retire(ticket: ticket) }
+             guard checkTicket(ticket, chat: chat) else { return }
+-            let result = await ContextBrowserRunner.listTabs()
++            let result = await ContextBrowserRunner.listTabs(
++                preferredBundleID: snapshot?.bundleIdentifier)
+             guard checkTicket(ticket, chat: chat) else { return }
+             switch result {
+             case .failure(let failure):
+-                if failure == .automationDenied { core.showMessage(failure.message, tone: .neutral) }
++                if failure.needsUserFix { core.showMessage(failure.message, tone: .neutral) }
+             case .success(let listed):
+                 tabs = listed.tabs
+                 frontTabIsPrivate = listed.frontIsPrivate
+                 guard !listed.frontIsPrivate,
++                    listed.browser.bundleID == snapshot?.bundleIdentifier,
+                     let active = ContextBrowser.activeTab(in: listed.tabs),
+                     shouldAutoStage(chat: chat, sourceKey: active.sourceKey)
+                 else { return }
+@@ -138,8 +149,7 @@ final class AIContextCoordinator {
+                     sourceKey: active.sourceKey, generation: ticket.generation,
+                     source: .browserTabs, automatic: true)
+                 captureTickets[slot] = resolved
+-                let read = await ContextBrowserRunner.readTab(
+-                    id: active.id, windowID: active.windowID, expectedURL: active.url)
++                let read = await ContextBrowserRunner.readTab(active)
+                 publishTabRead(read, ticket: resolved, chat: chat, tab: active)
+             }
+         }
+@@ -247,8 +257,7 @@ final class AIContextCoordinator {
+             guard let self else { return }
+             defer { retire(ticket: ticket) }
+             guard checkTicket(ticket, chat: chat) else { return }
+-            let result = await ContextBrowserRunner.readTab(
+-                id: tab.id, windowID: tab.windowID, expectedURL: tab.url)
++            let result = await ContextBrowserRunner.readTab(tab)
+             if publishTabRead(result, ticket: ticket, chat: chat, tab: tab) {
+                 onStaged?()
+             }
+@@ -264,7 +273,7 @@ final class AIContextCoordinator {
+         let current = options
+         switch result {
+         case .failure(let failure):
+-            if !ticket.automatic || failure == .automationDenied {
++            if !ticket.automatic || failure.needsUserFix {
+                 core.showMessage(failure.message, tone: .neutral)
+             }
+             return false
+@@ -494,8 +503,9 @@ final class AIContextCoordinator {
+             ContextPolicy.canCaptureBrowser(options: options, aiEnabled: settings.aiEnabled)
+         else { return }
+         tabsTask?.cancel()
++        let preferred = preferredBrowserID
+         tabsTask = Task { [weak self] in
+-            let result = await ContextBrowserRunner.listTabs()
++            let result = await ContextBrowserRunner.listTabs(preferredBundleID: preferred)
+             guard let self, !Task.isCancelled else { return }
+             if case .success(let listed) = result {
+                 self.tabs = listed.tabs
+diff --git a/Tinycast/Features/AI/UI/AIContextPicker.swift b/Tinycast/Features/AI/UI/AIContextPicker.swift
+index 7e0d1ca8..30a67c2c 100644
+--- a/Tinycast/Features/AI/UI/AIContextPicker.swift
++++ b/Tinycast/Features/AI/UI/AIContextPicker.swift
+@@ -154,7 +154,7 @@ extension AIContextCoordinator {
+                 id: "tabs-active", title: "Attach Active Tab",
+                 subtitle: activeTab.map { tabSubtitle($0) } ?? "No tab listed",
+                 action: activeTab == nil ? nil : .activeTab,
+-                disabledReason: activeTab == nil ? "Open Helium, then pick again." : reason)
++                disabledReason: activeTab == nil ? "Open a supported browser, then pick again." : reason)
+         ]
+         for tab in tabs.prefix(10) {
+             items.append(
+diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
+index 19f943db..2edad0fa 100644
+--- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
++++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
+@@ -195,7 +195,7 @@ enum SettingsBackupCoverage {
+         AppSettingsKey.contextAppEnabled.rawValue:
+             "Grants reading the front app's text for chat context; an import must not enable capture.",
+         AppSettingsKey.contextBrowserEnabled.rawValue:
+-            "Grants reading Helium tabs for chat context; an import must not enable capture.",
++            "Grants reading browser tabs for chat context; an import must not enable capture.",
+         AppSettingsKey.contextAutoAttachApp.rawValue:
+             "Stages app context without asking each time; an import must not switch that on.",
+         AppSettingsKey.contextAutoAttachBrowser.rawValue:
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
+index df5cbce4..3e778bfc 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
+@@ -216,10 +216,23 @@ final class QuickActionCoordinator {
+ 
+     private func begin(_ action: QuickAction, target: Target) async {
+         let selection: String
++        var fromPage = false
+         do {
+             switch target {
+             case .external(let app):
+-                selection = try await QuickActionRunner.selection(in: app, using: injector)
++                do {
++                    selection = try await QuickActionRunner.selection(in: app, using: injector)
++                } catch let failure as QuickActionFailure where Self.pageMayStandIn(for: failure) {
++                    guard let page = await pageText(in: app) else { throw failure }
++                    guard !Task.isCancelled else { return }
++                    switch page {
++                    case .success(let text): selection = text
++                    case .failure(let refusal):
++                        core.showMessage(refusal.message, tone: .neutral)
++                        return
++                    }
++                    fromPage = true
++                }
+             case .note(let note):
+                 selection = try QuickActionRunner.accepted(note.text)
+             }
+@@ -230,13 +243,56 @@ final class QuickActionCoordinator {
+             core.showMessage(error.localizedDescription, tone: .danger)
+             return
+         }
++        guard !Task.isCancelled else { return }
+         let state = QuickActionPanelState(
+             action: action, original: selection, targetLanguage: targetLanguage)
+-        let previews = store.settings.previewsResult(action)
++        // Typing over a page that had no selection would land in whatever happens to be focused.
++        let previews = fromPage || store.settings.previewsResult(action)
+         if previews { present(state, target: target) }
+         await perform(state, target: target, previewing: previews)
+     }
+ 
++    private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
++        switch failure {
++        case .noSelection, .unreadableApp: return true
++        default: return false
++        }
++    }
++
++    /// The active tab's selection or text; nil when browser context is off or the app isn't one.
++    private func pageText(
++        in app: NSRunningApplication?
++    ) async -> Result<String, ContextBrowser.ReadFailure>? {
++        let bundleID = app?.bundleIdentifier
++        guard
++            ContextBrowser.quickActionFallbackApplies(
++                bundleID: bundleID, options: settings.contextPolicyOptions,
++                aiEnabled: settings.aiEnabled)
++        else { return nil }
++        let listed = await ContextBrowserRunner.listTabs(preferredBundleID: bundleID)
++        guard !Task.isCancelled else { return nil }
++        switch listed {
++        case .failure(let failure):
++            return failure.needsUserFix ? .failure(failure) : nil
++        case .success(let list):
++            if list.frontIsPrivate { return .failure(.restrictedPage) }
++            guard list.browser.bundleID == bundleID,
++                let active = ContextBrowser.activeTab(in: list.tabs)
++            else { return nil }
++            let read = await ContextBrowserRunner.readTab(active)
++            guard !Task.isCancelled else { return nil }
++            switch read {
++            case .failure(let failure): return .failure(failure)
++            case .success(let page):
++                guard
++                    let text = ContextBrowser.quickActionText(
++                        page, limitBytes: QuickActionRunner.maxSelectionBytes)
++                else { return .failure(.empty) }
++                return .success(text)
++            }
++        }
++    }
++
+     /// A missing permission cannot be fixed from a pill that fades, so it earns a dialog instead.
+     private func reportRefusal(_ failure: QuickActionFailure) {
+         guard failure.opensAccessibilitySettings else {
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 36e79d11..99b7ae6f 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -335,10 +335,10 @@ enum SettingsSearchCatalog {
+             keywords: ["auto", "capture", "frontmost"]),
+         .init(
+             .contextBrowser, "Enable browser context",
+-            keywords: ["helium", "automation", "tab", "capture"]),
++            keywords: ["browser", "chrome", "safari", "helium", "automation", "tab", "capture"]),
+         .init(
+             .contextBrowser, "Automatically attach active tab",
+-            keywords: ["auto", "capture", "helium"]),
++            keywords: ["auto", "capture", "browser", "chrome", "safari"]),
+         .init(
+             .contextOptions, "Use selected text only",
+             keywords: ["selection", "full page", "whole"]),
+@@ -353,7 +353,7 @@ enum SettingsSearchCatalog {
+             keywords: ["sources", "priority", "ranking", "order"]),
+         .init(
+             .contextItems, "Browser tabs",
+-            keywords: ["helium", "priority", "source"]),
++            keywords: ["browser", "chrome", "safari", "priority", "source"]),
+         .init(
+             .contextItems, "Apps",
+             keywords: ["frontmost", "priority", "source"]),
+diff --git a/Tinycast/Info.plist b/Tinycast/Info.plist
+index 5740afcb..e4702d6a 100644
+--- a/Tinycast/Info.plist
++++ b/Tinycast/Info.plist
+@@ -64,7 +64,7 @@
+ 	<key>NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac</key>
+ 	<true/>
+ 	<key>NSAppleEventsUsageDescription</key>
+-	<string>Tinycast uses automation to perform system actions you explicitly run, and to read the Helium tab you attach once browser context is enabled in Settings → Context.</string>
++	<string>Tinycast uses automation to perform system actions you explicitly run, and to read the browser tab you attach, or the page a Quick Action works on, once browser context is enabled in Settings → Context.</string>
+ 	<key>NSCameraUsageDescription</key>
+ 	<string>Tinycast shows a camera preview so you can check yourself, and take a photo to the clipboard.</string>
+ 	<key>NSMicrophoneUsageDescription</key>
+diff --git a/docs/features/context.md b/docs/features/context.md
+index 712b8a1e..77adfe7a 100644
+--- a/docs/features/context.md
++++ b/docs/features/context.md
+@@ -47,15 +47,25 @@ type the same picks as commands.
+   trust refuse the text with guidance; the title may still be quoted. Enabling app context confirms
+   first and raises the one Accessibility prompt from that gesture.
+ - **Browsers never enter the generic app reader.** Apps registered to handle HTTPS, including
+-  Helium, require the browser-tab path, so app capture cannot bypass private-window checks.
++  every supported browser, require the browser-tab path, so app capture cannot bypass private-window checks.
+   Blocking readers use `@concurrent` and inherit caller cancellation; they stop between native calls,
+   with a timeout bounding a call already running.
+-- **Helium is the only browser, by its checked dictionary.** Tabs list on demand without
+-  launching Helium when it is not running; private windows never stage, and when the front window
+-  is private auto-attach refuses rather than swapping in a lower window. Capture binds the stable
+-  tab and window ids and verifies the URL before publishing — a moved tab is stale, and stale is
+-  refused, never sent as URL-only. Browser auto-attach applies only when summoned from Helium
+-  itself. The page runs one fixed read-only reader reporting its full lengths; cuts in the reader,
++- **A browser is supported only by a dictionary checked with `sdef`.** `ContextBrowser.browsers`
++  is the whole table — bundle id, name and family. Chromium family: Helium, Google Chrome (and its
++  Beta, Dev and Canary channels, which ship Chrome's dictionary), Chromium and Arc. Safari family:
++  Safari and Safari Technology Preview. Brave, Edge, Vivaldi and Opera stay out until their
++  dictionaries are checked; Firefox has no tab dictionary and stays out. The target is the
++  summoning browser when it is running, else the first running supported browser in
++  `NSWorkspace` order; a browser that is not running is never launched to ask it.
++- **Chromium tabs bind stable ids; Safari tabs bind window id, tab index and URL.** Chromium
++  private windows never stage, and when the front window is private auto-attach refuses rather
++  than swapping in a lower window. Safari has no tab id, so its read re-checks the URL at that
++  index before running the reader, and every read verifies the page's own URL before publishing —
++  a moved tab is stale, and stale is refused, never sent as URL-only. **Safari's dictionary cannot
++  tell a private window from a normal one**, so Safari private tabs list and read like any other;
++  that gap is known and only browser context's master switch closes it. Browser auto-attach
++  applies only when summoned from a supported browser itself. A browser that refuses JavaScript
++  from Apple Events reports its own menu path to switch it on, as Automation denial does. The page runs one fixed read-only reader reporting its full lengths; cuts in the reader,
+   the parser or the AX walk mark the quote partial. Its text is untrusted data in the attachment,
+   its origin URL sanitized of queries, credentials and fragments — and withheld everywhere when
+   include-origin is off — and nothing in it may imply instructions or tools.
+@@ -72,7 +82,7 @@ type the same picks as commands.
+   following prompt; failed captures and edited drafts stay intact. Any other mention stays plain
+   text. Nothing a `@` command stages sends until the
+   next normal Return, after the chips are visible. Live browser and TCC behaviour is a manual gate: no probe runs during implementation
+-  or in the suite, whose fixtures stand in for Helium.
++  or in the suite, whose fixtures stand in for the browsers.
+ 
+ ## Manual sweep
+ 
+@@ -81,9 +91,12 @@ type the same picks as commands.
+ - Enable app context, summon Quick AI from Notes with a selection: the quote chip names the note;
+   send, and the transcript carries the quoted text marked untrusted.
+ - `@app summarize` in either composer stages the app quote and keeps `summarize` as the draft;
+-  `@tab` does the same for the active Helium tab, `@action` / `@integration` / `@tool` for a named
++  `@tab` does the same for the active tab of the summoning browser, `@action` / `@integration` / `@tool` for a named
+   row. An unknown `@mention` sends as plain text. The staged chips send on the next normal Return.
+-- Deny Automation for Helium (or quit it) and attach a tab: the notice names the fix, and nothing
+-  is sent URL-only. Navigate the tab between listing and capture: stale is refused.
++- Deny Automation for a browser (or quit it) and attach a tab: the notice names that browser and
++  the fix, and nothing is sent URL-only. Navigate the tab between listing and capture: stale is
++  refused. In Safari, reorder tabs between listing and capture: stale is refused.
++- Switch off Allow JavaScript from Apple Events in Chrome and in Safari: each notice gives that
++  browser's own menu path.
+ - Switch capture off mid-read: nothing lands. Remove an auto-staged quote and re-summon: it does
+   not come back until a new chat.
+diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
+index e4c4b92a..c8c27219 100644
+--- a/docs/features/quick-actions.md
++++ b/docs/features/quick-actions.md
+@@ -35,6 +35,13 @@ selectable Markdown renderer with AI Chat.
+   along with anything raised while Secure Event Input is up. Notes is the narrow in-process exception:
+   its own editor supplies and replaces a selected passage without Accessibility, clipboard or events.
+   A shortcut pressed with Settings frontmost, or in a password field, does nothing and says so.
++- **A browser page stands in for a missing selection only where browser context is on.** When no
++  selection is found and the target is a supported browser, `QuickActionCoordinator` reads its
++  active tab through `ContextBrowserRunner` — only while `ContextPolicy.canCaptureBrowser` holds,
++  so the Context master switch and the Browser tabs source both gate it. The page's selection wins,
++  else its text, capped to `maxSelectionBytes`; it is the same untrusted material as any selection.
++  A page read always opens the result panel instead of typing over the page, and a private window,
++  a stale tab or a refused read reports instead. With browser context off nothing changes.
+ - **One run at a time.** Two overlapping runs would race for one selection, and the second would
+   replace text the first had already changed. `QuickActionCoordinator` holds a single task and
+   refuses a second while it lives; a generation token stops a task that finishes after being
+-- 
+2.56.0
+

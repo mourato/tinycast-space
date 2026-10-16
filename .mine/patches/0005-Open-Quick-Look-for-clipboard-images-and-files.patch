@@ -1,0 +1,280 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Mon, 12 Oct 2026 00:34:01 -0300
+Subject: [PATCH] Open Quick Look for clipboard images and files
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⌘Y and a Quick Look row in the ⌘K menu preview an image or file entry in the
+palette's overlay. The overlay is File Search's own, now taking a URL and name,
+and its flag is shared as palette.quickLook.
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+---
+ .../Clipboard/Model/ClipboardStore.swift      |  3 ++
+ .../Clipboard/UI/ClipboardCoordinator.swift   |  8 ++++++
+ .../Clipboard/UI/ClipboardScreen.swift        | 28 ++++++++++++++++++-
+ .../FileSearch/UI/FileSearchPreview.swift     |  2 +-
+ .../FileSearch/UI/FileSearchQuickLook.swift   |  7 +++--
+ .../FileSearch/UI/FileSearchScreen.swift      |  8 +++---
+ Tinycast/Palette/PaletteState.swift           |  8 +++---
+ .../Palette/PaletteWindowController.swift     |  4 +--
+ Tinycast/Palette/RootPaletteView.swift        |  2 +-
+ docs/features/clipboard.md                    |  4 +++
+ 10 files changed, 58 insertions(+), 16 deletions(-)
+
+diff --git a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
+index 99872d00..53116250 100644
+--- a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
++++ b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
+@@ -39,6 +39,9 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
+         }
+     }
+ 
++    /// Whether ⌘Y applies: an image or a file has something on disk for Quick Look to draw.
++    var offersQuickLook: Bool { kind != .text }
++
+     init(text: String, sourceBundleID: String?) {
+         self.init(
+             id: UUID(), kind: .text, text: text, imagePath: nil, createdAt: Date(),
+diff --git a/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift b/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift
+index b35aa875..6e6dea93 100644
+--- a/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift
++++ b/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift
+@@ -200,6 +200,14 @@ final class ClipboardCoordinator {
+         AppLauncher.open(url)
+     }
+ 
++    /// Opens the overlay in the panel, where the palette stays up; false when there is nothing to show.
++    @discardableResult
++    func quickLook(_ item: ClipboardItem) -> Bool {
++        guard item.offersQuickLook, clipURL(for: item) != nil else { return false }
++        palette.quickLook = true
++        return true
++    }
++
+     /// Unmarked, so the path enters history like any other copy the reader meant to make.
+     func copyClipPath(_ item: ClipboardItem) {
+         guard let path = item.filePath else { return }
+diff --git a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
+index 69c9d94f..275cacf8 100644
+--- a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
++++ b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
+@@ -49,10 +49,21 @@ struct ClipboardScreen: PaletteScreen {
+             guard let item = item(at: selection), item.offersTextExtraction else { return false }
+             core.clipboardCoordinator.copyImageText(item)
+             return true
++        case .quickLook: return toggleQuickLook(at: selection)
+         default: return false
+         }
+     }
+ 
++    /// ⌘Y — the overlay follows the selection, so a second press is all it needs to close.
++    private func toggleQuickLook(at selection: Int) -> Bool {
++        if vm.quickLook {
++            vm.quickLook = false
++            return true
++        }
++        guard let item = item(at: selection) else { return false }
++        return core.clipboardCoordinator.quickLook(item)
++    }
++
+     private func activatePinned(at index: Int) -> Bool {
+         guard let item = store.pinnedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
+             return false
+@@ -149,6 +160,15 @@ struct ClipboardScreen: PaletteScreen {
+                     .frame(width: 1)
+                 ClipboardPreview(item: selected)
+             }
++            .overlay {
++                if vm.quickLook, let selected,
++                    let url = store.imageURL(for: selected) ?? store.fileURL(for: selected)
++                {
++                    FileSearchQuickLook(url: url, name: ClipboardActionsMenu.headerText(selected)) {
++                        vm.quickLook = false
++                    }
++                }
++            }
+         }
+     }
+ }
+@@ -183,6 +203,12 @@ enum ClipboardActionsMenu {
+             ) {
+                 core.clipboardCoordinator.pasteKeepingWindowOpen(item)
+             })
++        if item.offersQuickLook {
++            items.append(
++                PopoverMenuItem(title: "Quick Look", systemImage: "eye", shortcut: "⌘Y") {
++                    core.clipboardCoordinator.quickLook(item)
++                })
++        }
+         if item.isPinned {
+             items.append(
+                 PopoverMenuItem(
+@@ -253,7 +279,7 @@ enum ClipboardActionsMenu {
+         }
+     }
+ 
+-    private static func headerText(_ item: ClipboardItem) -> String {
++    static func headerText(_ item: ClipboardItem) -> String {
+         switch item.kind {
+         case .text:
+             // Collapse whitespace so a multi-line copy stays a clean one-line title.
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchPreview.swift b/Tinycast/Features/FileSearch/UI/FileSearchPreview.swift
+index da0ef895..c21bbc17 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchPreview.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchPreview.swift
+@@ -48,7 +48,7 @@ private struct FileSearchPreviewStage: View {
+                 .font(.system(.largeTitle))
+                 .symbolRenderingMode(.hierarchical)
+                 .foregroundStyle(.tertiary)
+-        } else if palette.isVisible, !palette.fileSearchQuickLook {
++        } else if palette.isVisible, !palette.quickLook {
+             FileSearchSurface(url: result.url)
+                 .clipShape(card)
+                 .overlay(card.strokeBorder(Theme.Colors.cardStroke, lineWidth: 1))
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchQuickLook.swift b/Tinycast/Features/FileSearch/UI/FileSearchQuickLook.swift
+index ecd89fd8..ed5a7a0c 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchQuickLook.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchQuickLook.swift
+@@ -4,7 +4,8 @@ import SwiftUI
+ struct FileSearchQuickLook: View {
+ 
+     @Environment(\.metrics) private var metrics
+-    let result: FileSearchResult
++    let url: URL
++    let name: String
+     let onClose: () -> Void
+ 
+     /// Concentric: every corner inside the panel is the one outside it less its own inset.
+@@ -26,7 +27,7 @@ struct FileSearchQuickLook: View {
+             surface
+                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+             HStack(spacing: metrics.spacing.sm) {
+-                Text(result.name)
++                Text(name)
+                     .font(metrics.typography.rowTitle)
+                     .lineLimit(1)
+                     .truncationMode(.middle)
+@@ -47,7 +48,7 @@ struct FileSearchQuickLook: View {
+     }
+ 
+     private var surface: some View {
+-        FileSearchSurface(url: result.url, autoplays: true)
++        FileSearchSurface(url: url, autoplays: true)
+             .clipShape(RoundedRectangle(cornerRadius: surfaceRadius, style: .continuous))
+     }
+ }
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift b/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift
+index 7eade8c5..432043bf 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift
+@@ -77,7 +77,7 @@ struct FileSearchScreen: PaletteScreen {
+     /// ⌘Y — the overlay follows the selection, so toggling is all the state it needs.
+     private func toggleQuickLook(at selection: Int) -> Bool {
+         guard result(at: selection) != nil else { return false }
+-        vm.fileSearchQuickLook.toggle()
++        vm.quickLook.toggle()
+         return true
+     }
+ 
+@@ -125,8 +125,8 @@ struct FileSearchScreen: PaletteScreen {
+                 FileSearchPreview(result: selected)
+             }
+             .overlay {
+-                if vm.fileSearchQuickLook, let selected {
+-                    FileSearchQuickLook(result: selected) { vm.fileSearchQuickLook = false }
++                if vm.quickLook, let selected {
++                    FileSearchQuickLook(url: selected.url, name: selected.name) { vm.quickLook = false }
+                 }
+             }
+         }
+@@ -185,7 +185,7 @@ enum FileSearchActionsMenu {
+                     title: "Show in Finder", systemImage: "folder", shortcut: "⌘↵"
+                 ) { coordinator.showInFinder(result) },
+                 PopoverMenuItem(title: "Quick Look", systemImage: "eye", shortcut: "⌘Y") {
+-                    vm.fileSearchQuickLook = true
++                    vm.quickLook = true
+                 },
+                 PopoverMenuItem(title: "Share…", systemImage: "square.and.arrow.up") {
+                     coordinator.share(result)
+diff --git a/Tinycast/Palette/PaletteState.swift b/Tinycast/Palette/PaletteState.swift
+index 289a8aaf..9855a700 100644
+--- a/Tinycast/Palette/PaletteState.swift
++++ b/Tinycast/Palette/PaletteState.swift
+@@ -23,8 +23,8 @@ final class PaletteState {
+     var emojiCategoryFilter: EmojiCategoryFilter = .all
+     /// Nil means the configured default; zoom only overrides it for this picker session.
+     var emojiGridColumnsOverride: EmojiGridColumns?
+-    /// Whether file search draws its Quick Look overlay; it follows whatever row is selected.
+-    var fileSearchQuickLook = false
++    /// Whether the Quick Look overlay is up; file search and the clipboard both draw it over their rows.
++    var quickLook = false
+     /// Ordering out leaves the SwiftUI tree mounted, so a media preview needs this to stop playing.
+     private(set) var isVisible = false
+     /// Changes every time the palette is shown so the search field can re-focus.
+@@ -82,7 +82,7 @@ final class PaletteState {
+     func noteVisible(_ visible: Bool) {
+         isVisible = visible
+         // Ordering out leaves the tree mounted, and a preview must not outlive the window.
+-        if !visible { fileSearchQuickLook = false }
++        if !visible { quickLook = false }
+     }
+ 
+     var canGoBack: Bool { !backStack.isEmpty }
+@@ -148,7 +148,7 @@ final class PaletteState {
+         fileSearchFilter = .all
+         emojiCategoryFilter = .all
+         emojiGridColumnsOverride = nil
+-        fileSearchQuickLook = false
++        quickLook = false
+         forceExpanded = false
+         dropHoverHighlight()
+         menuOpen = false
+diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
+index f1ee2376..573cb898 100644
+--- a/Tinycast/Palette/PaletteWindowController.swift
++++ b/Tinycast/Palette/PaletteWindowController.swift
+@@ -411,8 +411,8 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+                 core.snippetCoordinator.cancelSnippetEditing()
+                 return true
+             }
+-            guard core.palette.fileSearchQuickLook else { return false }
+-            core.palette.fileSearchQuickLook = false
++            guard core.palette.quickLook else { return false }
++            core.palette.quickLook = false
+             return true
+         }
+         // Handled at the panel: the field editor or a missing main menu eats these first.
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 932031e6..661d1538 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -421,7 +421,7 @@ struct RootPaletteView: View {
+                 vm.fileSearchFilter = .all
+                 vm.emojiCategoryFilter = .all
+                 vm.emojiGridColumnsOverride = nil
+-                vm.fileSearchQuickLook = false
++                vm.quickLook = false
+                 if menuOpen { closeMenus() }
+                 land(restoringNavigation: true)
+                 searchFocused = !screen.hidesSearchField
+diff --git a/docs/features/clipboard.md b/docs/features/clipboard.md
+index e646158b..b8e00f53 100644
+--- a/docs/features/clipboard.md
++++ b/docs/features/clipboard.md
+@@ -17,6 +17,10 @@
+ - **Paste as Plain Text writes `ClipboardItem.plainText` and nothing else**: the text itself, or a
+   file entry's path without its `public.file-url`. An image has none, so it gets no plain row, a
+   plain-text default pastes it as it is, and ⌃⌘↵ on it falls back to ⌘↵ as on every other screen.
++- **⌘Y opens Quick Look inside the panel for an image or a file entry, through File Search's overlay.**
++  A system `QLPreviewPanel` would take key and close the palette, as in [file-search.md](file-search.md).
++  `FileSearchQuickLook` takes a URL and a name, and `PaletteState.quickLook` is the one flag both screens
++  share. Text has no file to draw, so it gets neither the ⌘K row nor the chord.
+ - **Clipboard writes stamp a private `internalType` marker** so the poller skips Tinycast's own writes.
+   If the writer and the poller ever disagree, the app re-captures its own pastes in a loop.
+ - **Paste Sequentially never promotes, and its walk is frozen at the first press.** `PasteSequence`
+-- 
+2.56.0
+

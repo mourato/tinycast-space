@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Wed, 14 Oct 2026 22:29:51 -0300
+Subject: [PATCH] fix(context): stop window title reads after cancellation
+
+---
+ Tinycast/Features/AI/Service/ContextAppReader.swift | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/Tinycast/Features/AI/Service/ContextAppReader.swift b/Tinycast/Features/AI/Service/ContextAppReader.swift
+index 94f154d3..106ad4a2 100644
+--- a/Tinycast/Features/AI/Service/ContextAppReader.swift
++++ b/Tinycast/Features/AI/Service/ContextAppReader.swift
+@@ -194,14 +194,9 @@ nonisolated enum ContextAppReader {
+     }
+ 
+     private static func windowTitle(in application: AXUIElement) -> String? {
+-        guard let element = focusedElement(in: application) else { return nil }
+-        var window: CFTypeRef?
+-        guard
+-            AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &window)
+-                == .success,
+-            let window, CFGetTypeID(window) == AXUIElementGetTypeID()
++        guard let element = focusedElement(in: application),
++            let windowElement = windowElement(for: element)
+         else { return nil }
+-        let windowElement = unsafeDowncast(window as AnyObject, to: AXUIElement.self)
+         AXUIElementSetMessagingTimeout(windowElement, 1)
+         guard !Task.isCancelled else { return nil }
+         var title: CFTypeRef?
+-- 
+2.56.0
+
