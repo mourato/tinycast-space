@@ -170,7 +170,7 @@ index 69fa2c4a..6c2f5a03 100644
              chat.session.messages.isEmpty,
              chat.pendingAttachments.isEmpty,
 diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
-index cce158f4..931c9fab 100644
+index 4320ade4..e973a973 100644
 --- a/Tinycast/Palette/PaletteCoordinator.swift
 +++ b/Tinycast/Palette/PaletteCoordinator.swift
 @@ -10,6 +10,8 @@ final class PaletteCoordinator {
@@ -182,14 +182,14 @@ index cce158f4..931c9fab 100644
      /// Features whose launcher rows are read from outside Tinycast re-read them on each open.
      var onLauncherShown: (() -> Void)?
      /// Screens that snapshot other apps re-read them on every open, a restored one included.
-@@ -129,6 +131,7 @@ final class PaletteCoordinator {
+@@ -131,6 +133,7 @@ final class PaletteCoordinator {
      }
  
      func hidePalette(restoreFocus: Bool = true) {
 +        dismissalGeneration += 1
-         fileSearch.cancel()
          menuSearch.reset()
          windowSwitch.reset()
+         windowController.hide(restoreFocus: restoreFocus)
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
 index 0092e98c..df276d8f 100644
 --- a/docs/features/quick-actions.md

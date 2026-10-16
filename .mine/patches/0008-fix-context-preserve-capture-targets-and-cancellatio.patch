@@ -95,7 +95,7 @@ index 01a2276f..843e8344 100644
          for source in ContextSource.allCases {
              expect(
 diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
-index dc3029d7..1ea54350 100644
+index f800397d..02b44f5f 100644
 --- a/Tinycast.xcodeproj/project.pbxproj
 +++ b/Tinycast.xcodeproj/project.pbxproj
 @@ -358,6 +358,7 @@
@@ -106,7 +106,7 @@ index dc3029d7..1ea54350 100644
  		648D442C0C716DB622511436 /* AIChatWindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */; };
  		64AD2324BDA6293464C98913 /* EmojiCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45EB979ECD44738BCD9E2F90 /* EmojiCoordinator.swift */; };
  		6527B404C220924885C070B3 /* AppWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9979DED5579535D1F0A32DBF /* AppWindowController.swift */; };
-@@ -1701,6 +1702,7 @@
+@@ -1705,6 +1706,7 @@
  		EC3D5A5B8038C07FEE03F433 /* KeyboardRemapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardRemapper.swift; sourceTree = "<group>"; };
  		EC895E9AF76C4530E52C34BB /* WindowShortcutPresetCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowShortcutPresetCoordinator.swift; sourceTree = "<group>"; };
  		ECE4D3633895F0E27FE3252D /* NoteInlineScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteInlineScanner.swift; sourceTree = "<group>"; };
@@ -114,7 +114,7 @@ index dc3029d7..1ea54350 100644
  		ED5AAA98FFF7A4D34D7B490D /* ExtensionBootConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionBootConfig.swift; sourceTree = "<group>"; };
  		ED866D346B2D97A12AD15CE9 /* DictationSpectrum.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSpectrum.swift; sourceTree = "<group>"; };
  		EDBAD3F666C10A869A4EAADB /* MeetingDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetailsView.swift; sourceTree = "<group>"; };
-@@ -2080,6 +2082,7 @@
+@@ -2084,6 +2086,7 @@
  				EAC662BDA6856590DCF96B94 /* AIChatState.swift */,
  				C94312FFD26A2581BB691F9E /* AIChatSurfacesState.swift */,
  				37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */,
@@ -122,7 +122,7 @@ index dc3029d7..1ea54350 100644
  				C5B3806D6A7AEBF0B529DBC5 /* AIContextCoordinator.swift */,
  				2459AEF35C7E5E11A019B479 /* AIContextPicker.swift */,
  				0F5730EA67D6E91ABAD8F446 /* AIEmptyState.swift */,
-@@ -3996,6 +3999,7 @@
+@@ -4002,6 +4005,7 @@
  				753FEBB891DBCE13C4C59935 /* AIConnection.swift in Sources */,
  				4756BD8CEF9FC57A0C016555 /* AIConnectionEditorPanel.swift in Sources */,
  				DEBA3D842236875993867A25 /* AIConnectionKeyPolicy.swift in Sources */,
@@ -460,7 +460,7 @@ index 519514e5..0d26be94 100644
  
      /// Descriptors never cross the await; only strings and the mapped failure do.
 diff --git a/Tinycast/Features/AI/UI/AIChatCoordinator.swift b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
-index a3f7279c..a29eedde 100644
+index 8a61c32c..63e2c308 100644
 --- a/Tinycast/Features/AI/UI/AIChatCoordinator.swift
 +++ b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
 @@ -68,15 +68,17 @@ final class AIChatCoordinator {

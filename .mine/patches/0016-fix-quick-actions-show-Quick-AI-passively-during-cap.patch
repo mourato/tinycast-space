@@ -23,10 +23,10 @@ the capture and clear its gathering notice; Replace only stays silent.
  delete mode 100644 Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index de8d84b7..7a094c90 100755
+index 99ed141b..d3132ac7 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -723,18 +723,46 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
+@@ -757,18 +757,46 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/MCP/Model/*.swift \
                             Tinycast/Features/MCP/Settings/MCPSettingsStore.swift
  run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
@@ -940,10 +940,10 @@ index 36bd5442..5c94fdf9 100644
          }
          history.remove(id: id)
 diff --git a/Tinycast/Features/AI/UI/AIScreen.swift b/Tinycast/Features/AI/UI/AIScreen.swift
-index 691beae7..ed2357d2 100644
+index cd95c148..2d94a2af 100644
 --- a/Tinycast/Features/AI/UI/AIScreen.swift
 +++ b/Tinycast/Features/AI/UI/AIScreen.swift
-@@ -196,7 +196,8 @@ private struct AIChatView: View {
+@@ -198,7 +198,8 @@ private struct AIChatView: View {
                  let unavailability = availability()
                  AIEmptyState(
                      message: chat.notice ?? unavailability,
@@ -1279,10 +1279,10 @@ index 167f6607..69fa2c4a 100644
                  chat.report(error.localizedDescription)
              }
 diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
-index 5b47301b..cce158f4 100644
+index e44e2231..4320ade4 100644
 --- a/Tinycast/Palette/PaletteCoordinator.swift
 +++ b/Tinycast/Palette/PaletteCoordinator.swift
-@@ -83,7 +83,8 @@ final class PaletteCoordinator {
+@@ -85,7 +85,8 @@ final class PaletteCoordinator {
  
      /// Shows the palette, honoring Pop to Root Search. See docs/features/palette.md#state-flow.
      func showPalette(
@@ -1292,7 +1292,7 @@ index 5b47301b..cce158f4 100644
      ) {
          let preserved = windowController.consumePreservedState()
          let restoring = preserved && (restoreAnyMode || palette.mode == mode)
-@@ -96,7 +97,11 @@ final class PaletteCoordinator {
+@@ -98,7 +99,11 @@ final class PaletteCoordinator {
          if let query { palette.query = query }
          // Before the show: `targetApp` must still name the app in front, and no row may pop in.
          onScreenOpening?(palette.mode)
@@ -1305,7 +1305,7 @@ index 5b47301b..cce158f4 100644
          if palette.mode == .fileSearch { fileSearch.search(palette.query) }
          if palette.mode == .menuSearch { menuSearch.filter(palette.query) }
          if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
-@@ -107,6 +112,11 @@ final class PaletteCoordinator {
+@@ -109,6 +114,11 @@ final class PaletteCoordinator {
          }
      }
  
@@ -1318,7 +1318,7 @@ index 5b47301b..cce158f4 100644
      func showArguments(of entry: AppEntry, values: [String: String]) {
          showPalette(mode: .launcher, seeding: entry.name)
 diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
-index 906ad484..0daad2a2 100644
+index 9a002e26..54e837a9 100644
 --- a/Tinycast/Palette/PaletteWindowController.swift
 +++ b/Tinycast/Palette/PaletteWindowController.swift
 @@ -59,42 +59,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {

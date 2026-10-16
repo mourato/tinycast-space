@@ -14,10 +14,10 @@ Subject: [PATCH] fix(quick-actions): show Quick AI progress before capture,
  create mode 100644 Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index 93299fb0..de8d84b7 100755
+index c8d300d6..99ed141b 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -731,6 +731,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
+@@ -765,6 +765,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/QuickActions/Model/CustomQuickAction.swift \
                             Tinycast/Features/QuickActions/Model/CustomQuickActionStore.swift \
                             Tinycast/Features/QuickActions/Model/QuickAction.swift \

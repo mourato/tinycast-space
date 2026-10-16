@@ -913,10 +913,10 @@ index 7e0d1ca8..30a67c2c 100644
          for tab in tabs.prefix(10) {
              items.append(
 diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-index 19f943db..2edad0fa 100644
+index 5c331ad4..93d11f07 100644
 --- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
 +++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-@@ -195,7 +195,7 @@ enum SettingsBackupCoverage {
+@@ -198,7 +198,7 @@ enum SettingsBackupCoverage {
          AppSettingsKey.contextAppEnabled.rawValue:
              "Grants reading the front app's text for chat context; an import must not enable capture.",
          AppSettingsKey.contextBrowserEnabled.rawValue:
@@ -1013,10 +1013,10 @@ index df5cbce4..3e778bfc 100644
      private func reportRefusal(_ failure: QuickActionFailure) {
          guard failure.opensAccessibilitySettings else {
 diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
-index 36e79d11..99b7ae6f 100644
+index 6366266f..b3676c7b 100644
 --- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
 +++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
-@@ -335,10 +335,10 @@ enum SettingsSearchCatalog {
+@@ -333,10 +333,10 @@ enum SettingsSearchCatalog {
              keywords: ["auto", "capture", "frontmost"]),
          .init(
              .contextBrowser, "Enable browser context",
@@ -1029,7 +1029,7 @@ index 36e79d11..99b7ae6f 100644
          .init(
              .contextOptions, "Use selected text only",
              keywords: ["selection", "full page", "whole"]),
-@@ -353,7 +353,7 @@ enum SettingsSearchCatalog {
+@@ -351,7 +351,7 @@ enum SettingsSearchCatalog {
              keywords: ["sources", "priority", "ranking", "order"]),
          .init(
              .contextItems, "Browser tabs",

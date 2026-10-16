@@ -100,10 +100,10 @@ index 443d5aa0..36bd5442 100644
      }
  
 diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-index b608e3a5..dacdc10e 100644
+index 03ab4ff9..a63ac115 100644
 --- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
 +++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-@@ -173,6 +173,9 @@ enum SettingsBackupCoverage {
+@@ -176,6 +176,9 @@ enum SettingsBackupCoverage {
          AppSettingsKey.quickActionsEnabled.rawValue:
              "Grants keystroke delivery into other apps through the Accessibility permission, and a "
              + "flag that grants a capability is never carried by a backup.",
@@ -448,10 +448,10 @@ index f93f4186..ef889980 100644
      func canReplaceReply(in chat: AIChatState) -> Bool {
          guard let pending = pendingReply, pending.chatID == chat.session.id, !chat.isStreaming
 diff --git a/Tinycast/Features/Settings/AppSettingsKey.swift b/Tinycast/Features/Settings/AppSettingsKey.swift
-index e2f52f81..236640a2 100644
+index 908fbef7..1c46d93b 100644
 --- a/Tinycast/Features/Settings/AppSettingsKey.swift
 +++ b/Tinycast/Features/Settings/AppSettingsKey.swift
-@@ -95,6 +95,7 @@ enum AppSettingsKey: String, CaseIterable {
+@@ -97,6 +97,7 @@ enum AppSettingsKey: String, CaseIterable {
      case mcpServers = "mcpServers"
      case quickActionsEnabled = "quickActionsEnabled"
      case quickActionInstructions = "quickActionInstructions"

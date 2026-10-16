@@ -206,7 +206,7 @@ index 1cbbed39..01a2276f 100644
          for source in ContextSource.allCases {
              expect(
 diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
-index 617dd964..965f9527 100644
+index 9985da7a..df5c5ac5 100644
 --- a/Tinycast/App/AppCore.swift
 +++ b/Tinycast/App/AppCore.swift
 @@ -230,6 +230,9 @@ final class AppCore {
@@ -228,7 +228,7 @@ index 617dd964..965f9527 100644
              mcpCoordinator.applyEnabled()
              customQuickActions.onChange = { [weak self] _ in
                  self?.quickActionCoordinator.applyCustomQuickActionsPresence()
-@@ -687,13 +692,21 @@ final class AppCore {
+@@ -689,13 +694,21 @@ final class AppCore {
              })
          track({ _ = $0.notesEnabled }, reproject: { $0.notesCoordinator.applyEnabled() })
          track({ _ = $0.aiEnabled }, reproject: { $0.aiChatCoordinator.applyEnabled() })
@@ -726,7 +726,7 @@ index 2e2f9acd..3817a788 100644
                  SettingsSectionHeader(.contextApplication)
              } footer: {
 diff --git a/Tinycast/Features/AI/UI/AIChatCoordinator.swift b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
-index 7b46992a..a3f7279c 100644
+index ab9a20c3..8a61c32c 100644
 --- a/Tinycast/Features/AI/UI/AIChatCoordinator.swift
 +++ b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
 @@ -14,9 +14,8 @@ final class AIChatCoordinator {
