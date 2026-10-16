@@ -1,0 +1,121 @@
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 2d589161..75f7c3e8 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -605,53 +605,18 @@ struct RootPaletteView: View {
+                     vm.query += " "
+                     return .handled
+                 }
+-                // Case-sensitive on purpose: "cc" opens its command, "CC" (Shift) just searches.
+-                guard let key = core.aliases.aliases.first(where: { $0.value == vm.query })?.key,
+-                    let launcher = screen as? LauncherScreen,
+-                    let index = launcher.rows.firstIndex(where: {
+-                        if case .entry(let app) = $0 { return app.preferenceKey == key }
+-                        return false
+-                    }),
+-                    case .entry(let app) = launcher.rows[index],
+-                    app.kind != .application, app.kind != .systemSettings
+-                else { return .ignored }
+-                vm.selection = index
+-                scroll = ScrollIntent(kind: .follow)
+-                // Asked of the row itself, not of the header: its fields are built a pass later, so
+-                // reading the accessory here would miss them and open the row instead.
+-                let wantsArguments: Bool
+-                // A view command whose arguments are all optional opens instead, so what follows lands
+-                // in its own search bar — Search Homebrew's query is just its first search.
+-                var opensInside = false
+-                switch app.kind {
+-                case .quicklink:
+-                    wantsArguments = core.quicklinks.quicklink(entryID: app.id).map {
+-                        !SnippetTemplateEngine.declaredArguments(in: $0.link).isEmpty
+-                    } ?? false
+-                case .customCommand:
+-                    wantsArguments = !(core.customCommands.command(entryID: app.id)?.arguments ?? []).isEmpty
+-                case .extensionCommand:
+-                    let command = extensions.resolve(app)?.1
+-                    let arguments = command?.arguments ?? []
+-                    opensInside = command?.mode == .view && !arguments.contains(where: \.required)
+-                    wantsArguments = !arguments.isEmpty && !opensInside
+-                default:
+-                    wantsArguments = false
+-                }
+-                if wantsArguments {
+-                    // The palette focuses the first unanswered field as soon as the fields exist.
+-                    vm.pendingArgumentEntryID = app.id
+-                } else if !opensInside, let field = headerAccessory?.fieldNames.first {
+-                    argumentFocused = field
+-                    searchFocused = false
+-                } else {
+-                    launcher.activate(at: index)
+-                }
+-                return .handled
++                return openAliasEntry() ? .handled : .ignored
+             }
+             .onKeyPress(keys: [.tab], phases: .down) { press in
+                 // ⇥ inside an open list belongs to the list, not to the form's field order.
+                 if vm.isControlListOpen { return .handled }
++                // tinycast-space: Tab on an exact alias does what Space does.
++                if vm.mode == .launcher, searchFocused, argumentFocused == nil, !menuOpen,
++                    !vm.isComposing, !isCollapsed, press.modifiers.subtracting(.capsLock).isEmpty,
++                    !vm.query.isEmpty, openAliasEntry()
++                {
++                    return .handled
++                }
+                 if !menuOpen { advanceTabFocus(backwards: press.modifiers.contains(.shift)) }
+                 return .handled
+             }
+@@ -1426,6 +1391,54 @@ struct RootPaletteView: View {
+         }
+     }
+ 
++    /// tinycast-space: the exact-alias jump shared by Space and Tab. False when the query is not
++    /// exactly a user alias of an entry that opens.
++    private func openAliasEntry() -> Bool {
++        // Case-sensitive on purpose: "cc" opens its command, "CC" (Shift) just searches.
++        guard let key = core.aliases.aliases.first(where: { $0.value == vm.query })?.key,
++            let launcher = screen as? LauncherScreen,
++            let index = launcher.rows.firstIndex(where: {
++                if case .entry(let app) = $0 { return app.preferenceKey == key }
++                return false
++            }),
++            case .entry(let app) = launcher.rows[index],
++            app.kind != .application, app.kind != .systemSettings
++        else { return false }
++        vm.selection = index
++        scroll = ScrollIntent(kind: .follow)
++        // Asked of the row itself, not of the header: its fields are built a pass later, so
++        // reading the accessory here would miss them and open the row instead.
++        let wantsArguments: Bool
++        // A view command whose arguments are all optional opens instead, so what follows lands
++        // in its own search bar — Search Homebrew's query is just its first search.
++        var opensInside = false
++        switch app.kind {
++        case .quicklink:
++            wantsArguments = core.quicklinks.quicklink(entryID: app.id).map {
++                !SnippetTemplateEngine.declaredArguments(in: $0.link).isEmpty
++            } ?? false
++        case .customCommand:
++            wantsArguments = !(core.customCommands.command(entryID: app.id)?.arguments ?? []).isEmpty
++        case .extensionCommand:
++            let command = extensions.resolve(app)?.1
++            let arguments = command?.arguments ?? []
++            opensInside = command?.mode == .view && !arguments.contains(where: \.required)
++            wantsArguments = !arguments.isEmpty && !opensInside
++        default:
++            wantsArguments = false
++        }
++        if wantsArguments {
++            // The palette focuses the first unanswered field as soon as the fields exist.
++            vm.pendingArgumentEntryID = app.id
++        } else if !opensInside, let field = headerAccessory?.fieldNames.first {
++            argumentFocused = field
++            searchFocused = false
++        } else {
++            launcher.activate(at: index)
++        }
++        return true
++    }
++
+     private func advanceTabFocus(backwards: Bool) {
+         let screen = screen
+         if screen.tab(at: selection(in: screen), backwards: backwards) { return }

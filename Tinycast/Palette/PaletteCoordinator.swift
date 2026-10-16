@@ -55,8 +55,10 @@ final class PaletteCoordinator {
         windowController.isVisible && palette.mode == mode
     }
 
+    /// A visible palette hides whatever screen is up; the summon after it restores that screen
+    /// until Pop to Root Search expires, so the pair reads as minimise and restore.
     func togglePalette() {
-        if isShowing(.launcher) {
+        if isVisible {
             hidePalette()
         } else {
             showPalette(mode: .launcher, restoreAnyMode: true)

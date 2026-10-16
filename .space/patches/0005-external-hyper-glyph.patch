@@ -1,0 +1,63 @@
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index 60bb9e03..2e77f8a1 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -412,7 +412,10 @@ final class AppCore {
+                 return appIndex.isCommandEnabled(id)
+             }
+             KeyShortcut.displayedHyperChord = { [settings] in
+-                guard settings.hyperKey != .none else { return nil }
++                // tinycast-space: another app can own the Hyper key and still want the ✦ glyph.
++                guard settings.hyperKey != .none
++                    || UserDefaults.standard.bool(forKey: "spaceHyperGlyphWithoutRemap")
++                else { return nil }
+                 return KeyShortcut.hyperChord(includesShift: settings.hyperKeyIncludesShift)
+             }
+             SystemActionRunner.onAsyncFailure = { [weak self] id, failure in
+diff --git a/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift b/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift
+index 0327d875..24cb776d 100644
+--- a/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift
++++ b/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift
+@@ -4,6 +4,8 @@ struct HyperKeySettingsSection: View {
+     @Environment(AppCore.self) private var core
+     @Environment(AppSettings.self) private var settings
+     @State private var diagnostics: HyperKeyDiagnostics?
++    /// tinycast-space: show ✦ for the Hyper chord while another app does the remapping.
++    @AppStorage("spaceHyperGlyphWithoutRemap") private var hyperGlyphWithoutRemap = false
+ 
+     private var manager: HyperKeyManager { core.hyperKey }
+ 
+@@ -59,11 +61,18 @@ struct HyperKeySettingsSection: View {
+                 }
+             }
+ 
++            if settings.hyperKey == .none {
++                Toggle(isOn: $hyperGlyphWithoutRemap) {
++                    SettingsRowTitle(.generalHyperKey, "Show ✦ for another app's Hyper key")
++                    Text("Shortcuts using the whole Hyper chord read as ✦ instead of its modifiers.")
++                }
++            }
++
+             Toggle(isOn: $settings.hyperKeyIncludesShift) {
+                 SettingsRowTitle(.generalHyperKey, "Include Shift (⇧)")
+             }
+             // Flipping it re-points recorded chords, so it needs a chord to mean.
+-            .settingsEnabled(settings.hyperKey != .none)
++            .settingsEnabled(settings.hyperKey != .none || hyperGlyphWithoutRemap)
+ 
+             if settings.hyperKey.supportsSecureInputCompatibility {
+                 Toggle(isOn: $settings.hyperKeySecureInputCompatibility) {
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 87b5911a..160376df 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -160,6 +160,9 @@ enum SettingsSearchCatalog {
+         .init(
+             .generalHyperKey, "Quick Press",
+             keywords: ["tap", "escape", "single press"]),
++        .init(
++            .generalHyperKey, "Show ✦ for another app's Hyper key",
++            keywords: ["glyph", "karabiner", "hyperkey", "external", "modifier"]),
+         .init(
+             .generalHyperKey, "Include Shift (⇧)",
+             keywords: ["modifier", "chord"]),

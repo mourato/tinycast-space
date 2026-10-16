@@ -21,6 +21,7 @@ struct FuzzTest {
         naming()
         categories()
         comparator()
+        typoTolerance()
         denseIndex()
         suggestions()
         sharedFold()
@@ -386,6 +387,31 @@ struct FuzzTest {
             picked.terms = usage.searchTerms
             return picked
         }
+    }
+
+    static func typoTolerance() {
+        print("\n# typo tolerance")
+        check("'chorme' finds Google Chrome", rank("chorme", [Item(name: "Google Chrome")]) == ["Google Chrome"])
+        check(
+            "a typo of a later word finds its entry",
+            rank("managment", [Item(name: "Window Management")]) == ["Window Management"])
+        check(
+            "typos are a fallback: a real match hides them",
+            rank("safar", [Item(name: "Sofar", frecency: 900), Item(name: "Safari")]) == ["Safari"])
+        check(
+            "the closer typo ranks first",
+            rank("chrommes", [Item(name: "Chromebook", frecency: 900), Item(name: "Chromes")])
+                == ["Chromes", "Chromebook"])
+        check("'cat' is not a typo of Chess", rank("cat", [Item(name: "Chess")]).isEmpty)
+        check("'finder' is not a typo of Find My", rank("finder", [Item(name: "Find My")]).isEmpty)
+        check(
+            "a typo reaches the title alone",
+            rank("chorme", [Item(name: "Browser", subtitle: "Chrome", keywords: ["chrome"])]).isEmpty)
+        check(
+            "the allowance grows with the query",
+            LauncherMatch.allowedTypos(forQueryLength: 3) == 0
+                && LauncherMatch.allowedTypos(forQueryLength: 6) == 1
+                && LauncherMatch.allowedTypos(forQueryLength: 9) == 2)
     }
 
     static func denseIndex() {

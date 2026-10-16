@@ -124,9 +124,9 @@ final class SnippetCoordinator {
         paletteCoordinator.togglePalette(mode: .snippets)
     }
 
-    func editSnippet(_ record: StoredSnippet?) {
+    func editSnippet(_ record: StoredSnippet?, prefilledText: String? = nil) {
         guard settings.snippetsEnabled else { return }
-        editor = SnippetEditorSession(record: record)
+        editor = SnippetEditorSession(record: record, prefilledText: prefilledText)
         paletteCoordinator.showPalette(mode: .snippetEditor)
     }
 
@@ -230,6 +230,39 @@ final class SnippetCoordinator {
         // One of our own editors is only reachable again once the palette hands key back to it.
         paletteCoordinator.hidePalette(restoreFocus: target?.ownEditor != nil)
         expandSnippet(id: id, target: target)
+    }
+
+    /// The browser's Copy to Clipboard: the same expansion as ↵, put on the pasteboard instead of typed.
+    func copySnippetFromPalette(id: StoredSnippet.ID) {
+        let target = windowController.previousTarget
+        paletteCoordinator.hidePalette(restoreFocus: false)
+        let records = store.snippets
+        guard let record = records.first(where: { $0.id == id }) else { return }
+        let context = injector.captureExpansionContext(
+            target: target, clipboardHistory: clipboardHistoryForExpansion())
+        let result = SnippetTemplateEngine.expand(record, snippets: records, context: context)
+        guard !result.missingArguments.isEmpty else {
+            copyExpandedSnippet(result.text)
+            return
+        }
+        guard !core.isShowingDialog else { return }
+        listener.isPromptingForArguments = true
+        Task {
+            let arguments = await core.fillSnippetArguments(
+                snippetName: record.snippet.name, arguments: result.missingArguments)
+            listener.isPromptingForArguments = false
+            guard let arguments else { return }
+            copyExpandedSnippet(
+                SnippetTemplateEngine.expand(
+                    record, snippets: records, context: context, userArguments: arguments
+                ).text)
+        }
+    }
+
+    /// Unmarked, so the text enters history like any other copy the reader meant to make.
+    private func copyExpandedSnippet(_ text: String) {
+        Paster.copyPlainText(text)
+        showMessage("Copied snippet", .success)
     }
 
     /// A shortcut lands where the caret is; over the palette, that's what the palette covered.

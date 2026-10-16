@@ -175,6 +175,12 @@ final class ClipboardCoordinator {
         }
     }
 
+    /// The editor opens on the entry's text; the name is left for the user to give.
+    func saveAsSnippet(_ item: ClipboardItem) {
+        guard item.kind == .text, let text = item.text else { return }
+        core.snippetCoordinator.editSnippet(nil, prefilledText: text)
+    }
+
     /// Unmarked, so a converted colour enters history itself — it is one you meant to keep.
     func copyColor(_ color: ColorValue, as format: ColorFormat) {
         paletteCoordinator.hidePalette(restoreFocus: false)

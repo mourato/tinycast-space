@@ -496,6 +496,15 @@ struct ClipboardTests {
             expect(
                 texts(store, filter: .link) == ["https://apple.com", "second.link.dev"],
                 "a pinned link leads its filtered block")
+
+            store.addFiles(
+                ["/Users/me/Desktop/Shot.png", "/Users/me/Desktop/Report.pdf"], sourceBundleID: nil)
+            expect(
+                texts(store, filter: .image) == ["/Users/me/Desktop/Shot.png"],
+                "an image copied in Finder is an image")
+            expect(
+                texts(store, filter: .file) == ["/Users/me/Desktop/Report.pdf"],
+                "so Files Only leaves it out, and keeps a PDF")
         }
     }
 

@@ -708,9 +708,16 @@ const childProcess = {
       options = args;
       args = [];
     }
-    const raw = hostCallSync("proc", "run", [
-      { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
-    ]);
+    let raw;
+    try {
+      raw = hostCallSync("proc", "run", [
+        { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
+      ]);
+    } catch (error) {
+      // Node reports a command that could not start through `error`, not by throwing.
+      if (error.code !== "ENOENT") throw error;
+      return { status: null, signal: null, pid: 0, output: null, stdout: options.encoding === "buffer" ? Buffer.alloc(0) : "", stderr: options.encoding === "buffer" ? Buffer.alloc(0) : "", error };
+    }
     const result = normalizeExecResult(raw, options);
     return { ...result, pid: 0, output: [null, result.stdout, result.stderr], error: undefined };
   },
@@ -1018,7 +1025,7 @@ class ChildProcess extends EventEmitter {
         this.exitCode = 1;
         this.stdin.emit("finish");
         this.stdout.end();
-        this.stderr.end(Buffer.from(String(error?.message ?? error), "utf8"));
+        this.stderr.end();
         this.emit("error", error);
         queueMicrotask(() => this.emit("close", 1, null));
       },
@@ -1077,7 +1084,7 @@ function pickRunOptions(options = {}) {
 function decorateProcessError(error, label) {
   const decorated = error instanceof Error ? error : new Error(String(error));
   if (decorated.stdout === undefined) decorated.stdout = "";
-  if (decorated.stderr === undefined) decorated.stderr = decorated.message;
+  if (decorated.stderr === undefined) decorated.stderr = "";
   if (decorated.status === undefined) decorated.status = 1;
   if (decorated.code === undefined) decorated.code = 1;
   decorated.cmd = decorated.cmd ?? label;
@@ -1208,6 +1215,10 @@ function validateHeaderValue(name, value) {
   }
 }
 
+/// Only a type for `instanceof`: got's `Request.pipe` checks its destination against it, and an
+/// extension has no server to answer.
+class ServerResponse extends Writable {}
+
 /// The bridge owns every socket; `addRequest` is only a hook for cookie agents to override.
 class Agent extends EventEmitter {
   constructor(options) {
@@ -1264,15 +1275,24 @@ class ClientRequest extends EventEmitter {
     this._headers.delete(String(name).toLowerCase());
   }
 
-  write(chunk) {
-    this._chunks.push(Buffer.from(chunk));
+  write(chunk, encoding, callback) {
+    if (typeof encoding === "function") callback = encoding;
+    this._chunks.push(typeof chunk === "string" ? Buffer.from(chunk, typeof encoding === "string" ? encoding : "utf8") : Buffer.from(chunk));
+    if (callback) queueMicrotask(() => callback(null));
     return true;
   }
 
-  end(chunk) {
-    if (chunk !== undefined && chunk !== null) this.write(chunk);
+  end(chunk, encoding, callback) {
+    if (typeof chunk === "function") [chunk, callback] = [undefined, chunk];
+    else if (typeof encoding === "function") [encoding, callback] = [undefined, encoding];
+    if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
     this._implicitHeader();
     this.writableEnded = true;
+    // The bridge takes the whole request at once, so it is "finished" as soon as it is handed over.
+    queueMicrotask(() => {
+      this.emit("finish");
+      callback?.();
+    });
     this._send();
     return this;
   }
@@ -1548,11 +1568,26 @@ const querystring = {
     return out;
   },
   stringify(object) {
+    // Node coerces anything but a string, finite number, bigint or boolean to "" — google-auth-library
+    // relies on it: a client without a secret sends `client_secret=`, never `client_secret=undefined`.
+    const coerce = (value) => {
+      switch (typeof value) {
+        case "string":
+          return value;
+        case "number":
+          return Number.isFinite(value) ? String(value) : "";
+        case "bigint":
+        case "boolean":
+          return String(value);
+        default:
+          return "";
+      }
+    };
     const params = new URLSearchParams();
     for (const key of Object.keys(object || {})) {
       const value = object[key];
-      if (Array.isArray(value)) for (const item of value) params.append(key, item);
-      else params.append(key, value);
+      if (Array.isArray(value)) for (const item of value) params.append(key, coerce(item));
+      else params.append(key, coerce(value));
     }
     return params.toString();
   },
@@ -1661,6 +1696,7 @@ const httpLike = (name) =>
     validateHeaderValue,
     IncomingMessage,
     ClientRequest,
+    ServerResponse,
     Agent,
     globalAgent: new Agent(),
     STATUS_CODES: {},
@@ -1689,6 +1725,14 @@ const streamModule = unsupportedModule(
   Object.assign(streamClasses.Stream, {
     ...streamClasses,
     getDefaultHighWaterMark: (objectMode) => (objectMode ? 16 : 16 * 1024),
+    // tinycast-space: Node's state probes, which undici's response body asks before reading.
+    // Read-only questions about a stream's state, nothing to do with sockets.
+    isDisturbed: (s) =>
+      !!(s && (s.disturbed || s.readableDidRead || s.readableAborted
+        || s._readableState?.dataEmitted || s._readableState?.endEmitted)),
+    isErrored: (s) => !!(s && (s.errored || s._readableState?.errored || s._writableState?.errored)),
+    isReadable: (s) =>
+      !!(s && s.readable !== false && !s.destroyed && !s._readableState?.endEmitted),
     pipeline,
     finished,
     promises: { pipeline: (...stages) => pipelinePromise(stages), finished: finishedPromise },

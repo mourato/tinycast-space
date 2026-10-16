@@ -22,6 +22,14 @@ export class EventEmitter {
     this._list(event).unshift(listener);
     return this;
   }
+  prependOnceListener(event, listener) {
+    const wrapper = (...args) => {
+      this.off(event, wrapper);
+      listener.apply(this, args);
+    };
+    wrapper.listener = listener;
+    return this.prependListener(event, wrapper);
+  }
   once(event, listener) {
     const wrapper = (...args) => {
       this.off(event, wrapper);

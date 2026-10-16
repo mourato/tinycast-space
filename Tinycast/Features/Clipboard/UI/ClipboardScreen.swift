@@ -45,6 +45,11 @@ struct ClipboardScreen: PaletteScreen {
             return true
         case .pin: return pin(at: selection)
         case .favoriteSlot(let index): return activatePinned(at: index)
+        case .saveAsSnippet:
+            guard core.settings.snippetsEnabled, let item = item(at: selection), item.kind == .text
+            else { return false }
+            core.clipboardCoordinator.saveAsSnippet(item)
+            return true
         case .copyText:
             guard let item = item(at: selection), item.offersTextExtraction else { return false }
             core.clipboardCoordinator.copyImageText(item)
@@ -196,6 +201,14 @@ enum ClipboardActionsMenu {
                     title: "Pin Entry", systemImage: "pin", startsSection: true, shortcut: "⌘."
                 ) {
                     core.clipboardCoordinator.togglePinnedClip(item)
+                })
+        }
+        if item.kind == .text, core.settings.snippetsEnabled {
+            items.append(
+                PopoverMenuItem(
+                    title: "Save as Snippet", systemImage: "text.quote", shortcut: "⌘S"
+                ) {
+                    core.clipboardCoordinator.saveAsSnippet(item)
                 })
         }
         if item.offersTextExtraction {

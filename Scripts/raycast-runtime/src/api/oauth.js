@@ -1,5 +1,6 @@
 // Raycast's OAuth PKCE client (RFC 7636). Swift runs the browser sign-in and stores token sets.
 
+import { Buffer } from "../buffer.js";
 import { hostCall } from "../host.js";
 import { nodeModules } from "../node-shims.js";
 import { nestedEnums } from "./enums.generated.js";
@@ -19,6 +20,9 @@ const expiryMarginSeconds = 10;
 
 const randomURLSafe = (size) => nodeModules.crypto.randomBytes(size).toString("base64url");
 
+// Raycast's web redirect page crashes unless `state` is base64url JSON, so the nonce travels inside one.
+const encodeState = (fields) => Buffer.from(JSON.stringify(fields)).toString("base64url");
+
 class PKCEClient {
   constructor(options) {
     if (!redirects[options.redirectMethod]) throw new Error(`Unknown redirect method: ${options.redirectMethod}`);
@@ -35,7 +39,7 @@ class PKCEClient {
       clientId: clientId ?? (this.redirectMethod === RedirectMethod.ClientIdMetadataDocument ? clientIdMetadataDocument : undefined),
       codeVerifier,
       codeChallenge: nodeModules.crypto.createHash("sha256").update(codeVerifier).digest("base64url"),
-      state: randomURLSafe(16),
+      state: encodeState({ id: randomURLSafe(16), providerName: this.providerName }),
       redirectURI: redirects[this.redirectMethod].uri,
     };
     const query = {
@@ -66,7 +70,7 @@ class PKCEClient {
     const params = new URL(redirect).searchParams;
     const error = params.get("error");
     if (error) throw new Error(params.get("error_description") ?? error);
-    // Raycast's web redirect page drops `state`, so only a returned one can be checked.
+    // Not every redirect returns `state`, so only a returned one can be checked.
     const state = params.get("state");
     if (state !== null && request.state !== undefined && state !== request.state) {
       throw new Error(`${this.providerName} sign-in returned a mismatched state.`);

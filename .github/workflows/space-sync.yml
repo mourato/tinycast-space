@@ -1,0 +1,107 @@
+name: "Space · sync upstream"
+
+# main = upstream main + .space/patches, rebuilt whenever upstream moves or .space changes.
+# A cheap Linux check runs every 10 minutes; the macOS build only when there is something new.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if nothing changed"
+        type: boolean
+        default: false
+
+concurrency:
+  group: space-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/abue-ammar/tinycast.git
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          UP=$(git ls-remote "$UPSTREAM" refs/heads/main | cut -f1)
+          BUILT=$(gh api "repos/$REPO/contents/.space/UPSTREAM" -q .content | base64 -d | tr -d '\n' || true)
+          HEAD=$(gh api "repos/$REPO/commits/main" -q .sha)
+          MSG=$(gh api "repos/$REPO/commits/main" -q .commit.message | head -1)
+          GO=false
+          # New upstream commit, or a hand-made commit on top of the last generated one.
+          if [ "$UP" != "$BUILT" ] || [[ "$MSG" != "tinycast-space: alias + Space on upstream "* ]]; then GO=true; fi
+          # Don't retry the exact same combination that already failed.
+          BLOCKED="Sync blocked: upstream ${UP:0:7} + main ${HEAD:0:7}"
+          if gh issue list --label space-sync --state open --json title -q '.[].title' | grep -qxF "$BLOCKED"; then GO=false; fi
+          [ "$FORCE" = "true" ] && GO=true
+          echo "upstream=$UP built=$BUILT main=$HEAD go=$GO"
+          echo "go=$GO" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: check
+    if: needs.check.outputs.go == 'true'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # A PAT with Workflows write: upstream commits touching .github/workflows can't be
+          # pushed with GITHUB_TOKEN.
+          token: ${{ secrets.SPACE_PUSH_TOKEN }}
+
+      - name: Select Xcode 26
+        run: |
+          XCODE_PATH="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1)"
+          [ -n "$XCODE_PATH" ] || { ls /Applications | grep -i xcode; exit 1; }
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Rebuild main on upstream
+        run: |
+          git config user.name "sermelipharo"
+          git config user.email "9950381+sermelipharo@users.noreply.github.com"
+          OLD=$(git rev-parse HEAD)
+          git fetch --no-tags "$UPSTREAM" main
+          UP=$(git rev-parse FETCH_HEAD)
+          KEEP="$RUNNER_TEMP/keep"; mkdir -p "$KEEP/wf"
+          cp -R .space "$KEEP/"; cp .github/workflows/space-*.yml "$KEEP/wf/"
+          git checkout -q --detach "$UP"
+          rm -rf .space; cp -R "$KEEP/.space" .; cp "$KEEP"/wf/* .github/workflows/
+          echo "$UP" > .space/UPSTREAM
+          .space/apply.sh
+          git add -A
+          git commit -q -m "tinycast-space: alias + Space on upstream ${UP:0:7}"
+          { echo "OLD=$OLD"; echo "UP=$UP"; } >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: .space/gate.sh "$UP"
+
+      - name: Publish main
+        run: git push --force-with-lease="main:$OLD" origin HEAD:main
+
+      - name: Close blocked issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .space/report.sh close sync
+
+      - name: Report blocked sync
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -n "${UP:-}" ] || UP=$(git ls-remote "$UPSTREAM" refs/heads/main | cut -f1)
+          HEAD=$(git rev-parse origin/main)
+          .space/report.sh open sync "Sync blocked: upstream ${UP:0:7} + main ${HEAD:0:7}"

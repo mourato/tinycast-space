@@ -93,7 +93,7 @@ final class ExtensionCoordinator {
         }
         run(
             owner, command: command, arguments: link.arguments, fallbackText: link.fallbackText,
-            launchType: link.launchType)
+            launchType: link.launchType, launchContext: link.context)
     }
 
     // MARK: - Managing one extension from the launcher

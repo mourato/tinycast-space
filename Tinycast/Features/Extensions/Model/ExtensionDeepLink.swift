@@ -19,6 +19,7 @@ struct ExtensionDeepLink: Sendable, Equatable {
     let arguments: [String: String]
     let fallbackText: String?
     let launchType: ExtensionLaunchType
+    var context: [String: RenderValue] = [:]
 
     /// `owner/ext` first so a scoped manifest wins over a bare slug collision.
     var extensionCandidates: [String] {
@@ -79,10 +80,13 @@ struct ExtensionDeepLink: Sendable, Equatable {
         var arguments: [String: String] = [:]
         var fallbackText: String?
         var launchType = ExtensionLaunchType.userInitiated
+        var context: [String: RenderValue] = [:]
         for item in items {
             switch item.name.lowercased() {
             case "arguments":
                 if let raw = item.value { arguments = parseArguments(raw) }
+            case "context":
+                if let raw = item.value { context = parseContext(raw) }
             case "fallbacktext":
                 fallbackText = item.value
             case "launchtype", "launch_type":
@@ -94,7 +98,16 @@ struct ExtensionDeepLink: Sendable, Equatable {
         return .command(
             ExtensionDeepLink(
                 ownerOrAuthor: ownerOrAuthor, extensionName: extensionName, commandName: commandName,
-                arguments: arguments, fallbackText: fallbackText, launchType: launchType))
+                arguments: arguments, fallbackText: fallbackText, launchType: launchType,
+                context: context))
+    }
+
+    /// `launchContext` is any JSON object; anything else means no context.
+    nonisolated static func parseContext(_ raw: String) -> [String: RenderValue] {
+        guard let data = raw.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return json.mapValues(RenderValue.init(json:))
     }
 
     /// Raycast sends one URL-encoded JSON object; anything else means no arguments, not a failure.

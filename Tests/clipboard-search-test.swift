@@ -23,7 +23,8 @@ struct ClipboardSearchTests {
             let item = ClipboardItem(
                 id: UUID(), kind: kind,
                 text: kind == .text
-                    ? "Common alphabet" + suffix : kind == .file ? "/fixture/common\(index).pdf" : nil,
+                    ? "Common alphabet" + suffix
+                    : kind == .file ? "/fixture/common\(index)" + (index % 2 == 0 ? ".pdf" : ".png") : nil,
                 imagePath: kind == .image ? "/fixture/\(index).png" : nil,
                 createdAt: now.addingTimeInterval(Double(-index)), sourceBundleID: nil,
                 pinnedAt: index < 220 ? now.addingTimeInterval(Double(-index)) : nil)

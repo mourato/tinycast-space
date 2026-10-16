@@ -137,6 +137,15 @@ enum SettingsSearchCatalog {
             .generalAppearance, "Theme",
             keywords: ["dark", "light", "mode", "appearance"]),
         .init(
+            .generalAppearance, "Light theme",
+            keywords: ["raycast theme", "ray.so", "colors", "palette", "import"]),
+        .init(
+            .generalAppearance, "Dark theme",
+            keywords: ["raycast theme", "ray.so", "colors", "palette", "import"]),
+        .init(
+            .generalAppearance, "Theme background",
+            keywords: ["opacity", "transparency", "raycast theme"]),
+        .init(
             .generalAppearance, "Interface size",
             keywords: ["text size", "font size", "scale", "zoom", "bigger", "larger", "legible"]),
         .init(
@@ -157,6 +166,9 @@ enum SettingsSearchCatalog {
         .init(
             .generalHyperKey, "Quick Press",
             keywords: ["tap", "escape", "single press"]),
+        .init(
+            .generalHyperKey, "Show ✦ for another app's Hyper key",
+            keywords: ["glyph", "karabiner", "hyperkey", "external", "modifier"]),
         .init(
             .generalHyperKey, "Include Shift (⇧)",
             keywords: ["modifier", "chord"]),

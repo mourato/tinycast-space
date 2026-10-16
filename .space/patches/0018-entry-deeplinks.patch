@@ -1,0 +1,208 @@
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 5f4b3df0..52468e2a 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -125,6 +125,7 @@ run app-name-test          Tinycast/Platform/AppDisplayName.swift \
+                            Tinycast/Platform/BundleLocalization.swift \
+                            $L/SearchRelevance.swift
+ run favorites-test         $L/FavoriteSlots.swift
++run entry-deeplink-test   $L/EntryDeepLink.swift
+ run app-installation-test  $L/SearchRelevance.swift $L/ScriptRomanization.swift \
+                            $L/LauncherMatch.swift $L/EntryNaming.swift $L/LauncherOrder.swift \
+                            $L/LauncherRankingStore.swift $L/LauncherSuggestions.swift $L/SearchScopes.swift \
+diff --git a/Tests/entry-deeplink-test.swift b/Tests/entry-deeplink-test.swift
+new file mode 100644
+index 00000000..f56842a1
+--- /dev/null
++++ b/Tests/entry-deeplink-test.swift
+@@ -0,0 +1,62 @@
++import Foundation
++
++@main
++struct EntryDeepLinkTest {
++    static func main() {
++        var failures = 0
++        func check(_ description: String, _ condition: @autoclosure () -> Bool) {
++            if condition() {
++                print("PASS  \(description)")
++            } else {
++                print("FAIL  \(description)")
++                failures += 1
++            }
++        }
++
++        let ids = [
++            "command:clipboard-history", "system-action:empty-trash",
++            "window-command:left-half", "quicklink:4F2B0B9A-1111-2222-3333-444455556666",
++            "/Applications/Visual Studio Code & Co+.app", "/System/Applications/Café ☕.app",
++            "extension:raycast/spotify?x=1#frag",
++        ]
++        for id in ids {
++            let url = EntryDeepLink.url(forEntryID: id)
++            check("round-trips \(id)", url.flatMap(EntryDeepLink.entryID(from:)) == id)
++            check("is one query item for \(id)", url?.absoluteString.filter { $0 == "?" }.count == 1)
++        }
++        check(
++            "format",
++            EntryDeepLink.url(forEntryID: "command:clipboard-history")?.absoluteString
++                == "tinycast://open?id=command%3Aclipboard-history")
++        check(
++            "scheme and host are case-insensitive",
++            EntryDeepLink.entryID(from: URL(string: "TinyCast://OPEN?id=command%3Asearch-emoji")!)
++                == "command:search-emoji")
++        check(
++            "an empty id is no link",
++            EntryDeepLink.entryID(from: URL(string: "tinycast://open?id=")!) == nil)
++        check(
++            "a missing id is no link",
++            EntryDeepLink.entryID(from: URL(string: "tinycast://open")!) == nil)
++        check(
++            "another host is no link",
++            EntryDeepLink.entryID(from: URL(string: "tinycast://quicklink?id=x")!) == nil)
++        check(
++            "another scheme is no link",
++            EntryDeepLink.entryID(from: URL(string: "raycast://open?id=x")!) == nil)
++        check(
++            "extension link mirrors raycast's shape",
++            EntryDeepLink.extensionURL(owner: "raycast", slug: "spotify-player", command: "search")?
++                .absoluteString == "tinycast://extensions/raycast/spotify-player/search")
++        check(
++            "a scoped extension name keeps its last part",
++            EntryDeepLink.extensionURL(owner: "o", slug: "o/ext", command: "c")?.absoluteString
++                == "tinycast://extensions/o/ext/c")
++        check(
++            "an empty part builds no extension link",
++            EntryDeepLink.extensionURL(owner: "", slug: "e", command: "c") == nil)
++
++        print(failures == 0 ? "\nALL PASSED" : "\n\(failures) FAILED")
++        exit(failures == 0 ? 0 : 1)
++    }
++}
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index 2d393f11..3b335f55 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -476,6 +476,8 @@ final class AppCore {
+         if ConfettiOverlay.claims(url) { return ConfettiOverlay.fire() }
+         // tinycast-space: a theme link — ray.so, Raycast's Theme Studio, or the Theme command.
+         if SpaceTheme.handle(url, in: self) { return }
++        // tinycast-space: `tinycast://open?id=…`, any launcher entry by its id.
++        if EntryDeepLinkActions.handle(url, in: self) { return }
+         guard ExtensionDeepLink.claims(url) else { return }
+         guard let route = ExtensionDeepLink.route(url: url) else {
+             paletteCoordinator.showPalette(mode: .launcher, restoreAnyMode: true)
+diff --git a/Tinycast/Features/Launcher/Model/EntryDeepLink.swift b/Tinycast/Features/Launcher/Model/EntryDeepLink.swift
+new file mode 100644
+index 00000000..66fd3392
+--- /dev/null
++++ b/Tinycast/Features/Launcher/Model/EntryDeepLink.swift
+@@ -0,0 +1,37 @@
++import Foundation
++
++/// tinycast-space: `tinycast://open?id=<entry id>` runs one launcher entry, and `tinycast://extensions/…`
++/// (Raycast's own link shape) runs an extension command. The id is the entry's stable `AppEntry.id`;
++/// it is only ever looked up among the entries the launcher already lists, never executed as content.
++enum EntryDeepLink {
++    static let scheme = "tinycast"
++    static let host = "open"
++
++    /// Everything but unreserved characters, so an id's `/`, `&`, `+` and `:` survive a round trip.
++    private static let unreserved = CharacterSet(
++        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
++
++    static func url(forEntryID id: String) -> URL? {
++        guard let encoded = id.addingPercentEncoding(withAllowedCharacters: unreserved) else {
++            return nil
++        }
++        return URL(string: "\(scheme)://\(host)?id=\(encoded)")
++    }
++
++    /// The entry id of an `open` link, or nil for any other URL.
++    static func entryID(from url: URL) -> String? {
++        guard url.scheme?.lowercased() == scheme, url.host?.lowercased() == host,
++            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
++            let id = items.first(where: { $0.name == "id" })?.value, !id.isEmpty
++        else { return nil }
++        return id
++    }
++
++    /// `owner` and `slug` are the manifest's store handle and name; a scoped name keeps its last part.
++    static func extensionURL(owner: String, slug: String, command: String) -> URL? {
++        let parts = [owner, slug.split(separator: "/").last.map(String.init) ?? slug, command]
++        let encoded = parts.compactMap { $0.addingPercentEncoding(withAllowedCharacters: unreserved) }
++        guard encoded.count == 3, !parts.contains(where: \.isEmpty) else { return nil }
++        return URL(string: "\(scheme)://extensions/" + encoded.joined(separator: "/"))
++    }
++}
+diff --git a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+index cb974ebc..f03bf7fc 100644
+--- a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
++++ b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+@@ -58,6 +58,7 @@ enum AppActionsMenu {
+                     title: title, systemImage: "eye.slash", shortcut: "⇧⌘H", action: onHideFromSearch))
+         }
+         items += InlineEntryEditor.menuItems(for: app, core: core)  // tinycast-space
++        items += EntryDeepLinkActions.menuItems(for: app, core: core)  // tinycast-space
+         if running, app.kind == .application {
+             items.append(
+                 PopoverMenuItem(
+diff --git a/Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift b/Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift
+new file mode 100644
+index 00000000..40a57094
+--- /dev/null
++++ b/Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift
+@@ -0,0 +1,54 @@
++import Foundation
++
++/// tinycast-space: opens an entry's `tinycast://open` link and offers its "Copy Deeplink" row.
++@MainActor
++enum EntryDeepLinkActions {
++    /// Claims `tinycast://open` links. Always true for one, so a stale id never falls through to
++    /// the extension router and opens the launcher.
++    static func handle(_ url: URL, in core: AppCore) -> Bool {
++        guard url.scheme?.lowercased() == EntryDeepLink.scheme,
++            url.host?.lowercased() == EntryDeepLink.host
++        else { return false }
++        guard let id = EntryDeepLink.entryID(from: url),
++            let entry = core.appIndex.apps.first(where: { $0.id == id }),
++            isLinkable(entry)
++        else {
++            core.showMessage("No launcher entry for this link", tone: .danger)
++            return true
++        }
++        // A snippet pastes where the caret is, which a hidden palette must work out itself.
++        if entry.kind == .snippet, let snippetID = StoredSnippet.id(fromEntryID: entry.id) {
++            core.snippetCoordinator.expandSnippetFromHotKey(id: snippetID)
++        } else {
++            core.launcherCoordinator.launch(entry)
++        }
++        return true
++    }
++
++    /// Query-driven rows answer typed text and meetings are today's events; neither has a stable link.
++    static func isLinkable(_ entry: AppEntry) -> Bool {
++        entry.kind != .meeting && !CommandCatalog.isQueryDriven(entry)
++    }
++
++    static func link(for entry: AppEntry, core: AppCore) -> URL? {
++        guard isLinkable(entry) else { return nil }
++        if entry.kind == .extensionCommand {
++            guard let (owner, command) = core.extensions.resolve(entry) else { return nil }
++            return EntryDeepLink.extensionURL(
++                owner: owner.manifest.storeHandle, slug: owner.manifest.name, command: command.name)
++        }
++        return EntryDeepLink.url(forEntryID: entry.id)
++    }
++
++    static func menuItems(for entry: AppEntry, core: AppCore) -> [PopoverMenuItem] {
++        guard let url = link(for: entry, core: core) else { return [] }
++        return [
++            PopoverMenuItem(title: "Copy Deeplink", systemImage: "link") {
++                core.paletteCoordinator.hidePalette(restoreFocus: false)
++                core.showMessage(
++                    Paster.copyPlainText(url.absoluteString)
++                        ? "Deeplink copied" : "Couldn’t copy deeplink")
++            }
++        ]
++    }
++}

@@ -18,12 +18,12 @@ final class SnippetEditorSession {
     var errorMessage: String?
     var isSaving = false
 
-    init(record: StoredSnippet?) {
+    init(record: StoredSnippet?, prefilledText: String? = nil) {
         self.record = record
         let snippet = record?.snippet
         name = snippet?.name ?? ""
         keyword = snippet?.keyword ?? ""
-        text = snippet?.text ?? ""
+        text = snippet?.text ?? prefilledText ?? ""
         isEnabled = snippet?.isEnabled ?? true
         showsConfirmation = snippet?.showsConfirmation ?? false
     }

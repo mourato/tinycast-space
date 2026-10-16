@@ -198,7 +198,7 @@ enum ExtensionAsyncProcess {
     private static let uncollected = Mutex<[Int32: (child: Child, watchdog: DispatchSourceTimer?)]>([:])
 
     /// An app bundle inherits no login shell, so a bare `brew` would otherwise fail.
-    static func resolveExecutable(_ command: String) -> URL? {
+    static func resolveExecutable(_ command: String, searchPath: String?) -> URL? {
         let fileManager = FileManager.default
         if command.contains("/") {
             let expanded = (command as NSString).expandingTildeInPath
@@ -206,7 +206,8 @@ enum ExtensionAsyncProcess {
                 ? URL(fileURLWithPath: expanded) : nil
         }
         let search =
-            (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+            (searchPath ?? "").split(separator: ":").map(String.init)
+            + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
             + [
                 "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin",
                 "/sbin"

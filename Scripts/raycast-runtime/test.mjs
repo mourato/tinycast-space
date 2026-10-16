@@ -86,7 +86,10 @@ export function createHarness({ onRender, onFail, verbose = false, stubs = {} } 
       try {
         return JSON.stringify({ ok: true, value: syncHostCall(api, method, JSON.parse(argsJson)) });
       } catch (error) {
-        return JSON.stringify({ ok: false, error: String(error?.message ?? error), code: error?.code });
+        return JSON.stringify({
+          ok: false, error: String(error?.message ?? error), code: error?.code,
+          errno: error?.errno, syscall: error?.syscall, path: error?.path, spawnargs: error?.spawnargs,
+        });
       }
     },
   };
@@ -243,10 +246,16 @@ function syncHostCall(api, method, args) {
     case "proc.start": {
       const spec = args[0];
       const child = spec.shell
-        ? spawn("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, stdio: spec.detached ? "ignore" : "pipe" })
-        : spawn(spec.command, spec.args, { cwd: spec.cwd, stdio: spec.detached ? "ignore" : "pipe" });
+        ? spawn("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, env: spec.env, stdio: spec.detached ? "ignore" : "pipe" })
+        : spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, stdio: spec.detached ? "ignore" : "pipe" });
       child.on("error", () => {});
-      if (child.pid === undefined) throw Object.assign(new Error(`ENOENT: spawn '${spec.command}'`), { code: "ENOENT" });
+      if (child.pid === undefined) {
+        const command = spec.shell ? "/bin/sh" : spec.command;
+        throw Object.assign(new Error(`spawn ${command} ENOENT`), {
+          code: "ENOENT", errno: -2, syscall: `spawn ${command}`, path: command,
+          spawnargs: spec.shell ? ["-c", spec.command] : spec.args,
+        });
+      }
       if (spec.detached) return child.pid;
       if (spec.input) child.stdin.end(Buffer.from(spec.input, "base64"));
       const readers = { 1: child.stdout[Symbol.asyncIterator](), 2: child.stderr[Symbol.asyncIterator]() };
@@ -263,10 +272,11 @@ function syncHostCall(api, method, args) {
       const spec = args[0];
       try {
         const stdout = spec.shell
-          ? execFileSync("/bin/sh", ["-c", spec.command], { cwd: spec.cwd })
-          : execFileSync(spec.command, spec.args, { cwd: spec.cwd });
+          ? execFileSync("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, env: spec.env })
+          : execFileSync(spec.command, spec.args, { cwd: spec.cwd, env: spec.env });
         return { stdout: stdout.toString("base64"), stderr: "", status: 0 };
       } catch (error) {
+        if (error.code === "ENOENT") throw error;
         return {
           stdout: Buffer.from(error.stdout ?? "").toString("base64"),
           stderr: Buffer.from(error.stderr ?? "").toString("base64"),

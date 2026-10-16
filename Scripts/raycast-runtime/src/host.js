@@ -35,6 +35,8 @@ export function hostCallSync(api, method, args) {
   if (result.code) error.code = result.code;
   if (result.errno !== undefined) error.errno = result.errno;
   if (result.path) error.path = result.path;
+  if (result.syscall) error.syscall = result.syscall;
+  if (result.spawnargs) error.spawnargs = result.spawnargs;
   throw error;
 }
 

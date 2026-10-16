@@ -1,0 +1,537 @@
+diff --git a/Scripts/raycast-runtime/fixtures.mjs b/Scripts/raycast-runtime/fixtures.mjs
+index eb202b2d..49bb1993 100644
+--- a/Scripts/raycast-runtime/fixtures.mjs
++++ b/Scripts/raycast-runtime/fixtures.mjs
+@@ -458,6 +458,118 @@ export default async function Command() {
+ }
+ `;
+ 
++const missingExecutableSource = `
++import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
++import { promisify } from "node:util";
++const missing = "/tinycast-fixture-missing/executable";
++const shape = (error, syscall = "spawn") => error.message === syscall + " " + missing + " ENOENT"
++  && error.code === "ENOENT" && error.errno === -2
++  && error.syscall === syscall + " " + missing && error.path === missing
++  && JSON.stringify(error.spawnargs) === '["hello"]';
++export default async function Command() {
++  const results = [];
++  await new Promise(resolve => execFile(missing, ["hello"], (error, stdout, stderr) => {
++    results.push(shape(error) && stdout === "" && stderr === "");
++    resolve();
++  }));
++  try { await promisify(execFile)(missing, ["hello"]); results.push(false); }
++  catch (error) { results.push(shape(error) && error.stdout === "" && error.stderr === ""); }
++  try { execFileSync(missing, ["hello"]); results.push(false); }
++  catch (error) { results.push(shape(error, "spawnSync")); }
++  results.push(shape(spawnSync(missing, ["hello"]).error, "spawnSync"));
++  await new Promise(resolve => {
++    const child = spawn(missing, ["hello"]);
++    let output = "", failure;
++    child.stdout.on("data", chunk => output += chunk);
++    child.stderr.on("data", chunk => output += chunk);
++    child.on("error", error => { failure = error; });
++    child.on("close", () => { results.push(shape(failure) && output === ""); resolve(); });
++  });
++  // The caller's env.PATH decides which executable a bare name finds.
++  const withPath = execFileSync("sh", ["-c", "echo $PATH"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" });
++  results.push(withPath.trim() === "/usr/bin:/bin");
++  globalThis.__missingExecutable = results;
++}
++`;
++
++// `got` leans on five Node behaviours at once: `prependOnceListener`, `request.end(callback)`, draining an
++// ended stream with `read()`, a `highWaterMark: 0` duplex, and `pipeline` into a `Request.pipe` that
++// tests its destination against `http.ServerResponse`.
++const gotCompatSource = `
++import { EventEmitter } from "node:events";
++import http, { ServerResponse } from "node:http";
++import { Duplex, PassThrough, Readable, pipeline } from "node:stream";
++import { promisify } from "node:util";
++
++export default async function Command() {
++  const results = {};
++  const emitter = new EventEmitter();
++  const order = [];
++  emitter.on("x", () => order.push("on"));
++  emitter.prependOnceListener("x", () => order.push("once"));
++  emitter.emit("x");
++  emitter.emit("x");
++  results.prependOnce = order.join() === "once,on,on";
++
++  results.end = await new Promise((resolve) => {
++    const request = http.request("http://example.test/", () => {});
++    const seen = [];
++    request.on("finish", () => seen.push("finish"));
++    request.on("error", () => {});
++    request.end((error) => { seen.push("callback"); resolve({ error: error ?? null, seen: seen.join() }); });
++  });
++  results.endBody = await new Promise((resolve) => {
++    const request = http.request("http://example.test/", { method: "POST" }, () => {});
++    request.on("error", () => {});
++    request.end("body", "utf8", () => resolve(true));
++  });
++
++  results.pausedEnd = await new Promise((resolve) => {
++    const source = new Readable({ read() {} });
++    source.push("abc");
++    source.push(null);
++    setTimeout(() => {
++      source.on("end", () => resolve(true));
++      let data;
++      while ((data = source.read()) !== null) { /* drain */ }
++    }, 10);
++    setTimeout(() => resolve(false), 200);
++  });
++
++  results.zeroHwm = await new Promise((resolve) => {
++    let reads = 0;
++    const duplex = new Duplex({
++      highWaterMark: 0,
++      read() { if (reads++ === 0) this.push("hi"); else this.push(null); },
++      write(chunk, encoding, callback) { callback(); },
++    });
++    const chunks = [];
++    duplex.on("data", (chunk) => chunks.push(String(chunk)));
++    duplex.on("end", () => resolve(chunks.join()));
++    setTimeout(() => resolve("deadlock"), 200);
++  });
++
++  results.serverResponse = typeof ServerResponse === "function" && !(new PassThrough() instanceof ServerResponse);
++  class Request extends Duplex {
++    constructor() { super({ highWaterMark: 0 }); this.sent = false; }
++    _read() { if (!this.sent) { this.sent = true; this.push("payload"); } else this.push(null); }
++    _write(chunk, encoding, callback) { callback(); }
++    pipe(destination) {
++      if (destination instanceof ServerResponse) throw new Error("server response");
++      return super.pipe(destination);
++    }
++  }
++  const sink = new PassThrough();
++  const collected = [];
++  sink.on("data", (chunk) => collected.push(String(chunk)));
++  results.pipeline = await Promise.race([
++    promisify(pipeline)(new Request(), sink).then(() => collected.join(), (error) => "rejected: " + error.message),
++    new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
++  ]);
++  globalThis.__gotCompat = results;
++}
++`;
++
+ // A child's output arrives in one go once the process has already exited, so both ways of reading a
+ // stream have to work after the fact: `execa` async-iterates stdout, others attach a `data` listener.
+ const spawnSource = `
+@@ -1184,6 +1296,27 @@ export async function runFixtures() {
+     },
+   );
+ 
++  await run("missing executable errors cross the host bridge", missingExecutableSource, "no-view", async (harness) => {
++    const result = harness.call("globalThis.__missingExecutable");
++    check("execFile callback has Node metadata and empty output", result?.[0] === true, JSON.stringify(result));
++    check("promisified execFile rejects with Node metadata", result?.[1] === true, JSON.stringify(result));
++    check("execFileSync throws spawnSync metadata", result?.[2] === true, JSON.stringify(result));
++    check("spawnSync reports the failure through error", result?.[3] === true, JSON.stringify(result));
++    check("spawn emits error with empty streams", result?.[4] === true, JSON.stringify(result));
++    check("env is passed to the child", result?.[5] === true, JSON.stringify(result));
++  });
++
++  await run("got's Node runtime expectations", gotCompatSource, "no-view", async (harness) => {
++    const result = harness.call("globalThis.__gotCompat");
++    check("prependOnceListener runs first, once", result?.prependOnce === true, JSON.stringify(result));
++    check("ClientRequest.end(callback) finishes and calls back", result?.end?.error === null && result?.end?.seen === "finish,callback", JSON.stringify(result?.end));
++    check("ClientRequest.end(chunk, encoding, callback) calls back", result?.endBody === true, JSON.stringify(result));
++    check("read() draining an ended stream emits end", result?.pausedEnd === true, JSON.stringify(result));
++    check("a highWaterMark of 0 still reads", result?.zeroHwm === "hi", JSON.stringify(result));
++    check("http.ServerResponse exists for instanceof", result?.serverResponse === true, JSON.stringify(result));
++    check("pipeline passes a Duplex into a PassThrough", result?.pipeline === "payload", JSON.stringify(result));
++  }, { stubs: { "fetch.request": () => ({ status: 200, headers: {}, bodyBase64: "" }) }, settle: 800 });
++
+   await run("spawn's stdout survives a late reader", spawnSource, "no-view", async (harness) => {
+     const result = harness.call("globalThis.__spawn");
+     check("async iteration collects stdout", result?.iterated === "hello\n", JSON.stringify(result?.iterated));
+diff --git a/Scripts/raycast-runtime/src/events.js b/Scripts/raycast-runtime/src/events.js
+index b0757fb4..616026e3 100644
+--- a/Scripts/raycast-runtime/src/events.js
++++ b/Scripts/raycast-runtime/src/events.js
+@@ -22,6 +22,14 @@ export class EventEmitter {
+     this._list(event).unshift(listener);
+     return this;
+   }
++  prependOnceListener(event, listener) {
++    const wrapper = (...args) => {
++      this.off(event, wrapper);
++      listener.apply(this, args);
++    };
++    wrapper.listener = listener;
++    return this.prependListener(event, wrapper);
++  }
+   once(event, listener) {
+     const wrapper = (...args) => {
+       this.off(event, wrapper);
+diff --git a/Scripts/raycast-runtime/src/host.js b/Scripts/raycast-runtime/src/host.js
+index 48e3121a..a3981628 100644
+--- a/Scripts/raycast-runtime/src/host.js
++++ b/Scripts/raycast-runtime/src/host.js
+@@ -35,6 +35,8 @@ export function hostCallSync(api, method, args) {
+   if (result.code) error.code = result.code;
+   if (result.errno !== undefined) error.errno = result.errno;
+   if (result.path) error.path = result.path;
++  if (result.syscall) error.syscall = result.syscall;
++  if (result.spawnargs) error.spawnargs = result.spawnargs;
+   throw error;
+ }
+ 
+diff --git a/Scripts/raycast-runtime/src/node-shims.js b/Scripts/raycast-runtime/src/node-shims.js
+index 1a14f728..580744c8 100644
+--- a/Scripts/raycast-runtime/src/node-shims.js
++++ b/Scripts/raycast-runtime/src/node-shims.js
+@@ -708,9 +708,16 @@ const childProcess = {
+       options = args;
+       args = [];
+     }
+-    const raw = hostCallSync("proc", "run", [
+-      { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
+-    ]);
++    let raw;
++    try {
++      raw = hostCallSync("proc", "run", [
++        { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
++      ]);
++    } catch (error) {
++      // Node reports a command that could not start through `error`, not by throwing.
++      if (error.code !== "ENOENT") throw error;
++      return { status: null, signal: null, pid: 0, output: null, stdout: options.encoding === "buffer" ? Buffer.alloc(0) : "", stderr: options.encoding === "buffer" ? Buffer.alloc(0) : "", error };
++    }
+     const result = normalizeExecResult(raw, options);
+     return { ...result, pid: 0, output: [null, result.stdout, result.stderr], error: undefined };
+   },
+@@ -1018,7 +1025,7 @@ class ChildProcess extends EventEmitter {
+         this.exitCode = 1;
+         this.stdin.emit("finish");
+         this.stdout.end();
+-        this.stderr.end(Buffer.from(String(error?.message ?? error), "utf8"));
++        this.stderr.end();
+         this.emit("error", error);
+         queueMicrotask(() => this.emit("close", 1, null));
+       },
+@@ -1077,7 +1084,7 @@ function pickRunOptions(options = {}) {
+ function decorateProcessError(error, label) {
+   const decorated = error instanceof Error ? error : new Error(String(error));
+   if (decorated.stdout === undefined) decorated.stdout = "";
+-  if (decorated.stderr === undefined) decorated.stderr = decorated.message;
++  if (decorated.stderr === undefined) decorated.stderr = "";
+   if (decorated.status === undefined) decorated.status = 1;
+   if (decorated.code === undefined) decorated.code = 1;
+   decorated.cmd = decorated.cmd ?? label;
+@@ -1208,6 +1215,10 @@ function validateHeaderValue(name, value) {
+   }
+ }
+ 
++/// Only a type for `instanceof`: got's `Request.pipe` checks its destination against it, and an
++/// extension has no server to answer.
++class ServerResponse extends Writable {}
++
+ /// The bridge owns every socket; `addRequest` is only a hook for cookie agents to override.
+ class Agent extends EventEmitter {
+   constructor(options) {
+@@ -1264,15 +1275,24 @@ class ClientRequest extends EventEmitter {
+     this._headers.delete(String(name).toLowerCase());
+   }
+ 
+-  write(chunk) {
+-    this._chunks.push(Buffer.from(chunk));
++  write(chunk, encoding, callback) {
++    if (typeof encoding === "function") callback = encoding;
++    this._chunks.push(typeof chunk === "string" ? Buffer.from(chunk, typeof encoding === "string" ? encoding : "utf8") : Buffer.from(chunk));
++    if (callback) queueMicrotask(() => callback(null));
+     return true;
+   }
+ 
+-  end(chunk) {
+-    if (chunk !== undefined && chunk !== null) this.write(chunk);
++  end(chunk, encoding, callback) {
++    if (typeof chunk === "function") [chunk, callback] = [undefined, chunk];
++    else if (typeof encoding === "function") [encoding, callback] = [undefined, encoding];
++    if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+     this._implicitHeader();
+     this.writableEnded = true;
++    // The bridge takes the whole request at once, so it is "finished" as soon as it is handed over.
++    queueMicrotask(() => {
++      this.emit("finish");
++      callback?.();
++    });
+     this._send();
+     return this;
+   }
+@@ -1676,6 +1696,7 @@ const httpLike = (name) =>
+     validateHeaderValue,
+     IncomingMessage,
+     ClientRequest,
++    ServerResponse,
+     Agent,
+     globalAgent: new Agent(),
+     STATUS_CODES: {},
+diff --git a/Scripts/raycast-runtime/src/streams.js b/Scripts/raycast-runtime/src/streams.js
+index 01eac37a..ff05460a 100644
+--- a/Scripts/raycast-runtime/src/streams.js
++++ b/Scripts/raycast-runtime/src/streams.js
+@@ -91,11 +91,14 @@ export class Readable extends Stream {
+     const state = this._readableState;
+     if (!state.buffer.length) {
+       this._pull();
++      // A late consumer draining an already-ended stream by `read()` is the only thing left to notice EOF.
++      if (state.ended) this._schedule();
+       return null;
+     }
+     const chunk = state.buffer.shift();
+     state.length -= sizeOf(chunk, state.objectMode);
+     this._pull();
++    if (state.ended && !state.buffer.length) this._schedule();
+     return chunk;
+   }
+ 
+@@ -179,7 +182,8 @@ export class Readable extends Stream {
+   _pull() {
+     const state = this._readableState;
+     if (state.reading || state.ended || state.destroyed) return;
+-    if (state.length >= state.highWaterMark) return;
++    // `highWaterMark: 0` (got's pull-based requests) still reads once whenever the buffer is empty.
++    if (state.length >= Math.max(1, state.highWaterMark)) return;
+     state.reading = true;
+     try {
+       this._read(state.highWaterMark);
+diff --git a/Scripts/raycast-runtime/test.mjs b/Scripts/raycast-runtime/test.mjs
+index a87f3f65..70ef4c3a 100644
+--- a/Scripts/raycast-runtime/test.mjs
++++ b/Scripts/raycast-runtime/test.mjs
+@@ -86,7 +86,10 @@ export function createHarness({ onRender, onFail, verbose = false, stubs = {} }
+       try {
+         return JSON.stringify({ ok: true, value: syncHostCall(api, method, JSON.parse(argsJson)) });
+       } catch (error) {
+-        return JSON.stringify({ ok: false, error: String(error?.message ?? error), code: error?.code });
++        return JSON.stringify({
++          ok: false, error: String(error?.message ?? error), code: error?.code,
++          errno: error?.errno, syscall: error?.syscall, path: error?.path, spawnargs: error?.spawnargs,
++        });
+       }
+     },
+   };
+@@ -243,10 +246,16 @@ function syncHostCall(api, method, args) {
+     case "proc.start": {
+       const spec = args[0];
+       const child = spec.shell
+-        ? spawn("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, stdio: spec.detached ? "ignore" : "pipe" })
+-        : spawn(spec.command, spec.args, { cwd: spec.cwd, stdio: spec.detached ? "ignore" : "pipe" });
++        ? spawn("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, env: spec.env, stdio: spec.detached ? "ignore" : "pipe" })
++        : spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, stdio: spec.detached ? "ignore" : "pipe" });
+       child.on("error", () => {});
+-      if (child.pid === undefined) throw Object.assign(new Error(`ENOENT: spawn '${spec.command}'`), { code: "ENOENT" });
++      if (child.pid === undefined) {
++        const command = spec.shell ? "/bin/sh" : spec.command;
++        throw Object.assign(new Error(`spawn ${command} ENOENT`), {
++          code: "ENOENT", errno: -2, syscall: `spawn ${command}`, path: command,
++          spawnargs: spec.shell ? ["-c", spec.command] : spec.args,
++        });
++      }
+       if (spec.detached) return child.pid;
+       if (spec.input) child.stdin.end(Buffer.from(spec.input, "base64"));
+       const readers = { 1: child.stdout[Symbol.asyncIterator](), 2: child.stderr[Symbol.asyncIterator]() };
+@@ -263,10 +272,11 @@ function syncHostCall(api, method, args) {
+       const spec = args[0];
+       try {
+         const stdout = spec.shell
+-          ? execFileSync("/bin/sh", ["-c", spec.command], { cwd: spec.cwd })
+-          : execFileSync(spec.command, spec.args, { cwd: spec.cwd });
++          ? execFileSync("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, env: spec.env })
++          : execFileSync(spec.command, spec.args, { cwd: spec.cwd, env: spec.env });
+         return { stdout: stdout.toString("base64"), stderr: "", status: 0 };
+       } catch (error) {
++        if (error.code === "ENOENT") throw error;
+         return {
+           stdout: Buffer.from(error.stdout ?? "").toString("base64"),
+           stderr: Buffer.from(error.stderr ?? "").toString("base64"),
+diff --git a/Tests/ext-test.swift b/Tests/ext-test.swift
+index b5db4200..e298a74a 100644
+--- a/Tests/ext-test.swift
++++ b/Tests/ext-test.swift
+@@ -1420,6 +1420,7 @@ struct ExtensionTests {
+             failingRecorder.failures.joined(separator: "|"))
+         await failing.stop(session: "s3")
+ 
++        await missingExecutableChecks()
+         await swiftHelperChecks()
+         await processKillChecks()
+         zlibChecks()
+@@ -1795,6 +1796,63 @@ struct ExtensionTests {
+         await runtime.stop(session: "sAsync")
+     }
+ 
++    @MainActor
++    static func missingExecutableChecks() async {
++        let name = "tinycast-missing-\(UUID().uuidString)"
++        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(name)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let helper = directory.appendingPathComponent("\(name)-fallback")
++        do {
++            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++            try Data("#!/bin/sh\necho custom-path\n".utf8).write(to: helper)
++            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
++        } catch {
++            check("create executable lookup fixtures", false, error.localizedDescription)
++            return
++        }
++        let (runtime, _, recorder) = makeRuntime()
++        try? await runtime.boot(
++            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
++        let command = """
++            const { Detail } = require("@raycast/api");
++            const React = require("react");
++            const { execFile, execFileSync } = require("child_process");
++            const { promisify } = require("util");
++            module.exports.default = function Command() {
++              const [state, setState] = React.useState("pending");
++              React.useEffect(() => {
++                (async () => {
++                  const results = [];
++                  try { await promisify(execFile)("\(name)", ["hello"]); results.push(false); }
++                  catch (error) {
++                    results.push(error.code === "ENOENT" && error.errno === -2
++                      && error.syscall === "spawn \(name)" && error.path === "\(name)"
++                      && JSON.stringify(error.spawnargs) === '["hello"]');
++                  }
++                  try { execFileSync("\(name)", []); results.push(false); }
++                  catch (error) { results.push(error.syscall === "spawnSync \(name)"); }
++                  const found = await promisify(execFile)("\(name)-fallback", [], { env: { PATH: "\(directory.path)" } });
++                  results.push(found.stdout.trim() === "custom-path");
++                  setState(JSON.stringify(results));
++                })().catch((error) => setState(error.message));
++              }, []);
++              return React.createElement(Detail, { markdown: state });
++            };
++            """
++        await runtime.start(
++            session: "sMissing", code: command, file: URL(fileURLWithPath: "/tmp/missing-executable.js"),
++            mode: .view, context: launchContext())
++        await settle(until: {
++            guard let value = recorder.trees.last?.activeRoot?.string("markdown") else { return false }
++            return value != "pending"
++        })
++        check(
++            "missing executables report Node's spawn error and bare names search env.PATH",
++            recorder.trees.last?.activeRoot?.string("markdown") == "[true,true,true]",
++            recorder.trees.last?.activeRoot?.string("markdown") ?? "no tree")
++        await runtime.stop(session: "sMissing")
++    }
++
+     /// Raycast's `swift:` wrapper chmods its bundled helper before spawning it: store zips ship it 644.
+     @MainActor
+     static func swiftHelperChecks() async {
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionFetcher.swift b/Tinycast/Features/Extensions/Service/ExtensionFetcher.swift
+index d50ccb20..0934ccb3 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionFetcher.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionFetcher.swift
+@@ -198,7 +198,7 @@ enum ExtensionAsyncProcess {
+     private static let uncollected = Mutex<[Int32: (child: Child, watchdog: DispatchSourceTimer?)]>([:])
+ 
+     /// An app bundle inherits no login shell, so a bare `brew` would otherwise fail.
+-    static func resolveExecutable(_ command: String) -> URL? {
++    static func resolveExecutable(_ command: String, searchPath: String?) -> URL? {
+         let fileManager = FileManager.default
+         if command.contains("/") {
+             let expanded = (command as NSString).expandingTildeInPath
+@@ -206,7 +206,8 @@ enum ExtensionAsyncProcess {
+                 ? URL(fileURLWithPath: expanded) : nil
+         }
+         let search =
+-            (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
++            (searchPath ?? "").split(separator: ":").map(String.init)
++            + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+             + [
+                 "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin",
+                 "/sbin"
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionNodeShims.swift b/Tinycast/Features/Extensions/Service/ExtensionNodeShims.swift
+index 4c131f85..f633d974 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionNodeShims.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionNodeShims.swift
+@@ -27,7 +27,14 @@ final class ExtensionNodeShims: @unchecked Sendable {
+             let value = try dispatch(api: api, method: method, arguments: arguments)
+             return envelope(["ok": true, "value": value ?? NSNull()])
+         } catch let error as ShimError {
+-            return envelope(["ok": false, "error": error.message, "code": error.code])
++            var payload: [String: Any] = ["ok": false, "error": error.message, "code": error.code]
++            if let command = error.spawnCommand {
++                payload["errno"] = -Int(ENOENT)
++                payload["syscall"] = "\(error.spawnOperation) \(command)"
++                payload["path"] = command
++                payload["spawnargs"] = error.spawnArguments
++            }
++            return envelope(payload)
+         } catch {
+             return envelope(["ok": false, "error": error.localizedDescription, "code": "EUNKNOWN"])
+         }
+@@ -42,6 +49,15 @@ final class ExtensionNodeShims: @unchecked Sendable {
+     struct ShimError: Error {
+         let message: String
+         let code: String
++        var spawnCommand: String?
++        var spawnArguments: [String] = []
++        var spawnOperation = "spawn"
++
++        static func missingExecutable(_ command: String, arguments: [String], operation: String) -> ShimError {
++            ShimError(
++                message: "\(operation) \(command) ENOENT", code: "ENOENT",
++                spawnCommand: command, spawnArguments: arguments, spawnOperation: operation)
++        }
+ 
+         static func noEntry(_ path: String, _ syscall: String) -> ShimError {
+             ShimError(message: "ENOENT: no such file or directory, \(syscall) '\(path)'", code: "ENOENT")
+@@ -428,9 +444,9 @@ final class ExtensionNodeShims: @unchecked Sendable {
+         switch method {
+         case "run":
+             // This runs on the JS queue, so a child that never exits would freeze the whole runtime.
+-            return try launch(spec).collect(timeout: timeout)
++            return try launch(spec, operation: "spawnSync").collect(timeout: timeout)
+         case "start":
+-            let child = try launch(spec)
++            let child = try launch(spec, operation: "spawn")
+             // A detached child outlives its caller, so nothing ever waits on it.
+             if spec["detached"] as? Bool != true {
+                 ExtensionAsyncProcess.enqueue(child, timeout: timeout)
+@@ -441,18 +457,21 @@ final class ExtensionNodeShims: @unchecked Sendable {
+         }
+     }
+ 
+-    private func launch(_ spec: [String: Any]) throws -> ExtensionAsyncProcess.Child {
++    private func launch(_ spec: [String: Any], operation: String) throws -> ExtensionAsyncProcess.Child {
+         let command = spec["command"] as? String ?? ""
+         guard !command.isEmpty else { throw ShimError.failed("No command given.", "EINVAL") }
+         let useShell = spec["shell"] as? Bool ?? false
++        let environment = spec["env"] as? [String: String]
+ 
+         let task = Process()
+         if useShell {
+             task.executableURL = URL(fileURLWithPath: "/bin/sh")
+             task.arguments = ["-c", command]
+         } else {
+-            guard let resolved = ExtensionAsyncProcess.resolveExecutable(command) else {
+-                throw ShimError.noEntry(command, "spawn")
++            guard let resolved = ExtensionAsyncProcess.resolveExecutable(command, searchPath: environment?["PATH"])
++            else {
++                throw ShimError.missingExecutable(
++                    command, arguments: spec["args"] as? [String] ?? [], operation: operation)
+             }
+             task.executableURL = resolved
+             task.arguments = (spec["args"] as? [String] ?? [])
+@@ -460,11 +479,7 @@ final class ExtensionNodeShims: @unchecked Sendable {
+         if let cwd = spec["cwd"] as? String, !cwd.isEmpty {
+             task.currentDirectoryURL = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
+         }
+-        if let overrides = spec["env"] as? [String: String] {
+-            task.environment = overrides
+-        } else {
+-            task.environment = ProcessInfo.processInfo.environment
+-        }
++        task.environment = environment ?? ProcessInfo.processInfo.environment
+ 
+         let stdout = Pipe()
+         let stderr = Pipe()

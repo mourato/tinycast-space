@@ -9,6 +9,8 @@ struct SystemAction: Identifiable, Hashable, Sendable {
         case shutDown = "shut-down"
         case logOut = "log-out"
         case showScreenSaver = "show-screen-saver"
+        /// tinycast-space: Raycast's Confetti. See ConfettiOverlay.
+        case confetti
         case playPause = "play-pause"
         case nextTrack = "next-track"
         case previousTrack = "previous-track"
@@ -83,6 +85,7 @@ enum SystemActionCatalog {
         case .shutDown: return "Shut Down"
         case .logOut: return "Log Out"
         case .showScreenSaver: return "Show Screen Saver"
+        case .confetti: return "Confetti"  // tinycast-space
         case .playPause: return "Play / Pause"
         case .nextTrack: return "Next Track"
         case .previousTrack: return "Previous Track"
@@ -120,6 +123,7 @@ enum SystemActionCatalog {
         case .shutDown: return "power"
         case .logOut: return "rectangle.portrait.and.arrow.right"
         case .showScreenSaver: return "rectangle.inset.filled"
+        case .confetti: return "party.popper"  // tinycast-space
         case .playPause: return "playpause"
         case .nextTrack: return "forward.end"
         case .previousTrack: return "backward.end"

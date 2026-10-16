@@ -57,6 +57,9 @@ struct PaletteShortcutTests {
         expect(
             resolve("t", command: true, shift: true, option: true), .copyText,
             "an extra Option still reads ⇧⌘T")
+        expect(resolve("s", command: true), .saveAsSnippet, "⌘S saves a clipboard entry as a snippet")
+        expect(resolve("s", command: true, shift: true), nil, "⇧⌘S is no row chord")
+        expect(resolve("s"), nil, "a bare S stays with the search field")
         expect(resolve("y", command: true), .quickLook, "⌘Y is the Quick Look chord")
         expect(resolve("y", command: true, shift: true), .quickLook, "an extra Shift still reads ⌘Y")
         expect(resolve("o", command: true), .openInApp, "⌘O opens the row in its own app")
