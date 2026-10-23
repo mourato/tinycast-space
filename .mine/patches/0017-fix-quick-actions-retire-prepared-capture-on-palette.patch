@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Thu, 15 Oct 2026 13:23:18 -0300
+Subject: [PATCH] fix(quick-actions): retire prepared capture on palette
+ dismissal
+
+---
+ Tests/quick-action-test.swift                 | 89 ++++++++++++++++++-
+ .../UI/QuickActionCoordinator.swift           |  5 +-
+ Tinycast/Palette/PaletteCoordinator.swift     |  3 +
+ docs/features/quick-actions.md                |  9 +-
+ 4 files changed, 101 insertions(+), 5 deletions(-)
+
+diff --git a/Tests/quick-action-test.swift b/Tests/quick-action-test.swift
+index 5effb2d2..0786de72 100644
+--- a/Tests/quick-action-test.swift
++++ b/Tests/quick-action-test.swift
+@@ -32,6 +32,9 @@ struct QuickActionTests {
+         await answerFailuresStayInTheirWindow()
+         await cancelDuringCaptureStagesNothing()
+         await hideDuringCaptureReopensNothing()
++        await hideThenReopenDropsStaleCapture()
++        await hideThenReopenDropsStaleFailure()
++        await silentCaptureSurvivesHide()
+         await newChatDuringCaptureKeepsItsOwn()
+         await conflictingSendDropsTheCapture()
+         await conflictingAttachmentIsNeverConsumed()
+@@ -494,6 +497,79 @@ struct QuickActionTests {
+         expect(!fixture.palette.visible, "a dropped capture never reopens the window")
+     }
+ 
++    /// Hiding retires the capture even when the same empty chat reopens before it lands.
++    static func hideThenReopenDropsStaleCapture() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        let session = fixture.chat.session.id
++        let staging = fixture.chat.stagingGeneration
++        fixture.palette.hidePalette()
++        fixture.palette.showPalette(mode: .ai)
++        expect(fixture.chat.session.id == session, "reopen keeps the same empty chat")
++        expect(fixture.chat.stagingGeneration == staging, "reopen stages nothing new")
++        QuickActionRunner.resumeAll(with: "late text")
++        try? await Task.sleep(for: .milliseconds(100))
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed capture answers nothing")
++        expect(fixture.chat.session.messages.isEmpty, "a dismissed capture sends nothing")
++        expect(fixture.chat.pendingAttachments.isEmpty, "a dismissed capture stages nothing")
++        expect(fixture.chat.notice == nil, "a dismissed capture leaves no progress behind")
++        expect(fixture.palette.keyClaims == 0, "a dismissed capture never takes key")
++        expect(fixture.palette.visible, "the reopened window stays as the reader left it")
++        QuickActionRunner.behavior = .succeed("fresh words")
++        fixture.coordinator.run(.builtIn(.summarize))
++        await waitUntil(
++            fixture.core.aiChatCoordinator.answers.count == 1, "a later run still answers")
++        expect(fixture.palette.keyClaims == 1, "the later run takes key once")
++    }
++
++    /// A failure that lands after hide and reopen reports nowhere and reopens nothing new.
++    static func hideThenReopenDropsStaleFailure() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await waitUntil(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        fixture.palette.hidePalette()
++        fixture.palette.showPalette(mode: .ai)
++        QuickActionRunner.failAll(with: QuickActionFailure.noSelection)
++        try? await Task.sleep(for: .milliseconds(100))
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed failure answers nothing")
++        expect(fixture.chat.session.messages.isEmpty, "a dismissed failure sends nothing")
++        expect(fixture.chat.notice == nil, "a dismissed failure leaves no progress behind")
++        expect(fixture.palette.keyClaims == 0, "a dismissed failure never takes key")
++        expect(fixture.palette.visible, "the reopened window stays as the reader left it")
++    }
++
++    /// Silent work never prepares a chat, so hiding retires nothing.
++    static func silentCaptureSurvivesHide() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        fixture.store.settings.setReplacesOnly(true, for: .rewrite)
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.rewrite))
++        await waitUntil(!fixture.core.progresses.isEmpty, "the silent capture starts in the pill")
++        fixture.palette.hidePalette()
++        QuickActionRunner.resumeAll(with: "the selected words")
++        await waitUntil(
++            fixture.core.aiChatCoordinator.answers.count == 1, "silent work survives a hide")
++        expect(fixture.palette.shows == 0, "silent work never opens Quick AI")
++        expect(fixture.chat.session.messages.count == 2, "the silent turn still lands in history")
++    }
++
+     /// A new chat mid-capture belongs to the reader; the late capture leaves it alone.
+     static func newChatDuringCaptureKeepsItsOwn() async {
+         let fixture = QuickActionFixture()
+@@ -678,6 +754,7 @@ final class PaletteCoordinator {
+     var shows = 0
+     var passiveShows = 0
+     var keyClaims = 0
++    var dismissalGeneration = 0
+     var targetApp: NSRunningApplication?
+     var previousOwnWindow: NSWindow?
+     var isVisible: Bool { visible }
+@@ -702,7 +779,11 @@ final class PaletteCoordinator {
+     }
+ 
+     func isShowing(_ mode: PaletteMode) -> Bool { visible && self.mode == mode }
+-    func hidePalette(restoreFocus: Bool = true) { visible = false; key = false }
++    func hidePalette(restoreFocus: Bool = true) {
++        dismissalGeneration += 1
++        visible = false
++        key = false
++    }
+ }
+ 
+ enum PaletteMode { case launcher, ai }
+@@ -750,6 +831,12 @@ enum QuickActionRunner {
+         continuations = []
+         for continuation in pending { continuation.resume(returning: text) }
+     }
++
++    static func failAll(with failure: Error) {
++        let pending = continuations
++        continuations = []
++        for continuation in pending { continuation.resume(throwing: failure) }
++    }
+ }
+ 
+ @MainActor
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
+index 69fa2c4a..6c2f5a03 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
+@@ -374,6 +374,7 @@ final class QuickActionCoordinator {
+     private struct PreparedCapture {
+         let sessionID: UUID
+         let stagingGeneration: Int
++        let dismissalGeneration: Int
+     }
+ 
+     private static let gatheringMessage = "Gathering selected text…"
+@@ -386,7 +387,8 @@ final class QuickActionCoordinator {
+         // Unkeyed: the borrowed ⌘C activates the retained app, which would hide a key window.
+         paletteCoordinator.showPalette(mode: .ai, takingKey: false)
+         return PreparedCapture(
+-            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration)
++            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
++            dismissalGeneration: paletteCoordinator.dismissalGeneration)
+     }
+ 
+     /// The prepared chat while it is still the one on screen and empty; anything else drops it.
+@@ -396,6 +398,7 @@ final class QuickActionCoordinator {
+         let chat = core.aiChatCoordinator.chats.quickAI
+         guard chat.session.id == prepared.sessionID,
+             chat.stagingGeneration == prepared.stagingGeneration,
++            paletteCoordinator.dismissalGeneration == prepared.dismissalGeneration,
+             !chat.isStreaming,
+             chat.session.messages.isEmpty,
+             chat.pendingAttachments.isEmpty,
+diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
+index 4320ade4..e973a973 100644
+--- a/Tinycast/Palette/PaletteCoordinator.swift
++++ b/Tinycast/Palette/PaletteCoordinator.swift
+@@ -10,6 +10,8 @@ final class PaletteCoordinator {
+     private let menuSearch: MenuSearchSession
+     private let windowSwitch: WindowSwitchSession
+     private let windowController: PaletteWindowController
++    /// Every hide retires prepared captures, even when the same chat reopens.
++    private(set) var dismissalGeneration = 0
+     /// Features whose launcher rows are read from outside Tinycast re-read them on each open.
+     var onLauncherShown: (() -> Void)?
+     /// Screens that snapshot other apps re-read them on every open, a restored one included.
+@@ -131,6 +133,7 @@ final class PaletteCoordinator {
+     }
+ 
+     func hidePalette(restoreFocus: Bool = true) {
++        dismissalGeneration += 1
+         menuSearch.reset()
+         windowSwitch.reset()
+         windowController.hide(restoreFocus: restoreFocus)
+diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
+index 0092e98c..df276d8f 100644
+--- a/docs/features/quick-actions.md
++++ b/docs/features/quick-actions.md
+@@ -63,8 +63,10 @@ nothing and says so with a HUD.
+   stages nothing: cancellation, a new chat, a hidden or handed-off conversation, a conflicting send
+   or attachment, or either switch going off all drop it, and a dismissed window is never reopened.
+   `QuickActionCoordinator.preparedChat` is the single predicate, read off the chat's own session,
+-  staging generation, transcript, attachments and streaming state. A dropped capture also clears its
+-  gathering notice, so the next summon never explains work that never happened.
++  staging generation, the palette's dismissal generation, transcript, attachments and streaming
++  state. Every hide moves that dismissal on, so reopening the same empty chat still drops the old
++  capture. A dropped capture also clears its gathering notice, so the next summon never explains
++  work that never happened.
+ - **A browser page stands in for a missing selection only where browser context is on.** When no
+   selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
+   tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
+@@ -286,7 +288,8 @@ failure handler, so automatic expansion stays silent as before.
+ - Set a writing action to Replace only and run it in a browser with no selection: the pill shows
+   first, then Quick AI opens with the gathering notice, and a page failure reports there.
+ - Start a preview action, then hide the palette or start a new chat before capture lands: nothing
+-  is staged, sent or reported, and the window stays as the reader left it.
++  is staged, sent or reported, and the window stays as the reader left it. Hiding then reopening
++  the same empty chat drops the old capture the same way, while a later run still starts.
+ - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
+ - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
+ - Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.
+-- 
+2.56.0
+

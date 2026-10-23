@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Thu, 15 Oct 2026 11:50:24 -0300
+Subject: [PATCH] chore: regenerate Xcode project after the rebase
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+---
+ Tinycast.xcodeproj/project.pbxproj | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index 5c9dd5d9..b18e6ca7 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -222,8 +222,8 @@
+ 		428266F88C6D26C003F1D3A0 /* NoteCheckboxGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD6B72A1A1FF3D08CFC3FA7D /* NoteCheckboxGeometry.swift */; };
+ 		428CCA07D8AFA65CB892EB5D /* DictationTensor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EAD167D7B52BCB504D6264 /* DictationTensor.swift */; };
+ 		42CDB6A71960204B194EDC8B /* CommandEscapeTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D05FD9A7137951B2EC6C39 /* CommandEscapeTap.swift */; };
+-		439F72D2C096C9B814DF11D7 /* FileSearchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC86115B040B8C574EAD0B5 /* FileSearchPolicy.swift */; };
+ 		439DB3096E4C3A2B2DC0BF43 /* ContextSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5581F5EE9B9967A60E9C16ED /* ContextSettingsView.swift */; };
++		439F72D2C096C9B814DF11D7 /* FileSearchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC86115B040B8C574EAD0B5 /* FileSearchPolicy.swift */; };
+ 		43DBCE7B5A84D0D6322124F5 /* MessageHUDController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2CB71671625A1F446316A1 /* MessageHUDController.swift */; };
+ 		44646A576847F2D9FB68D8CF /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2F8B8787A7197579A6F6ECC /* MCPServerManager.swift */; };
+ 		44A3046B5651CDBF82223952 /* FileIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CC89B6C271E28F2373B50B /* FileIndexer.swift */; };
+@@ -420,6 +420,7 @@
+ 		78BA4410EAA35ED76D7CFBE8 /* QuickActionSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C29DA5656628B41C17D42A /* QuickActionSettingsStore.swift */; };
+ 		791AC049B6CA16C7D86EEBEF /* MeetingLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C117C966BC2990F19E00AB /* MeetingLauncher.swift */; };
+ 		7A7D20DFBEB49D7C7D9DDEB5 /* RoomPreviewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 676760D8D30526B99A1F97B7 /* RoomPreviewController.swift */; };
++		7AADEF28BFDB74E156A63785 /* ClipboardQuickLook.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE34CFACDA8219A3ED69DAA /* ClipboardQuickLook.swift */; };
+ 		7AF6E4F92BBF4D41B9B1E700 /* BackupBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 780B32AF98BA3A51D2F0E8B4 /* BackupBundle.swift */; };
+ 		7B25CD1684D24C164346AA68 /* SnippetEditorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F590D5052075C9E121306FEE /* SnippetEditorScreen.swift */; };
+ 		7B32E6EE86458C854D76B0AF /* RoomWindowSweep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D1BD03E0327890BD4E68988 /* RoomWindowSweep.swift */; };
+@@ -1705,6 +1706,7 @@
+ 		EF4FF95DC8A5CD7676DCBA60 /* ExtensionSelectionForwarder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionSelectionForwarder.swift; sourceTree = "<group>"; };
+ 		EFAD3CBED74EA031B58266EC /* SettingsFileKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFileKey.swift; sourceTree = "<group>"; };
+ 		EFBD39DED4660AFB08714E67 /* RaycastThemeCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaycastThemeCatalog.swift; sourceTree = "<group>"; };
++		EFE34CFACDA8219A3ED69DAA /* ClipboardQuickLook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardQuickLook.swift; sourceTree = "<group>"; };
+ 		EFF8EEC4B5B30644A7EAA117 /* InterfaceMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterfaceMetrics.swift; sourceTree = "<group>"; };
+ 		F023729C84682E9231F3D73B /* ExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionInstaller.swift; sourceTree = "<group>"; };
+ 		F0311153A4A3557C6FFEAAAB /* HotKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyManager.swift; sourceTree = "<group>"; };
+@@ -2170,6 +2172,7 @@
+ 			children = (
+ 				E5B89168050723B7221F04A2 /* ClipboardCoordinator.swift */,
+ 				B45A6AB1413A8A08EF7F0A9E /* ClipboardFilterButton.swift */,
++				EFE34CFACDA8219A3ED69DAA /* ClipboardQuickLook.swift */,
+ 				548C83C4086CD9FB8E85B222 /* ClipboardScreen.swift */,
+ 				FBF6EF3A2C35F45B82D40968 /* ClipboardView.swift */,
+ 				DB74C73EB33F368E0890E839 /* ClipDrag.swift */,
+@@ -4140,6 +4143,7 @@
+ 				AD9753D6EAF202B6E31510EB /* ClipboardFilter.swift in Sources */,
+ 				1F8F2135470F74627A644ACC /* ClipboardFilterButton.swift in Sources */,
+ 				A64891F5587F2C11E4A2E2D2 /* ClipboardManager.swift in Sources */,
++				7AADEF28BFDB74E156A63785 /* ClipboardQuickLook.swift in Sources */,
+ 				935F7433BB0C0ECDE6FA3BF3 /* ClipboardScreen.swift in Sources */,
+ 				D4A45373662D6658706E4DA4 /* ClipboardSettingsView.swift in Sources */,
+ 				3155DE3A2195764DDEA97F26 /* ClipboardStore.swift in Sources */,
+-- 
+2.56.0
+

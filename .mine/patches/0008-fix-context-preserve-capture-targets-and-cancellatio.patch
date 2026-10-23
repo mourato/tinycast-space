@@ -1,0 +1,1496 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Renato <remourato@gmail.com>
+Date: Wed, 14 Oct 2026 22:24:10 -0300
+Subject: [PATCH] fix(context): preserve capture targets and cancellation
+
+---
+ Tests/context-test.swift                      |  58 +++
+ Tinycast.xcodeproj/project.pbxproj            |   4 +
+ .../Features/AI/Model/ContextPolicy.swift     |  45 +-
+ .../AI/Service/ContextAppReader.swift         |  24 +-
+ .../AI/Service/ContextBrowserRunner.swift     |  86 ++--
+ .../Features/AI/UI/AIChatCoordinator.swift    |  28 +-
+ .../Features/AI/UI/AIContextCommands.swift    | 119 +++++
+ .../Features/AI/UI/AIContextCoordinator.swift | 477 +++++-------------
+ Tinycast/Features/AI/UI/AIContextPicker.swift |  11 +-
+ .../Features/AI/UI/QuickAICoordinator.swift   |   5 +-
+ docs/features/context.md                      |  15 +-
+ 11 files changed, 465 insertions(+), 407 deletions(-)
+ create mode 100644 Tinycast/Features/AI/UI/AIContextCommands.swift
+
+diff --git a/Tests/context-test.swift b/Tests/context-test.swift
+index 01a2276f..843e8344 100644
+--- a/Tests/context-test.swift
++++ b/Tests/context-test.swift
+@@ -31,6 +31,8 @@ struct ContextTests {
+         originStripping()
+         staleCaptureBoundaries()
+         generationBoundaries()
++        automaticCaptureRevocation()
++        namedContextChoices()
+         priorityNormalization()
+ 
+         print("\(passes) passed, \(failures) failed")
+@@ -422,6 +424,62 @@ struct ContextTests {
+             "an app ticket never validates a browser slot")
+     }
+ 
++    static func automaticCaptureRevocation() {
++        var options = ContextPolicy.Options()
++        options.appEnabled = true
++        options.browserEnabled = true
++        options.autoAttachApp = true
++        options.autoAttachBrowser = true
++        for source in [ContextSource.apps, .browserTabs] {
++            let ticket = ContextPolicy.CaptureTicket(
++                operationID: UUID(), chatID: UUID(), sourceKey: "source", generation: 7,
++                source: source, automatic: true)
++            expect(
++                ContextPolicy.allowsCapture(ticket: ticket, options: options, aiEnabled: true),
++                "enabled automatic capture admits \(source)")
++            var revoked = options
++            revoked.autoAttachApp = false
++            revoked.autoAttachBrowser = false
++            expect(
++                !ContextPolicy.allowsCapture(ticket: ticket, options: revoked, aiEnabled: true),
++                "turning automatic attachment off revokes an existing \(source) ticket")
++            let manual = ContextPolicy.CaptureTicket(
++                operationID: UUID(), chatID: ticket.chatID, sourceKey: "source", generation: 7,
++                source: source)
++            expect(
++                ContextPolicy.allowsCapture(ticket: manual, options: revoked, aiEnabled: true),
++                "turning automatic attachment off preserves manual \(source) capture")
++        }
++        expect(
++            !ContextPolicy.canCaptureApp(options: options, aiEnabled: true, isBrowser: true),
++            "a browser cannot bypass private-window checks through generic app capture")
++        expect(
++            ContextPolicy.canCaptureApp(options: options, aiEnabled: true, isBrowser: false),
++            "ordinary apps remain available through the app reader")
++    }
++
++    static func namedContextChoices() {
++        let names = ["Summarize", "Fix Grammar", "Summarize Selection"]
++        expect(
++            ContextPolicy.namedChoice(in: "Summarize", names: names)
++                == .init(name: "Summarize", remainder: ""),
++            "a named action consumes its name instead of sending it as the prompt")
++        expect(
++            ContextPolicy.namedChoice(in: "fix grammar  explain the changes", names: names)
++                == .init(name: "Fix Grammar", remainder: "explain the changes"),
++            "a named context choice preserves only the user's following prompt")
++        expect(
++            ContextPolicy.namedChoice(in: "Summarize Selection briefly", names: names)
++                == .init(name: "Summarize Selection", remainder: "briefly"),
++            "the longest complete name wins when choices share a prefix")
++        expect(
++            ContextPolicy.namedChoice(in: "SummarizeLater", names: names) == nil,
++            "a partial word cannot silently choose an action")
++        expect(
++            ContextPolicy.namedChoice(in: "Unknown", names: names) == nil,
++            "a missing choice has no replacement draft")
++    }
++
+     static func priorityNormalization() {
+         for source in ContextSource.allCases {
+             expect(
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index f800397d..02b44f5f 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -358,6 +358,7 @@
+ 		6318EE7BB3E3AA6EF9C49115 /* RoomLayoutEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08BFAE12F7EC9C75E523FD9D /* RoomLayoutEngine.swift */; };
+ 		633DCA2F00A274C375EB4423 /* LauncherRankingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EDB1EEB97CC5F6B0B81FFD6 /* LauncherRankingStore.swift */; };
+ 		63731BC19179EB89D495A390 /* NoteRevealPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7D0725CF7068879F86F0AA /* NoteRevealPolicy.swift */; };
++		63CDB283AA012C020C4352D6 /* AIContextCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED1D5545B78E4BCF7776CDFD /* AIContextCommands.swift */; };
+ 		648D442C0C716DB622511436 /* AIChatWindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */; };
+ 		64AD2324BDA6293464C98913 /* EmojiCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45EB979ECD44738BCD9E2F90 /* EmojiCoordinator.swift */; };
+ 		6527B404C220924885C070B3 /* AppWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9979DED5579535D1F0A32DBF /* AppWindowController.swift */; };
+@@ -1705,6 +1706,7 @@
+ 		EC3D5A5B8038C07FEE03F433 /* KeyboardRemapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardRemapper.swift; sourceTree = "<group>"; };
+ 		EC895E9AF76C4530E52C34BB /* WindowShortcutPresetCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowShortcutPresetCoordinator.swift; sourceTree = "<group>"; };
+ 		ECE4D3633895F0E27FE3252D /* NoteInlineScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteInlineScanner.swift; sourceTree = "<group>"; };
++		ED1D5545B78E4BCF7776CDFD /* AIContextCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIContextCommands.swift; sourceTree = "<group>"; };
+ 		ED5AAA98FFF7A4D34D7B490D /* ExtensionBootConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionBootConfig.swift; sourceTree = "<group>"; };
+ 		ED866D346B2D97A12AD15CE9 /* DictationSpectrum.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationSpectrum.swift; sourceTree = "<group>"; };
+ 		EDBAD3F666C10A869A4EAADB /* MeetingDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetailsView.swift; sourceTree = "<group>"; };
+@@ -2084,6 +2086,7 @@
+ 				EAC662BDA6856590DCF96B94 /* AIChatState.swift */,
+ 				C94312FFD26A2581BB691F9E /* AIChatSurfacesState.swift */,
+ 				37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */,
++				ED1D5545B78E4BCF7776CDFD /* AIContextCommands.swift */,
+ 				C5B3806D6A7AEBF0B529DBC5 /* AIContextCoordinator.swift */,
+ 				2459AEF35C7E5E11A019B479 /* AIContextPicker.swift */,
+ 				0F5730EA67D6E91ABAD8F446 /* AIEmptyState.swift */,
+@@ -4002,6 +4005,7 @@
+ 				753FEBB891DBCE13C4C59935 /* AIConnection.swift in Sources */,
+ 				4756BD8CEF9FC57A0C016555 /* AIConnectionEditorPanel.swift in Sources */,
+ 				DEBA3D842236875993867A25 /* AIConnectionKeyPolicy.swift in Sources */,
++				63CDB283AA012C020C4352D6 /* AIContextCommands.swift in Sources */,
+ 				2DA24A765446CD569968552E /* AIContextCoordinator.swift in Sources */,
+ 				0D5EF8DEE301D862DF28859B /* AIContextPicker.swift in Sources */,
+ 				EEB7F6A6AC8B53FDD607ED03 /* AIConversationOpenPolicy.swift in Sources */,
+diff --git a/Tinycast/Features/AI/Model/ContextPolicy.swift b/Tinycast/Features/AI/Model/ContextPolicy.swift
+index 080f976e..69d5ee8d 100644
+--- a/Tinycast/Features/AI/Model/ContextPolicy.swift
++++ b/Tinycast/Features/AI/Model/ContextPolicy.swift
+@@ -52,8 +52,8 @@ enum ContextPolicy {
+         return nil
+     }
+ 
+-    static func canCaptureApp(options: Options, aiEnabled: Bool) -> Bool {
+-        aiEnabled && options.appEnabled && options.enabledSources.contains(.apps)
++    static func canCaptureApp(options: Options, aiEnabled: Bool, isBrowser: Bool = false) -> Bool {
++        aiEnabled && options.appEnabled && options.enabledSources.contains(.apps) && !isBrowser
+     }
+ 
+     static func canCaptureBrowser(options: Options, aiEnabled: Bool) -> Bool {
+@@ -181,16 +181,55 @@ enum ContextPolicy {
+         /// The chat's staging generation when capture started; a send or clear moves it on.
+         let generation: Int
+         let source: ContextSource
++        let automatic: Bool
+ 
+-        init(operationID: UUID, chatID: UUID, sourceKey: String, generation: Int = 0, source: ContextSource = .apps) {
++        init(
++            operationID: UUID, chatID: UUID, sourceKey: String, generation: Int = 0,
++            source: ContextSource = .apps, automatic: Bool = false
++        ) {
+             self.operationID = operationID
+             self.chatID = chatID
+             self.sourceKey = sourceKey
+             self.generation = generation
+             self.source = source
++            self.automatic = automatic
+         }
+     }
+ 
++    static func allowsCapture(ticket: CaptureTicket, options: Options, aiEnabled: Bool) -> Bool {
++        switch ticket.source {
++        case .apps:
++            return ticket.automatic
++                ? canAutoAttachApp(options: options, aiEnabled: aiEnabled)
++                : canCaptureApp(options: options, aiEnabled: aiEnabled)
++        case .browserTabs:
++            return ticket.automatic
++                ? canAutoAttachBrowser(options: options, aiEnabled: aiEnabled)
++                : canCaptureBrowser(options: options, aiEnabled: aiEnabled)
++        default:
++            return false
++        }
++    }
++
++    struct NamedChoice: Equatable {
++        let name: String
++        let remainder: String
++    }
++
++    static func namedChoice(in query: String, names: [String]) -> NamedChoice? {
++        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
++        for name in names.filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
++            guard let range = query.range(of: name, options: [.caseInsensitive, .anchored]) else {
++                continue
++            }
++            let suffix = query[range.upperBound...]
++            guard suffix.isEmpty || suffix.first?.isWhitespace == true else { continue }
++            return NamedChoice(
++                name: name, remainder: String(suffix.drop(while: \.isWhitespace)))
++        }
++        return nil
++    }
++
+     static func shouldPublish(
+         ticket: CaptureTicket, latest: CaptureTicket, latestCancelled: Bool,
+         captureAllowed: Bool, currentGeneration: Int? = nil
+diff --git a/Tinycast/Features/AI/Service/ContextAppReader.swift b/Tinycast/Features/AI/Service/ContextAppReader.swift
+index bab23b87..94f154d3 100644
+--- a/Tinycast/Features/AI/Service/ContextAppReader.swift
++++ b/Tinycast/Features/AI/Service/ContextAppReader.swift
+@@ -9,6 +9,7 @@ nonisolated enum ContextAppReader {
+         let processIdentifier: pid_t
+         let bundleIdentifier: String?
+         let name: String
++        let isBrowser: Bool
+ 
+         var sourceKey: String {
+             if let bundleIdentifier, !bundleIdentifier.isEmpty { return "app:\(bundleIdentifier)" }
+@@ -48,19 +49,27 @@ nonisolated enum ContextAppReader {
+     static let maxValueChars = 4_000
+     static let maxTitleChars = 120
+ 
++    static var browserBundleURLs: Set<URL> {
++        guard let probe = URL(string: "https://example.invalid") else { return [] }
++        return Set(NSWorkspace.shared.urlsForApplications(toOpen: probe).map(\.standardizedFileURL))
++    }
++
+     /// Nil for Tinycast itself: app context never means the composer asking about itself.
+     static func snapshot(of app: NSRunningApplication?) -> Snapshot? {
+         guard let app, app.processIdentifier != NSRunningApplication.current.processIdentifier
+         else { return nil }
+         if let bundle = app.bundleIdentifier, bundle.hasPrefix("com.tinycast.app") { return nil }
++        let handlesWebURLs = app.bundleURL.map { browserBundleURLs.contains($0.standardizedFileURL) } ?? false
++        let isBrowser = ContextBrowser.isSupported(bundleID: app.bundleIdentifier) || handlesWebURLs
+         return Snapshot(
+             processIdentifier: app.processIdentifier, bundleIdentifier: app.bundleIdentifier,
+-            name: app.localizedName ?? "Unknown App")
++            name: app.localizedName ?? "Unknown App", isBrowser: isBrowser)
+     }
+ 
+     /// Blocking AX walks stay here, never on the main actor; every call carries its own timeout.
+-    static func read(_ snapshot: Snapshot) -> Read {
++    @concurrent static func read(_ snapshot: Snapshot) async -> Read {
+         let empty = Read()
++        guard !snapshot.isBrowser, !Task.isCancelled else { return empty }
+         if IsSecureEventInputEnabled() {
+             return Read(skippedSecureInput: true)
+         }
+@@ -73,7 +82,7 @@ nonisolated enum ContextAppReader {
+         AXUIElementSetMessagingTimeout(application, 1)
+         AXUIElementSetAttributeValue(
+             application, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+-        guard let element = focusedElement(in: application) else { return empty }
++        guard !Task.isCancelled, let element = focusedElement(in: application) else { return empty }
+         if isSecure(element) {
+             return Read(
+                 windowTitle: windowTitle(in: application), skippedSecureInput: true)
+@@ -88,6 +97,7 @@ nonisolated enum ContextAppReader {
+     }
+ 
+     private static func focusedElement(in application: AXUIElement) -> AXUIElement? {
++        guard !Task.isCancelled else { return nil }
+         var focusedValue: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(
+@@ -100,12 +110,14 @@ nonisolated enum ContextAppReader {
+     }
+ 
+     private static func isSecure(_ element: AXUIElement) -> Bool {
++        guard !Task.isCancelled else { return true }
+         var role: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
+             let role = role as? String
+         else { return false }
+         if role.localizedCaseInsensitiveContains("secure") { return true }
++        guard !Task.isCancelled else { return true }
+         var subrole: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+@@ -117,6 +129,7 @@ nonisolated enum ContextAppReader {
+ 
+     private static func selectedText(in element: AXUIElement) -> (String?, Bool) {
+         if let direct = selectedString(in: element) { return boundedSelection(direct) }
++        guard !Task.isCancelled else { return (nil, false) }
+         var range: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(
+@@ -125,6 +138,7 @@ nonisolated enum ContextAppReader {
+         else { return (nil, false) }
+         var web: CFTypeRef?
+         guard
++            !Task.isCancelled,
+             AXUIElementCopyParameterizedAttributeValue(
+                 element, kAXStringForTextMarkerRangeParameterizedAttribute as CFString, range,
+                 &web) == .success,
+@@ -134,6 +148,7 @@ nonisolated enum ContextAppReader {
+     }
+ 
+     private static func selectedString(in element: AXUIElement) -> String? {
++        guard !Task.isCancelled else { return nil }
+         var value: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value)
+@@ -149,6 +164,7 @@ nonisolated enum ContextAppReader {
+     }
+ 
+     private static func valueText(in element: AXUIElement) -> (String?, Bool) {
++        guard !Task.isCancelled else { return (nil, false) }
+         var value: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
+@@ -160,6 +176,7 @@ nonisolated enum ContextAppReader {
+ 
+     /// The focused element's window, so a mid-read window switch drops the quote, never mixes it.
+     private static func windowElement(for element: AXUIElement) -> AXUIElement? {
++        guard !Task.isCancelled else { return nil }
+         var window: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &window)
+@@ -186,6 +203,7 @@ nonisolated enum ContextAppReader {
+         else { return nil }
+         let windowElement = unsafeDowncast(window as AnyObject, to: AXUIElement.self)
+         AXUIElementSetMessagingTimeout(windowElement, 1)
++        guard !Task.isCancelled else { return nil }
+         var title: CFTypeRef?
+         guard
+             AXUIElementCopyAttributeValue(windowElement, kAXTitleAttribute as CFString, &title)
+diff --git a/Tinycast/Features/AI/Service/ContextBrowserRunner.swift b/Tinycast/Features/AI/Service/ContextBrowserRunner.swift
+index 519514e5..0d26be94 100644
+--- a/Tinycast/Features/AI/Service/ContextBrowserRunner.swift
++++ b/Tinycast/Features/AI/Service/ContextBrowserRunner.swift
+@@ -18,7 +18,7 @@ enum ContextBrowserRunner {
+ 
+     /// Every tab of every normal window, front to back; private windows never listed.
+     static func listTabs() async -> Result<TabList, ContextBrowser.ReadFailure> {
+-        guard isHeliumRunning() else { return .failure(.noSource) }
++        guard !Task.isCancelled, isHeliumRunning() else { return .failure(.noSource) }
+         let rows = await runList(script: listScript())
+         switch rows {
+         case .failure(let failure): return .failure(failure)
+@@ -34,7 +34,7 @@ enum ContextBrowserRunner {
+     static func readTab(
+         id: String, windowID: String, expectedURL: String
+     ) async -> Result<ContextBrowser.PageRead, ContextBrowser.ReadFailure> {
+-        guard isHeliumRunning() else { return .failure(.noSource) }
++        guard !Task.isCancelled, isHeliumRunning() else { return .failure(.noSource) }
+         let result = await runScalar(script: readScript(tabID: id, windowID: windowID))
+         switch result {
+         case .failure(let failure): return .failure(failure)
+@@ -63,12 +63,15 @@ enum ContextBrowserRunner {
+         set out to {}
+         repeat with w in windows
+         set wmode to mode of w
++        set wid to id of w
++        if wmode is "incognito" then
++        set end of out to {"", wid, "0", "", "", wmode}
++        else
+         try
+         set activeID to id of active tab of w
+         on error
+         set activeID to ""
+         end try
+-        set wid to id of w
+         repeat with t in tabs of w
+         set tid to id of t
+         if tid is activeID then
+@@ -78,6 +81,7 @@ enum ContextBrowserRunner {
+         end if
+         set end of out to {tid, wid, flag, title of t, URL of t, wmode}
+         end repeat
++        end if
+         end repeat
+         return out
+         end tell
+@@ -109,50 +113,48 @@ enum ContextBrowserRunner {
+             """
+     }
+ 
+-    private static func runScalar(script: String) async -> Result<String, ContextBrowser.ReadFailure>
+-    {
+-        await Task.detached(priority: .userInitiated) {
+-            guard let compiled = NSAppleScript(source: script) else {
+-                return Result<String, ContextBrowser.ReadFailure>.failure(.noSource)
+-            }
+-            var errorInfo: NSDictionary?
+-            let result = compiled.executeAndReturnError(&errorInfo)
+-            if let errorInfo {
+-                return .failure(mapError(errorInfo))
+-            }
+-            return .success(result.stringValue ?? "")
+-        }.value
++    @concurrent private static func runScalar(
++        script: String
++    ) async -> Result<String, ContextBrowser.ReadFailure> {
++        guard !Task.isCancelled, let compiled = NSAppleScript(source: script) else {
++            return .failure(.noSource)
++        }
++        guard !Task.isCancelled else { return .failure(.noSource) }
++        var errorInfo: NSDictionary?
++        let result = compiled.executeAndReturnError(&errorInfo)
++        guard !Task.isCancelled else { return .failure(.noSource) }
++        if let errorInfo { return .failure(mapError(errorInfo)) }
++        return .success(result.stringValue ?? "")
+     }
+ 
+-    private static func runList(script: String) async -> Result<
+-        [[String]], ContextBrowser.ReadFailure
+-    > {
+-        await Task.detached(priority: .userInitiated) {
+-            guard let compiled = NSAppleScript(source: script) else {
+-                return Result<[[String]], ContextBrowser.ReadFailure>.failure(.noSource)
+-            }
+-            var errorInfo: NSDictionary?
+-            let result = compiled.executeAndReturnError(&errorInfo)
+-            if let errorInfo {
+-                return .failure(mapError(errorInfo))
+-            }
+-            var rows: [[String]] = []
+-            let rowCount = result.numberOfItems
+-            if rowCount > 0 {
+-                for index in 1...rowCount {
+-                    guard let row = result.atIndex(index) else { continue }
+-                    var fields: [String] = []
+-                    let fieldCount = row.numberOfItems
+-                    if fieldCount > 0 {
+-                        for field in 1...fieldCount {
+-                            fields.append(row.atIndex(field)?.stringValue ?? "")
+-                        }
++    @concurrent private static func runList(
++        script: String
++    ) async -> Result<[[String]], ContextBrowser.ReadFailure> {
++        guard !Task.isCancelled, let compiled = NSAppleScript(source: script) else {
++            return .failure(.noSource)
++        }
++        guard !Task.isCancelled else { return .failure(.noSource) }
++        var errorInfo: NSDictionary?
++        let result = compiled.executeAndReturnError(&errorInfo)
++        guard !Task.isCancelled else { return .failure(.noSource) }
++        if let errorInfo { return .failure(mapError(errorInfo)) }
++        var rows: [[String]] = []
++        let rowCount = result.numberOfItems
++        if rowCount > 0 {
++            for index in 1...rowCount {
++                guard !Task.isCancelled else { return .failure(.noSource) }
++                guard let row = result.atIndex(index) else { continue }
++                var fields: [String] = []
++                let fieldCount = row.numberOfItems
++                if fieldCount > 0 {
++                    for field in 1...fieldCount {
++                        fields.append(row.atIndex(field)?.stringValue ?? "")
+                     }
+-                    rows.append(fields)
+                 }
++                rows.append(fields)
+             }
+-            return .success(rows)
+-        }.value
++        }
++        return .success(rows)
+     }
+ 
+     /// Descriptors never cross the await; only strings and the mapped failure do.
+diff --git a/Tinycast/Features/AI/UI/AIChatCoordinator.swift b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
+index 8a61c32c..63e2c308 100644
+--- a/Tinycast/Features/AI/UI/AIChatCoordinator.swift
++++ b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
+@@ -68,15 +68,17 @@ final class AIChatCoordinator {
+     // MARK: - The window
+ 
+     /// Reopens on whatever it last showed: the conversation is `AppCore`'s, not the window's.
+-    func showWindow(applyingOpenPolicy: Bool = false) {
++    func showWindow(
++        applyingOpenPolicy: Bool = false, appSnapshot: ContextAppReader.Snapshot? = nil
++    ) {
+         guard settings.aiEnabled else { return }
+-        // Before the window takes anything: the app in front now is the quote's source.
+-        // Tinycast frontmost means a handoff or re-show, so the earlier snapshot survives.
+         let frontmost = NSWorkspace.shared.frontmostApplication
+         let target =
+             frontmost?.processIdentifier == NSRunningApplication.current.processIdentifier
+             ? nil : frontmost
+-        if let snapshot = ContextAppReader.snapshot(of: target) {
++        if let appSnapshot {
++            contextCoordinator.windowSnapshot = appSnapshot
++        } else if let snapshot = ContextAppReader.snapshot(of: target) {
+             contextCoordinator.windowSnapshot = snapshot
+         } else if contextCoordinator.windowSnapshot == nil,
+             let carried = core.paletteContextSnapshot()
+@@ -147,7 +149,7 @@ final class AIChatCoordinator {
+     /// Quick AI's ⌘J: the conversation, its staged files and the half-typed line all move over.
+     func continueInWindow(draft: String) {
+         chats.continueQuickAIInWindow(draft: draft)
+-        showWindow()
++        showWindow(appSnapshot: core.paletteContextSnapshot())
+     }
+ 
+     /// A chat with no message yet is unsaved, so it has nothing to pin, copy or delete.
+@@ -301,12 +303,16 @@ final class AIChatCoordinator {
+                 let (token, rest) = contextCoordinator.contextToken(in: address.rest)
+             {
+                 // A `@`-context command stages for review and keeps the draft; never auto-sends.
+-                let staged = contextCoordinator.prepareWithToken(
+-                    token, rest: rest, in: chat, snapshot: appSnapshot)
+-                if chat === chats.window {
+-                    chat.draft = staged
+-                } else {
+-                    core.palette.query = staged
++                let chatID = chat.session.id
++                contextCoordinator.prepareWithToken(
++                    token, rest: rest, in: chat, snapshot: appSnapshot
++                ) { [weak self, weak chat] remainder in
++                    guard let self, let chat, chat.session.id == chatID else { return }
++                    if chat === self.chats.window, chat.draft == input {
++                        chat.draft = remainder
++                    } else if chat === self.chats.quickAI, self.core.palette.query == input {
++                        self.core.palette.query = remainder
++                    }
+                 }
+                 return false
+             }
+diff --git a/Tinycast/Features/AI/UI/AIContextCommands.swift b/Tinycast/Features/AI/UI/AIContextCommands.swift
+new file mode 100644
+index 00000000..110adbf1
+--- /dev/null
++++ b/Tinycast/Features/AI/UI/AIContextCommands.swift
+@@ -0,0 +1,119 @@
++import Foundation
++
++extension AIContextCoordinator {
++    // MARK: - @ commands
++
++    enum ContextToken: Sendable {
++        case app(String)
++        case tab(String)
++        case action(String)
++        case integration(String)
++        case tool(String)
++    }
++
++    /// `@app` and `@tab` address the active app or tab; `@action` and friends name a row.
++    func contextToken(in text: String) -> (token: ContextToken, rest: String)? {
++        let trimmed = text.drop { $0 == " " }
++        guard trimmed.first == "@" else { return nil }
++        let after = trimmed.dropFirst()
++        for word in
++            ["app", "tab", "actions", "action", "integrations", "integration", "tools", "tool"]
++        {
++            guard after.lowercased().hasPrefix(word) else { continue }
++            let tail = after.dropFirst(word.count)
++            guard tail.isEmpty || tail.first?.isWhitespace == true else { continue }
++            let rest = String(tail.drop { $0.isWhitespace })
++            let token: ContextToken =
++                switch word {
++                case "app": .app(rest)
++                case "tab": .tab(rest)
++                case "action", "actions": .action(rest)
++                case "integration", "integrations": .integration(rest)
++                default: .tool(rest)
++                }
++            return (token, rest)
++        }
++        return nil
++    }
++
++    /// The chip the composer shows while an `@`-context command is typed.
++    func addressedContext(in draft: String) -> String? {
++        guard
++            MCPComposerAddress.parse(draft, slugs: core.mcpCoordinator.slugs).slug == nil,
++            let (token, _) = contextToken(in: draft)
++        else { return nil }
++        switch token {
++        case .app: return "@app"
++        case .tab: return "@tab"
++        case .action: return "@action"
++        case .integration: return "@integration"
++        case .tool: return "@tool"
++        }
++    }
++
++    func prepareWithToken(
++        _ token: ContextToken, rest: String, in chat: AIChatState,
++        snapshot: ContextAppReader.Snapshot?, onStaged: @escaping @MainActor (String) -> Void
++    ) {
++        switch token {
++        case .app:
++            attachAppContext(
++                to: chat, snapshot: snapshot ?? windowSnapshot, automatic: false,
++                onStaged: { onStaged(rest) })
++        case .tab:
++            if frontTabIsPrivate {
++                core.showMessage(ContextBrowser.ReadFailure.restrictedPage.message, tone: .neutral)
++                return
++            }
++            guard let active = activeTab else {
++                refreshTabsIfAllowed()
++                core.showMessage("There's no browser tab to attach right now.", tone: .neutral)
++                return
++            }
++            attachBrowserTab(to: chat, tab: active, automatic: false, onStaged: { onStaged(rest) })
++        case .action(let query):
++            if let remainder = prepareActionToken(query, in: chat) { onStaged(remainder) }
++        case .integration(let query):
++            if let remainder = prepareIntegrationToken(query, in: chat) { onStaged(remainder) }
++        case .tool(let query):
++            if let remainder = prepareToolToken(query, in: chat) { onStaged(remainder) }
++        }
++    }
++
++    private func prepareActionToken(_ query: String, in chat: AIChatState) -> String? {
++        let candidates = BuiltInQuickAction.allCases.map { QuickAction.builtIn($0) }
++            + core.customQuickActions.actions.prefix(8).map { QuickAction.custom($0) }
++        guard let choice = ContextPolicy.namedChoice(in: query, names: candidates.map(\.title)),
++            let action = candidates.first(where: { $0.title == choice.name })
++        else {
++            core.showMessage("Name an Action after @action, or pick one from the + menu.", tone: .neutral)
++            return nil
++        }
++        return attachAction(to: chat, action: action) ? choice.remainder : nil
++    }
++
++    private func prepareIntegrationToken(_ query: String, in chat: AIChatState) -> String? {
++        let servers = core.mcpCoordinator.servers
++        let names = servers.map { $0.title.isEmpty ? $0.slug : $0.title } + servers.map(\.slug)
++        guard let choice = ContextPolicy.namedChoice(in: query, names: names),
++            let server = servers.first(where: { $0.slug == choice.name || $0.title == choice.name })
++        else {
++            core.showMessage(
++                "Name an integration after @integration, or pick one from the + menu.", tone: .neutral)
++            return nil
++        }
++        return attachIntegration(to: chat, server: server) ? choice.remainder : nil
++    }
++
++    private func prepareToolToken(_ query: String, in chat: AIChatState) -> String? {
++        let tools = chatCoordinator.contextTools(for: chat)
++        let names = tools.flatMap { [$0.title, $0.name] }
++        guard let choice = ContextPolicy.namedChoice(in: query, names: names),
++            let tool = tools.first(where: { $0.name == choice.name || $0.title == choice.name })
++        else {
++            core.showMessage("Name a tool after @tool, or pick one from the + menu.", tone: .neutral)
++            return nil
++        }
++        return attachTool(to: chat, tool: tool) ? choice.remainder : nil
++    }
++}
+diff --git a/Tinycast/Features/AI/UI/AIContextCoordinator.swift b/Tinycast/Features/AI/UI/AIContextCoordinator.swift
+index 65207561..09b718ec 100644
+--- a/Tinycast/Features/AI/UI/AIContextCoordinator.swift
++++ b/Tinycast/Features/AI/UI/AIContextCoordinator.swift
+@@ -25,14 +25,9 @@ final class AIContextCoordinator {
+     @ObservationIgnored private var tabsTask: Task<Void, Never>?
+     @ObservationIgnored private var captureTasks: [CaptureSlot: Task<Void, Never>] = [:]
+     @ObservationIgnored private var captureTickets: [CaptureSlot: ContextPolicy.CaptureTicket] = [:]
+-    @ObservationIgnored private var cancelledOperations: Set<UUID> = []
+-    @ObservationIgnored private var browserAutoTasks: [UUID: Task<Void, Never>] = [:]
+     /// Every staged context attachment, so disabling a source drops its quotes, never files.
+     @ObservationIgnored private var contextAttachments: [UUID: (chatID: UUID, source: ContextSource)] = [:]
+-    /// Auto-staged attachments, so removing one opts that source out until the chat changes.
+-    @ObservationIgnored private var autoAttachments: [UUID: (chatID: UUID, sourceKey: String)] = [:]
+-    @ObservationIgnored private var dismissedAutoKeys: [UUID: Set<String>] = [:]
+-    @ObservationIgnored private var lastAutoKey: [UUID: String] = [:]
++    @ObservationIgnored private var autoAttachedKeys: [UUID: Set<String>] = [:]
+ 
+     init(settings: AppSettings, chatCoordinator: AIChatCoordinator, core: AppCore) {
+         self.settings = settings
+@@ -98,7 +93,7 @@ final class AIContextCoordinator {
+     func autoApplies(snapshot: ContextAppReader.Snapshot?) -> Bool {
+         guard settings.aiEnabled else { return false }
+         if ContextPolicy.canAutoAttachApp(options: options, aiEnabled: settings.aiEnabled),
+-            snapshot != nil
++            let snapshot, !snapshot.isBrowser
+         {
+             return true
+         }
+@@ -117,23 +112,55 @@ final class AIContextCoordinator {
+         chat: AIChatState, snapshot: ContextAppReader.Snapshot?
+     ) {
+         guard browserAutoApplies(snapshot: snapshot) else { return }
+-        browserAutoTasks[chat.session.id]?.cancel()
+-        let ticketChat = chat
+-        browserAutoTasks[chat.session.id] = Task { [weak self] in
+-            await self?.refreshTabsAndAttachActive(chat: ticketChat)
++        let ticket = ContextPolicy.CaptureTicket(
++            operationID: UUID(), chatID: chat.session.id, sourceKey: snapshot?.sourceKey ?? "",
++            generation: chat.stagingGeneration, source: .browserTabs, automatic: true)
++        beginCapture(ticket: ticket)
++        let slot = CaptureSlot(chatID: ticket.chatID, source: ticket.source)
++        captureTasks[slot] = Task { [weak self] in
+             guard let self else { return }
+-            if !Task.isCancelled { self.browserAutoTasks[ticketChat.session.id] = nil }
++            defer { retire(ticket: ticket) }
++            guard checkTicket(ticket, chat: chat) else { return }
++            let result = await ContextBrowserRunner.listTabs()
++            guard checkTicket(ticket, chat: chat) else { return }
++            switch result {
++            case .failure(let failure):
++                if failure == .automationDenied { core.showMessage(failure.message, tone: .neutral) }
++            case .success(let listed):
++                tabs = listed.tabs
++                frontTabIsPrivate = listed.frontIsPrivate
++                guard !listed.frontIsPrivate,
++                    let active = ContextBrowser.activeTab(in: listed.tabs),
++                    shouldAutoStage(chat: chat, sourceKey: active.sourceKey)
++                else { return }
++                let resolved = ContextPolicy.CaptureTicket(
++                    operationID: ticket.operationID, chatID: ticket.chatID,
++                    sourceKey: active.sourceKey, generation: ticket.generation,
++                    source: .browserTabs, automatic: true)
++                captureTickets[slot] = resolved
++                let read = await ContextBrowserRunner.readTab(
++                    id: active.id, windowID: active.windowID, expectedURL: active.url)
++                publishTabRead(read, ticket: resolved, chat: chat, tab: active)
++            }
+         }
+     }
+ 
+     // MARK: - Manual capture
+ 
+     func attachAppContext(
+-        to chat: AIChatState, snapshot: ContextAppReader.Snapshot?, automatic: Bool
++        to chat: AIChatState, snapshot: ContextAppReader.Snapshot?, automatic: Bool,
++        onStaged: (@MainActor () -> Void)? = nil
+     ) {
+         let options = options
+-        guard ContextPolicy.canCaptureApp(options: options, aiEnabled: settings.aiEnabled) else {
+-            if !automatic { core.showMessage("Turn on app context in Settings → Context.", tone: .neutral) }
++        guard ContextPolicy.canCaptureApp(
++            options: options, aiEnabled: settings.aiEnabled, isBrowser: snapshot?.isBrowser ?? false)
++        else {
++            if !automatic {
++                core.showMessage(
++                    snapshot?.isBrowser == true
++                        ? "Use Browser tabs to attach browser context safely."
++                        : "Turn on app context in Settings → Context.", tone: .neutral)
++            }
+             return
+         }
+         guard let snapshot else {
+@@ -145,50 +172,50 @@ final class AIContextCoordinator {
+         if automatic, !shouldAutoStage(chat: chat, sourceKey: snapshot.sourceKey) { return }
+         let ticket = ContextPolicy.CaptureTicket(
+             operationID: UUID(), chatID: chat.session.id, sourceKey: snapshot.sourceKey,
+-            generation: chat.stagingGeneration, source: .apps)
+-        beginCapture(ticket: ticket, chat: chat)
++            generation: chat.stagingGeneration, source: .apps, automatic: automatic)
++        beginCapture(ticket: ticket)
+         captureTasks[CaptureSlot(chatID: ticket.chatID, source: .apps)] = Task { [weak self] in
+-            let read = await Task.detached(priority: .userInitiated) {
+-                ContextAppReader.read(snapshot)
+-            }.value
+             guard let self else { return }
+-            await self.publishAppRead(
+-                read, ticket: ticket, chat: chat, snapshot: snapshot, automatic: automatic)
++            defer { retire(ticket: ticket) }
++            guard checkTicket(ticket, chat: chat) else { return }
++            let read = await ContextAppReader.read(snapshot)
++            if publishAppRead(read, ticket: ticket, chat: chat, snapshot: snapshot) {
++                onStaged?()
++            }
+         }
+     }
+ 
+     private func publishAppRead(
+         _ read: ContextAppReader.Read, ticket: ContextPolicy.CaptureTicket, chat: AIChatState,
+-        snapshot: ContextAppReader.Snapshot, automatic: Bool
+-    ) async {
+-        defer { retire(ticket: ticket) }
+-        guard checkTicket(ticket, chat: chat, source: .apps) else { return }
++        snapshot: ContextAppReader.Snapshot
++    ) -> Bool {
++        guard checkTicket(ticket, chat: chat) else { return false }
+         if read.accessDenied {
+             core.showMessage(
+                 "Tinycast needs Accessibility access to quote apps. "
+                     + "Grant it in System Settings → Privacy & Security → Accessibility.",
+                 tone: .neutral)
+-            return
++            return false
+         }
+         if read.windowChanged {
+-            if !automatic {
++            if !ticket.automatic {
+                 core.showMessage(
+                     "That window moved while reading — try again.", tone: .neutral)
+             }
+-            return
++            return false
+         }
+         let current = options
+         guard let body = ContextPolicy.resolveBody(
+             selection: read.selection, full: read.value, selectionOnly: current.selectionOnly)
+         else {
+-            if !automatic {
++            if !ticket.automatic {
+                 core.showMessage(
+                     read.skippedSecureInput
+                         ? "That window is showing secure text, which Tinycast never reads."
+                         : "No readable text in \(snapshot.name) — select something first.",
+                     tone: .neutral)
+             }
+-            return
++            return false
+         }
+         let title =
+             read.windowTitle.map { "\(snapshot.name) — \($0)" } ?? snapshot.name
+@@ -196,11 +223,12 @@ final class AIContextCoordinator {
+             source: .apps, title: title, origin: snapshot.bundleIdentifier ?? snapshot.name,
+             body: body, includeOrigin: current.includeOrigin,
+             upstreamTruncated: read.isTruncated)
+-        stage(payload, ticket: ticket, chat: chat, automatic: automatic, source: .apps)
++        return stage(payload, ticket: ticket, chat: chat, source: .apps)
+     }
+ 
+     func attachBrowserTab(
+-        to chat: AIChatState, tab: ContextBrowser.BrowserTab, automatic: Bool
++        to chat: AIChatState, tab: ContextBrowser.BrowserTab, automatic: Bool,
++        onStaged: (@MainActor () -> Void)? = nil
+     ) {
+         let options = options
+         guard ContextPolicy.canCaptureBrowser(options: options, aiEnabled: settings.aiEnabled) else {
+@@ -212,75 +240,79 @@ final class AIContextCoordinator {
+         if automatic, !shouldAutoStage(chat: chat, sourceKey: tab.sourceKey) { return }
+         let ticket = ContextPolicy.CaptureTicket(
+             operationID: UUID(), chatID: chat.session.id, sourceKey: tab.sourceKey,
+-            generation: chat.stagingGeneration, source: .browserTabs)
+-        beginCapture(ticket: ticket, chat: chat)
++            generation: chat.stagingGeneration, source: .browserTabs, automatic: automatic)
++        beginCapture(ticket: ticket)
+         let slot = CaptureSlot(chatID: ticket.chatID, source: .browserTabs)
+         captureTasks[slot] = Task { [weak self] in
++            guard let self else { return }
++            defer { retire(ticket: ticket) }
++            guard checkTicket(ticket, chat: chat) else { return }
+             let result = await ContextBrowserRunner.readTab(
+                 id: tab.id, windowID: tab.windowID, expectedURL: tab.url)
+-            guard let self else { return }
+-            await self.publishTabRead(
+-                result, ticket: ticket, chat: chat, tab: tab, automatic: automatic)
++            if publishTabRead(result, ticket: ticket, chat: chat, tab: tab) {
++                onStaged?()
++            }
+         }
+     }
+ 
++    @discardableResult
+     private func publishTabRead(
+         _ result: Result<ContextBrowser.PageRead, ContextBrowser.ReadFailure>,
+-        ticket: ContextPolicy.CaptureTicket, chat: AIChatState, tab: ContextBrowser.BrowserTab,
+-        automatic: Bool
+-    ) async {
+-        defer { retire(ticket: ticket) }
+-        guard checkTicket(ticket, chat: chat, source: .browserTabs) else { return }
++        ticket: ContextPolicy.CaptureTicket, chat: AIChatState, tab: ContextBrowser.BrowserTab
++    ) -> Bool {
++        guard checkTicket(ticket, chat: chat) else { return false }
+         let current = options
+         switch result {
+         case .failure(let failure):
+-            if !automatic || failure == .automationDenied {
++            if !ticket.automatic || failure == .automationDenied {
+                 core.showMessage(failure.message, tone: .neutral)
+             }
+-            return
++            return false
+         case .success(let read):
+             guard
+                 let body = ContextPolicy.resolveBody(
+                     selection: read.selection, full: read.body,
+                     selectionOnly: current.selectionOnly)
+             else {
+-                if !automatic { core.showMessage(ContextBrowser.ReadFailure.empty.message, tone: .neutral) }
+-                return
++                if !ticket.automatic { core.showMessage(ContextBrowser.ReadFailure.empty.message, tone: .neutral) }
++                return false
+             }
+             let payload = ContextPolicy.compose(
+                 source: .browserTabs, title: tab.title.isEmpty ? (tab.host ?? "Browser tab") : tab.title,
+                 origin: ContextBrowser.sanitizedOrigin(url: read.url),
+                 body: body, includeOrigin: current.includeOrigin,
+                 upstreamTruncated: read.isTruncated)
+-            stage(payload, ticket: ticket, chat: chat, automatic: automatic, source: .browserTabs)
++            return stage(payload, ticket: ticket, chat: chat, source: .browserTabs)
+         }
+     }
+ 
+     /// Quick Action descriptions ride as context; running one is never on offer here.
+-    func attachAction(to chat: AIChatState, action: QuickAction) {
++    @discardableResult
++    func attachAction(to chat: AIChatState, action: QuickAction) -> Bool {
+         guard
+             ContextPolicy.allowsManual(
+                 source: .actions, options: options, aiEnabled: settings.aiEnabled)
+         else {
+             core.showMessage("Turn on Actions in Settings → Context → Context Items.", tone: .neutral)
+-            return
++            return false
+         }
+         let text = "Action: \(action.title)\n\n\(QuickActionPrompt.instructions(for: action))"
+         guard
+             let body = ContextPolicy.resolveBody(
+                 selection: nil, full: text, selectionOnly: false)
+-        else { return }
++        else { return false }
+         let payload = ContextPolicy.compose(
+             source: .actions, title: action.title, origin: nil, body: body,
+             includeOrigin: options.includeOrigin)
+-        stage(payload, ticket: nil, chat: chat, automatic: false, source: .actions)
++        return stage(payload, ticket: nil, chat: chat, source: .actions)
+     }
+ 
+     /// Server metadata rides as context; it neither enables the server nor calls anything.
+-    func attachIntegration(to chat: AIChatState, server: MCPServer) {
++    @discardableResult
++    func attachIntegration(to chat: AIChatState, server: MCPServer) -> Bool {
+         guard settings.aiEnabled, settings.mcpEnabled else {
+             core.showMessage("Turn on AI and MCP to quote an integration.", tone: .neutral)
+-            return
++            return false
+         }
+         guard
+             ContextPolicy.allowsManual(
+@@ -289,7 +321,7 @@ final class AIContextCoordinator {
+             chat.toolScope.allows(server.slug)
+         else {
+             core.showMessage("That integration isn't available to this chat.", tone: .neutral)
+-            return
++            return false
+         }
+         let text = """
+             Integration: \(server.title) (@\(server.slug))
+@@ -301,32 +333,33 @@ final class AIContextCoordinator {
+             """
+         guard
+             let body = ContextPolicy.resolveBody(selection: nil, full: text, selectionOnly: false)
+-        else { return }
++        else { return false }
+         let payload = ContextPolicy.compose(
+             source: .integrations, title: server.title.isEmpty ? server.slug : server.title,
+             origin: nil, body: body, includeOrigin: options.includeOrigin)
+-        stage(payload, ticket: nil, chat: chat, automatic: false, source: .integrations)
++        return stage(payload, ticket: nil, chat: chat, source: .integrations)
+     }
+ 
+     /// Tool metadata rides as context; the tool itself is never called because it was attached.
+-    func attachTool(to chat: AIChatState, tool: AITool) {
++    @discardableResult
++    func attachTool(to chat: AIChatState, tool: AITool) -> Bool {
+         guard settings.aiEnabled, settings.mcpEnabled else {
+             core.showMessage("Turn on AI and MCP to quote a tool.", tone: .neutral)
+-            return
++            return false
+         }
+         guard ContextPolicy.allowsManual(
+             source: .tools, options: options, aiEnabled: settings.aiEnabled)
+         else {
+             core.showMessage("Turn on Tools in Settings → Context → Context Items.", tone: .neutral)
+-            return
++            return false
+         }
+         guard chatCoordinator.capabilities(for: chat).tools else {
+             core.showMessage("This model can't call tools. Switch model to use them.", tone: .neutral)
+-            return
++            return false
+         }
+         if let route = MCPToolName.parse(tool.name), !chat.toolScope.allows(route.slug) {
+             core.showMessage("That tool isn't available to this chat.", tone: .neutral)
+-            return
++            return false
+         }
+         let text = """
+             Tool: \(tool.title) (from \(tool.origin))
+@@ -339,191 +372,119 @@ final class AIContextCoordinator {
+             """
+         guard
+             let body = ContextPolicy.resolveBody(selection: nil, full: text, selectionOnly: false)
+-        else { return }
++        else { return false }
+         let payload = ContextPolicy.compose(
+             source: .tools, title: tool.title, origin: nil, body: body,
+             includeOrigin: options.includeOrigin)
+-        stage(payload, ticket: nil, chat: chat, automatic: false, source: .tools)
++        return stage(payload, ticket: nil, chat: chat, source: .tools)
+     }
+ 
+     // MARK: - Capture ownership
+ 
+-    private func beginCapture(ticket: ContextPolicy.CaptureTicket, chat: AIChatState) {
++    private func beginCapture(ticket: ContextPolicy.CaptureTicket) {
+         let slot = CaptureSlot(chatID: ticket.chatID, source: ticket.source)
+-        if let previous = captureTasks[slot] {
+-            if let running = captureTickets[slot] {
+-                cancelledOperations.insert(running.operationID)
+-            }
+-            previous.cancel()
+-        }
++        captureTasks[slot]?.cancel()
+         captureTickets[slot] = ticket
+     }
+ 
+-    /// Late reads publish only while their ticket is still the slot's own; no fallback ticket.
+-    private func checkTicket(
+-        _ ticket: ContextPolicy.CaptureTicket, chat: AIChatState, source: ContextSource
+-    ) -> Bool {
+-        guard ticket.chatID == chat.session.id, ticket.source == source else { return false }
+-        let slot = CaptureSlot(chatID: ticket.chatID, source: source)
+-        guard let latest = captureTickets[slot], latest == ticket else { return false }
+-        let current = options
+-        let captureAllowed: Bool =
+-            switch source {
+-            case .apps: ContextPolicy.canCaptureApp(options: current, aiEnabled: settings.aiEnabled)
+-            case .browserTabs: ContextPolicy.canCaptureBrowser(
+-                    options: current, aiEnabled: settings.aiEnabled)
+-            case .actions, .integrations, .tools: settings.aiEnabled
+-            case .memoryGroups, .variables: false
+-            }
++    private func checkTicket(_ ticket: ContextPolicy.CaptureTicket, chat: AIChatState) -> Bool {
++        guard ticket.chatID == chat.session.id else { return false }
++        let slot = CaptureSlot(chatID: ticket.chatID, source: ticket.source)
++        guard let latest = captureTickets[slot] else { return false }
+         return ContextPolicy.shouldPublish(
+-            ticket: ticket, latest: latest,
+-            latestCancelled: cancelledOperations.contains(ticket.operationID)
+-                || Task.isCancelled,
+-            captureAllowed: captureAllowed, currentGeneration: chat.stagingGeneration)
++            ticket: ticket, latest: latest, latestCancelled: Task.isCancelled,
++            captureAllowed: ContextPolicy.allowsCapture(
++                ticket: ticket, options: options, aiEnabled: settings.aiEnabled),
++            currentGeneration: chat.stagingGeneration)
+     }
+ 
+-    /// A finished capture frees its slot and its cancellation marker, so neither grows forever.
+     private func retire(ticket: ContextPolicy.CaptureTicket) {
+         let slot = CaptureSlot(chatID: ticket.chatID, source: ticket.source)
+-        if captureTickets[slot] == ticket { captureTickets[slot] = nil }
+-        if captureTasks[slot]?.isCancelled == true { captureTasks[slot] = nil }
+-        cancelledOperations.remove(ticket.operationID)
++        guard captureTickets[slot]?.operationID == ticket.operationID else { return }
++        captureTickets[slot] = nil
++        captureTasks[slot] = nil
+     }
+ 
+     private func stage(
+         _ payload: ContextPolicy.Payload, ticket: ContextPolicy.CaptureTicket?,
+-        chat: AIChatState, automatic: Bool, source: ContextSource
+-    ) {
++        chat: AIChatState, source: ContextSource
++    ) -> Bool {
+         let attachment = ChatAttachment(
+             payload: .document(payload.document), name: payload.name, preview: nil)
+         if let refusal = chat.attach(attachment) {
+             core.showMessage(refusal.message, tone: .neutral)
+-            return
++            return false
+         }
+         contextAttachments[attachment.id] = (chat.session.id, source)
+-        if automatic, let ticket {
+-            autoAttachments[attachment.id] = (chat.session.id, ticket.sourceKey)
+-            lastAutoKey[chat.session.id] = ticket.sourceKey
++        if let ticket, ticket.automatic {
++            autoAttachedKeys[chat.session.id, default: []].insert(ticket.sourceKey)
+         }
+         if payload.isPartial {
+             core.showMessage(
+                 "Attached a shortened quote — the full text didn't fit.", tone: .neutral)
+         }
++        return true
+     }
+ 
+-    /// Autos coexist: a second source stages while only context is pending, never over user files.
+     private func shouldAutoStage(chat: AIChatState, sourceKey: String) -> Bool {
+         let onlyContext = chat.pendingAttachments.allSatisfy { contextAttachments[$0.id] != nil }
+-        guard onlyContext else { return false }
+-        guard dismissedAutoKeys[chat.session.id]?.contains(sourceKey) != true else { return false }
+-        return lastAutoKey[chat.session.id] != sourceKey
++        return onlyContext && autoAttachedKeys[chat.session.id]?.contains(sourceKey) != true
+     }
+ 
+-    /// Turning capture off cancels in-flight reads and drops their staged quotes, never files.
+     func cancelAllCaptures() {
+         for task in captureTasks.values { task.cancel() }
+-        for task in browserAutoTasks.values { task.cancel() }
+         tabsTask?.cancel()
+-        for ticket in captureTickets.values { cancelledOperations.insert(ticket.operationID) }
+         captureTasks = [:]
+         captureTickets = [:]
+-        browserAutoTasks = [:]
++        tabsTask = nil
+     }
+ 
+-    /// A master or source switch re-projects: cancel what's no longer allowed, drop its quotes.
+     func optionsDidChange() {
+-        let current = options
+-        let appAllowed = ContextPolicy.canCaptureApp(
+-            options: current, aiEnabled: settings.aiEnabled)
+-        let browserAllowed = ContextPolicy.canCaptureBrowser(
+-            options: current, aiEnabled: settings.aiEnabled)
+-        if !appAllowed { cancelCaptures(source: .apps) }
+-        if !browserAllowed {
+-            cancelCaptures(source: .browserTabs)
+-            browserAutoTasks.values.forEach { $0.cancel() }
+-            browserAutoTasks = [:]
+-            tabsTask?.cancel()
+-        }
+-        if !settings.aiEnabled { cancelAllCaptures() }
+-        dropDisallowedContext()
+-    }
+-
+-    private func cancelCaptures(source: ContextSource) {
+-        for (slot, task) in captureTasks where slot.source == source {
+-            task.cancel()
+-            if let running = captureTickets[slot] {
+-                cancelledOperations.insert(running.operationID)
+-            }
++        for (slot, ticket) in captureTickets where !ContextPolicy.allowsCapture(
++            ticket: ticket, options: options, aiEnabled: settings.aiEnabled)
++        {
++            captureTasks[slot]?.cancel()
+             captureTasks[slot] = nil
+             captureTickets[slot] = nil
+         }
++        if !ContextPolicy.canCaptureBrowser(options: options, aiEnabled: settings.aiEnabled) {
++            tabsTask?.cancel()
++            tabsTask = nil
++            tabs = []
++            frontTabIsPrivate = false
++        }
++        dropDisallowedContext()
+     }
+ 
+-    /// Staged quotes whose source is now off leave the composer; user files and text stay.
+     private func dropDisallowedContext() {
+         for chat in chatCoordinator.chats.live {
+             for attachment in chat.pendingAttachments {
+-                guard let entry = contextAttachments[attachment.id] else { continue }
+-                guard
+-                    ContextPolicy.allowsManual(
++                guard let entry = contextAttachments[attachment.id],
++                    !ContextPolicy.allowsManual(
+                         source: entry.source, options: options, aiEnabled: settings.aiEnabled)
+-                else {
+-                    chat.removeAttachment(attachment.id)
+-                    contextAttachments[attachment.id] = nil
+-                    if let auto = autoAttachments.removeValue(forKey: attachment.id) {
+-                        dismissedAutoKeys[auto.chatID, default: []].insert(auto.sourceKey)
+-                    }
+-                    continue
+-                }
+-                if (entry.source == .apps
+-                    && !ContextPolicy.canCaptureApp(
+-                        options: options, aiEnabled: settings.aiEnabled))
+-                    || (entry.source == .browserTabs
+-                        && !ContextPolicy.canCaptureBrowser(
+-                            options: options, aiEnabled: settings.aiEnabled))
+-                {
+-                    chat.removeAttachment(attachment.id)
+-                    contextAttachments[attachment.id] = nil
+-                    if let auto = autoAttachments.removeValue(forKey: attachment.id) {
+-                        dismissedAutoKeys[auto.chatID, default: []].insert(auto.sourceKey)
+-                    }
+-                }
++                else { continue }
++                chat.removeAttachment(attachment.id)
++                contextAttachments[attachment.id] = nil
+             }
+         }
+     }
+ 
+-    /// A removed auto quote opts its source out until the chat turns over.
+     func noteRemoved(_ id: UUID) {
+         contextAttachments[id] = nil
+-        guard let entry = autoAttachments.removeValue(forKey: id) else { return }
+-        dismissedAutoKeys[entry.chatID, default: []].insert(entry.sourceKey)
+     }
+ 
+     func noteCleared(in chat: AIChatState) {
+         contextAttachments = contextAttachments.filter { $0.value.chatID != chat.session.id }
+-        for (id, entry) in autoAttachments where entry.chatID == chat.session.id {
+-            dismissedAutoKeys[entry.chatID, default: []].insert(entry.sourceKey)
+-            autoAttachments.removeValue(forKey: id)
+-        }
+     }
+ 
+     func forget(chatID: UUID) {
+-        for source in [ContextSource.apps, ContextSource.browserTabs] as [ContextSource] {
+-            let slot = CaptureSlot(chatID: chatID, source: source)
++        for slot in captureTasks.keys where slot.chatID == chatID {
+             captureTasks[slot]?.cancel()
+             captureTasks[slot] = nil
+             captureTickets[slot] = nil
+         }
+-        browserAutoTasks[chatID]?.cancel()
+-        browserAutoTasks[chatID] = nil
+-        dismissedAutoKeys[chatID] = nil
+-        lastAutoKey[chatID] = nil
+-        for (id, entry) in contextAttachments where entry.chatID == chatID {
+-            contextAttachments.removeValue(forKey: id)
+-        }
+-        for (id, entry) in autoAttachments where entry.chatID == chatID {
+-            autoAttachments.removeValue(forKey: id)
+-        }
++        autoAttachedKeys[chatID] = nil
++        contextAttachments = contextAttachments.filter { $0.value.chatID != chatID }
+     }
+ 
+     // MARK: - Tabs
+@@ -543,170 +504,6 @@ final class AIContextCoordinator {
+         }
+     }
+ 
+-    /// Auto-attach reads a fresh list every trigger: cached tabs may point at a moved page.
+-    private func refreshTabsAndAttachActive(chat: AIChatState) async {
+-        guard ContextBrowserRunner.isHeliumRunning() else { return }
+-        let listed: ContextBrowserRunner.TabList
+-        switch await ContextBrowserRunner.listTabs() {
+-        case .failure(let failure):
+-            if failure == .automationDenied { core.showMessage(failure.message, tone: .neutral) }
+-            return
+-        case .success(let fresh): listed = fresh
+-        }
+-        guard !Task.isCancelled else { return }
+-        self.tabs = listed.tabs
+-        self.frontTabIsPrivate = listed.frontIsPrivate
+-        guard !listed.frontIsPrivate else { return }
+-        guard let active = ContextBrowser.activeTab(in: listed.tabs) else { return }
+-        attachBrowserTab(to: chat, tab: active, automatic: true)
+-    }
+-
+     var activeTab: ContextBrowser.BrowserTab? { ContextBrowser.activeTab(in: tabs) }
+ 
+-    // MARK: - @ commands
+-
+-    enum ContextToken: Sendable {
+-        case app(String)
+-        case tab(String)
+-        case action(String)
+-        case integration(String)
+-        case tool(String)
+-    }
+-
+-    /// `@app` and `@tab` address the active app or tab; `@action` and friends name a row.
+-    func contextToken(in text: String) -> (token: ContextToken, rest: String)? {
+-        let trimmed = text.drop { $0 == " " }
+-        guard trimmed.first == "@" else { return nil }
+-        let after = trimmed.dropFirst()
+-        for word in
+-            ["app", "tab", "actions", "action", "integrations", "integration", "tools", "tool"]
+-        {
+-            guard after.lowercased().hasPrefix(word) else { continue }
+-            let tail = after.dropFirst(word.count)
+-            guard tail.isEmpty || tail.first?.isWhitespace == true else { continue }
+-            let rest = String(tail.drop { $0.isWhitespace })
+-            let token: ContextToken =
+-                switch word {
+-                case "app": .app(rest)
+-                case "tab": .tab(rest)
+-                case "action", "actions": .action(rest)
+-                case "integration", "integrations": .integration(rest)
+-                default: .tool(rest)
+-                }
+-            return (token, rest)
+-        }
+-        return nil
+-    }
+-
+-    /// The chip the composer shows while an `@`-context command is typed.
+-    func addressedContext(in draft: String) -> String? {
+-        guard
+-            MCPComposerAddress.parse(draft, slugs: core.mcpCoordinator.slugs).slug == nil,
+-            let (token, _) = contextToken(in: draft)
+-        else { return nil }
+-        switch token {
+-        case .app: return "@app"
+-        case .tab: return "@tab"
+-        case .action: return "@action"
+-        case .integration: return "@integration"
+-        case .tool: return "@tool"
+-        }
+-    }
+-
+-    /// An explicit gesture, so the capture it names stages for review; it never sends by itself.
+-    func prepareWithToken(
+-        _ token: ContextToken, rest: String, in chat: AIChatState,
+-        snapshot: ContextAppReader.Snapshot?
+-    ) -> String {
+-        switch token {
+-        case .app:
+-            attachAppContext(to: chat, snapshot: snapshot ?? windowSnapshot, automatic: false)
+-        case .tab:
+-            if frontTabIsPrivate {
+-                core.showMessage(
+-                    ContextBrowser.ReadFailure.restrictedPage.message, tone: .neutral)
+-                break
+-            }
+-            guard let active = activeTab else {
+-                refreshTabsIfAllowed()
+-                core.showMessage("There's no browser tab to attach right now.", tone: .neutral)
+-                break
+-            }
+-            attachBrowserTab(to: chat, tab: active, automatic: false)
+-        case .action(let query):
+-            prepareActionToken(query, in: chat)
+-        case .integration(let query):
+-            prepareIntegrationToken(query, in: chat)
+-        case .tool(let query):
+-            prepareToolToken(query, in: chat)
+-        }
+-        return rest
+-    }
+-
+-    /// The picker's rows by name; an empty or unmatched query names the + menu instead of guessing.
+-    private func prepareActionToken(_ query: String, in chat: AIChatState) {
+-        let candidates = BuiltInQuickAction.allCases.map { QuickAction.builtIn($0) }
+-            + core.customQuickActions.actions.prefix(8).map { QuickAction.custom($0) }
+-        guard let match = matchNamed(query, titles: candidates.map(\.title)) else {
+-            core.showMessage(
+-                query.isEmpty
+-                    ? "Name an Action after @action, or pick one from the + menu."
+-                    : "No Action matches “\(query)”. Pick one from the + menu.",
+-                tone: .neutral)
+-            return
+-        }
+-        guard
+-            let action = candidates.first(where: { $0.title.caseInsensitiveCompare(match) == .orderedSame })
+-        else { return }
+-        attachAction(to: chat, action: action)
+-    }
+-
+-    private func prepareIntegrationToken(_ query: String, in chat: AIChatState) {
+-        let servers = core.mcpCoordinator.servers
+-        let titles = servers.map { $0.title.isEmpty ? $0.slug : $0.title } + servers.map(\.slug)
+-        guard let match = matchNamed(query, titles: titles),
+-            let server = servers.first(where: {
+-                $0.slug.caseInsensitiveCompare(match) == .orderedSame
+-                    || $0.title.caseInsensitiveCompare(match) == .orderedSame
+-            })
+-        else {
+-            core.showMessage(
+-                query.isEmpty
+-                    ? "Name an integration after @integration, or pick one from the + menu."
+-                    : "No integration matches “\(query)”. Pick one from the + menu.",
+-                tone: .neutral)
+-            return
+-        }
+-        attachIntegration(to: chat, server: server)
+-    }
+-
+-    private func prepareToolToken(_ query: String, in chat: AIChatState) {
+-        let tools = chatCoordinator.contextTools(for: chat)
+-        let titles = tools.flatMap { [$0.title, $0.name] }
+-        guard let match = matchNamed(query, titles: titles),
+-            let tool = tools.first(where: {
+-                $0.name.caseInsensitiveCompare(match) == .orderedSame
+-                    || $0.title.caseInsensitiveCompare(match) == .orderedSame
+-            })
+-        else {
+-            core.showMessage(
+-                query.isEmpty
+-                    ? "Name a tool after @tool, or pick one from the + menu."
+-                    : "No tool matches “\(query)”. Pick one from the + menu.",
+-                tone: .neutral)
+-            return
+-        }
+-        attachTool(to: chat, tool: tool)
+-    }
+-
+-    private func matchNamed(_ query: String, titles: [String]) -> String? {
+-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+-        guard !needle.isEmpty else { return nil }
+-        if let exact = titles.first(where: { $0.caseInsensitiveCompare(needle) == .orderedSame }) {
+-            return exact
+-        }
+-        return titles.first {
+-            $0.localizedCaseInsensitiveContains(needle) || needle.localizedCaseInsensitiveContains($0)
+-        }
+-    }
+ }
+diff --git a/Tinycast/Features/AI/UI/AIContextPicker.swift b/Tinycast/Features/AI/UI/AIContextPicker.swift
+index 749de35e..7e0d1ca8 100644
+--- a/Tinycast/Features/AI/UI/AIContextPicker.swift
++++ b/Tinycast/Features/AI/UI/AIContextPicker.swift
+@@ -37,7 +37,7 @@ extension AIContextCoordinator {
+     {
+         let options = options
+         let activeSource: ContextSource? =
+-            snapshot != nil ? .apps : (activeTab != nil ? .browserTabs : nil)
++            snapshot?.isBrowser == true ? .browserTabs : (snapshot != nil ? .apps : nil)
+         var sections = ContextPolicy.orderedSources(options: options, activeSource: activeSource)
+             .map { section(for: $0, chat: chat, snapshot: snapshot) }
+         for source in ContextSource.allCases where !source.isAvailable {
+@@ -94,11 +94,13 @@ extension AIContextCoordinator {
+ 
+     /// Known running external apps, named; the picker caps how many it shows.
+     var runningContextApps: [(pid: pid_t, bundleID: String, name: String)] {
+-        NSWorkspace.shared.runningApplications.compactMap { app in
++        let browsers = ContextAppReader.browserBundleURLs
++        return NSWorkspace.shared.runningApplications.compactMap { app in
+             guard app.processIdentifier != NSRunningApplication.current.processIdentifier,
+                 let bundleID = app.bundleIdentifier, !bundleID.hasPrefix("com.tinycast.app"),
+                 app.activationPolicy == .regular || app.activationPolicy == .accessory,
+-                !app.isTerminated
++                !app.isTerminated, !ContextBrowser.isSupported(bundleID: bundleID),
++                app.bundleURL.map({ !browsers.contains($0.standardizedFileURL) }) ?? false
+             else { return nil }
+             return (app.processIdentifier, bundleID, app.localizedName ?? bundleID)
+         }
+@@ -127,7 +129,8 @@ extension AIContextCoordinator {
+                 id: "apps-active", title: "Attach Active App",
+                 subtitle: snapshot.map { appSubtitle($0) } ?? "No app in front",
+                 action: snapshot == nil ? nil : .activeApp,
+-                disabledReason: snapshot == nil ? "Summon Tinycast from an app to quote it." : reason)
++                disabledReason: snapshot == nil ? "Summon Tinycast from an app to quote it."
++                    : (snapshot?.isBrowser == true ? "Use Browser tabs for browser context." : reason))
+         ]
+         for app in runningContextApps.prefix(12) {
+             items.append(
+diff --git a/Tinycast/Features/AI/UI/QuickAICoordinator.swift b/Tinycast/Features/AI/UI/QuickAICoordinator.swift
+index af46a39d..5b3c958a 100644
+--- a/Tinycast/Features/AI/UI/QuickAICoordinator.swift
++++ b/Tinycast/Features/AI/UI/QuickAICoordinator.swift
+@@ -47,12 +47,14 @@ final class QuickAICoordinator {
+         let snapshot = core.paletteContextSnapshot()
+         // Auto context stages for review first: the first answer must see it, after the reader can.
+         if core.aiChatCoordinator.contextCoordinator.autoApplies(snapshot: snapshot) {
++            chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
+             chat.startNewChat()
+             palette.query = prompt
+             paletteCoordinator.showPalette(mode: .ai)
+             core.aiChatCoordinator.contextCoordinator.enteredQuickAI(chat: chat, snapshot: snapshot)
+             return
+         }
++        chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
+         chat.startNewChat()
+         paletteCoordinator.showPalette(mode: .ai)
+         send(prompt)
+@@ -97,6 +99,7 @@ final class QuickAICoordinator {
+         case .startNew:
+             // An empty chat is already new; resetting it would only drop what is staged in it.
+             guard hasTranscript else { return }
++            chatCoordinator.contextCoordinator.forget(chatID: chat.session.id)
+             chat.startNewChat()
+         }
+     }
+@@ -133,7 +136,7 @@ final class QuickAICoordinator {
+     func continueInChat(id: UUID) {
+         paletteCoordinator.hidePalette(restoreFocus: false)
+         chatCoordinator.openChat(id: id)
+-        chatCoordinator.showWindow()
++        chatCoordinator.showWindow(appSnapshot: core.paletteContextSnapshot())
+     }
+ 
+     func deleteChat(id: UUID) {
+diff --git a/docs/features/context.md b/docs/features/context.md
+index 37a205cc..712b8a1e 100644
+--- a/docs/features/context.md
++++ b/docs/features/context.md
+@@ -31,18 +31,25 @@ type the same picks as commands.
+ - **One owned capture per destination and source.** App and browser captures own separate slots,
+   so the two autos coexist instead of cancelling each other. A newer capture cancels the older in
+   its slot; a late read publishes only while its ticket — operation, chat, source and staging
+-  generation — is still current, capture is still enabled and nothing cancelled it. A send, clear,
++  generation — is still current, capture is still enabled and nothing cancelled it. Browser listing
++  belongs to that ticket before its first await, and automatic tickets also require their auto-attach
++  switch to remain on. A send, clear,
+   chat switch or disable moves the generation on, so nothing lands in the next turn. Switching a
+   master or source off cancels its in-flight reads and drops its staged quotes, never user files.
+ - **The root target predates focus.** The palette records the front app before it takes key and
+   keeps it across mode switches; the AI Chat window records it before it shows and keeps the
+-  earlier snapshot across handoffs and re-shows. Tinycast itself is never a target. App context is
++  earlier snapshot on re-shows; a palette handoff replaces it with the palette's current target.
++  Tinycast itself is never a target. App context is
+   metadata plus the focused element's accessible text — the selection when selection-only is on
+   and one exists, else the bounded focused value — always read bounded and labelled as a focused
+   element excerpt, marked partial when cut, never claimed complete. A mid-read window switch drops
+   the quote. Secure fields (role and secure subrole), Secure Event Input and missing Accessibility
+   trust refuse the text with guidance; the title may still be quoted. Enabling app context confirms
+   first and raises the one Accessibility prompt from that gesture.
++- **Browsers never enter the generic app reader.** Apps registered to handle HTTPS, including
++  Helium, require the browser-tab path, so app capture cannot bypass private-window checks.
++  Blocking readers use `@concurrent` and inherit caller cancellation; they stop between native calls,
++  with a timeout bounding a call already running.
+ - **Helium is the only browser, by its checked dictionary.** Tabs list on demand without
+   launching Helium when it is not running; private windows never stage, and when the front window
+   is private auto-attach refuses rather than swapping in a lower window. Capture binds the stable
+@@ -61,7 +68,9 @@ type the same picks as commands.
+   Tools menu already does.
+ - **`@server` keeps its meaning.** A leading `@slug` still scopes the turn to that server; `@app`,
+   `@tab`, `@action`, `@integration` and `@tool` stage their pick for review and keep the rest of
+-  the draft, and any other mention stays plain text. Nothing a `@` command stages sends until the
++  the draft only after successful staging. Named choices consume the matched name and leave any
++  following prompt; failed captures and edited drafts stay intact. Any other mention stays plain
++  text. Nothing a `@` command stages sends until the
+   next normal Return, after the chips are visible. Live browser and TCC behaviour is a manual gate: no probe runs during implementation
+   or in the suite, whose fixtures stand in for Helium.
+ 
+-- 
+2.56.0
+
