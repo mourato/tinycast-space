@@ -21,11 +21,12 @@ struct AIChatSidebarView: View {
     /// Recency order already groups each day together, so a bucket only ever opens once.
     private var sections: [ChatSection] {
         var sections: [ChatSection] = []
+        let buckets = DateBucket.Boundaries()
         for conversation in history.search(query).pinnedFirst {
             let title =
                 conversation.isPinned
                 ? String(localized: "ai-pinned-conversations", defaultValue: "Pinned")
-                : DateBucket(for: conversation.updatedAt).title
+                : buckets.bucket(for: conversation.updatedAt).title
             if sections.last?.title == title {
                 sections[sections.count - 1].conversations.append(conversation)
             } else {

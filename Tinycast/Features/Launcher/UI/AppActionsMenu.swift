@@ -65,6 +65,8 @@ enum AppActionsMenu {
                 PopoverMenuItem(
                     title: title, systemImage: "eye.slash", shortcut: "⇧⌘H", action: onHideFromSearch))
         }
+        items += InlineEntryEditor.menuItems(for: app, core: core)  // tinycast-space
+        items += EntryDeepLinkActions.menuItems(for: app, core: core)  // tinycast-space
         if running, app.kind == .application {
             items.append(
                 PopoverMenuItem(
@@ -190,6 +192,15 @@ enum AppActionsMenu {
                     title: String(localized: "Show in Finder"), systemImage: "folder", shortcut: "⌘↵"
                 ) {
                     core.launcherCoordinator.showInFinder(app)
+                })
+        }
+        if app.kind == .application {  // tinycast-space
+            items.append(
+                PopoverMenuItem(
+                    title: String(localized: "Show Info in Finder"), systemImage: "info.circle",
+                    shortcut: "⌘I"
+                ) {
+                    core.launcherCoordinator.showInfoInFinder(app)
                 })
         }
         return items

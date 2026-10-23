@@ -1,0 +1,350 @@
+diff --git a/Tests/palette-navigation-test.swift b/Tests/palette-navigation-test.swift
+index 461dcef9f97c20e8526f73756eff500ce452a1f5..d3fa0ae38031b7f7f884e8009bd80a240832d866 100644
+--- a/Tests/palette-navigation-test.swift
++++ b/Tests/palette-navigation-test.swift
+@@ -190,6 +190,25 @@ struct PaletteNavigationTests {
+             "closing a command editor restores its browser query and selection")
+         expect(commands.pop() && commands.mode == .launcher, "the command browser returns to root search")
+ 
++        let clipboardDraft = searchingLauncher()
++        clipboardDraft.push(mode: .clipboard)
++        clipboardDraft.query = "reusable"
++        clipboardDraft.selection = 3
++        clipboardDraft.clipboardFilter = .text
++        clipboardDraft.push(mode: .snippetEditor)
++        expect(
++            clipboardDraft.clipboardFilter == .all,
++            "the editor opens with no clipboard filter of its own")
++        expect(
++            clipboardDraft.pop(preservingSelection: true) && clipboardDraft.mode == .clipboard
++                && clipboardDraft.query == "reusable" && clipboardDraft.restoredSelection == 3
++                && clipboardDraft.clipboardFilter == .text,
++            "closing a snippet draft restores the clipboard query, selection and filter")
++        clipboardDraft.restoreSelection(4)
++        expect(
++            clipboardDraft.selection == 4 && clipboardDraft.restoredSelection == 4,
++            "following a moved entry replaces both the current and the restored row")
++
+         for mode: PaletteMode in [.snippetEditor, .quicklinkEditor, .eventEditor, .customCommandEditor] {
+             let switched = searchingLauncher()
+             switched.push(mode: mode)
+diff --git a/Tests/palette-shortcut-test.swift b/Tests/palette-shortcut-test.swift
+index fb6527424654ddf21f582d78d2211d2cebe104f4..7b1a7ea02c6cc95149dbe347e6feed9d99bf92a7 100644
+--- a/Tests/palette-shortcut-test.swift
++++ b/Tests/palette-shortcut-test.swift
+@@ -57,6 +57,9 @@ struct PaletteShortcutTests {
+         expect(
+             resolve("t", command: true, shift: true, option: true), .copyText,
+             "an extra Option still reads ⇧⌘T")
++        expect(resolve("s", command: true), .saveAsSnippet, "⌘S saves a clipboard entry as a snippet")
++        expect(resolve("s", command: true, shift: true), nil, "⇧⌘S is no row chord")
++        expect(resolve("s"), nil, "a bare S stays with the search field")
+         expect(resolve("y", command: true), .quickLook, "⌘Y is the Quick Look chord")
+         expect(resolve("y", command: true, shift: true), .quickLook, "an extra Shift still reads ⌘Y")
+         expect(resolve("o", command: true), .openInApp, "⌘O opens the row in its own app")
+diff --git a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
+index cf729bf7c92af198a67d4215b5ccdd517ab20db1..b03c2d67af57c1a72a644a8b7b27030a47e19aa0 100644
+--- a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
++++ b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
+@@ -45,6 +45,14 @@ struct ClipboardScreen: PaletteScreen {
+             return true
+         case .pin: return pin(at: selection)
+         case .favoriteSlot(let index): return activatePinned(at: index)
++        case .saveAsSnippet:
++            // A chord pressed mid-composition belongs to the input method.
++            guard core.settings.snippetsEnabled, !vm.isComposing,
++                (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true,
++                let item = item(at: selection), item.kind == .text
++            else { return false }
++            ClipboardActionsMenu.saveAsSnippet(item, core: core)
++            return true
+         case .copyText:
+             guard let item = item(at: selection), item.offersTextExtraction else { return false }
+             core.clipboardCoordinator.copyImageText(item)
+@@ -169,6 +177,13 @@ private struct ClipFollowKey: Equatable {
+ 
+ @MainActor
+ enum ClipboardActionsMenu {
++    /// tinycast-space: the editor opens on the entry's text; the name is left for the user to give.
++    /// Here rather than on ClipboardCoordinator, whose harness builds it against a stub AppCore.
++    static func saveAsSnippet(_ item: ClipboardItem, core: AppCore) {
++        guard item.kind == .text, let text = item.text else { return }
++        core.snippetCoordinator.editSnippet(nil, prefilledText: text, sourceClipboardID: item.id)
++    }
++
+     static func content(
+         item: ClipboardItem, core: AppCore, store: ClipboardStore, target: PasteTarget?
+     ) -> PopoverMenuContent {
+@@ -209,6 +224,14 @@ enum ClipboardActionsMenu {
+             ) {
+                 core.clipboardCoordinator.togglePinnedClip(item)
+             })
++        if item.kind == .text, core.settings.snippetsEnabled {
++            items.append(
++                PopoverMenuItem(
++                    title: "Save as Snippet", systemImage: "text.quote", shortcut: "⌘S"
++                ) {
++                    ClipboardActionsMenu.saveAsSnippet(item, core: core)
++                })
++        }
+         if item.offersTextExtraction {
+             items.append(
+                 PopoverMenuItem(
+diff --git a/Tinycast/Features/Snippets/UI/SnippetCoordinator.swift b/Tinycast/Features/Snippets/UI/SnippetCoordinator.swift
+index f5f18180f440cdd9fd0a83f251ead002747cb5a6..2fb05aa561791c318cacb375e31da0e26b6eb5a3 100644
+--- a/Tinycast/Features/Snippets/UI/SnippetCoordinator.swift
++++ b/Tinycast/Features/Snippets/UI/SnippetCoordinator.swift
+@@ -127,9 +127,14 @@ final class SnippetCoordinator {
+         paletteCoordinator.togglePalette(mode: .snippets)
+     }
+ 
+-    func editSnippet(_ record: StoredSnippet?) {
++    func editSnippet(
++        _ record: StoredSnippet?, prefilledText: String? = nil, sourceClipboardID: UUID? = nil
++    ) {
+         guard settings.snippetsEnabled else { return }
+-        editor = SnippetEditorSession(record: record)
++        // Opened from ⌘K, the menu holds key; the palette has to take it back before it pushes.
++        (NSApp.keyWindow as? MenuPanel)?.parent?.makeKey()
++        editor = SnippetEditorSession(
++            record: record, prefilledText: prefilledText, sourceClipboardID: sourceClipboardID)
+         paletteCoordinator.showPalette(mode: .snippetEditor)
+     }
+ 
+@@ -162,6 +167,11 @@ final class SnippetCoordinator {
+         if !palette.pop(preservingSelection: true) {
+             paletteCoordinator.hidePalette()
+             palette.prepare(mode: .launcher)
++        } else if palette.mode == .clipboard, let sourceID = editor?.sourceClipboardID,
++            let index = clipboardStore.search(palette.query, filter: palette.clipboardFilter)
++                .firstIndex(where: { $0.id == sourceID })
++        {
++            palette.restoreSelection(index)
+         }
+         editor = nil
+     }
+@@ -236,6 +246,39 @@ final class SnippetCoordinator {
+         expandSnippet(id: id, target: target)
+     }
+ 
++    /// The browser's Copy to Clipboard: the same expansion as ↵, put on the pasteboard instead of typed.
++    func copySnippetFromPalette(id: StoredSnippet.ID) {
++        let target = windowController.previousTarget
++        paletteCoordinator.hidePalette(restoreFocus: false)
++        let records = store.snippets
++        guard let record = records.first(where: { $0.id == id }) else { return }
++        let context = injector.captureExpansionContext(
++            target: target, clipboardHistory: clipboardHistoryForExpansion())
++        let result = SnippetTemplateEngine.expand(record, snippets: records, context: context)
++        guard !result.missingArguments.isEmpty else {
++            copyExpandedSnippet(result.text)
++            return
++        }
++        guard !core.isShowingDialog else { return }
++        listener.isPromptingForArguments = true
++        Task {
++            let arguments = await core.fillSnippetArguments(
++                snippetName: record.snippet.name, arguments: result.missingArguments)
++            listener.isPromptingForArguments = false
++            guard let arguments else { return }
++            copyExpandedSnippet(
++                SnippetTemplateEngine.expand(
++                    record, snippets: records, context: context, userArguments: arguments
++                ).text)
++        }
++    }
++
++    /// Unmarked, so the text enters history like any other copy the reader meant to make.
++    private func copyExpandedSnippet(_ text: String) {
++        Paster.copyPlainText(text)
++        showMessage("Copied snippet", .success)
++    }
++
+     /// A shortcut lands where the caret is; over the palette, that's what the palette covered.
+     func expandSnippetFromHotKey(id: StoredSnippet.ID) {
+         guard settings.snippetsEnabled, store.record(id: id)?.snippet.isEnabled == true else {
+diff --git a/Tinycast/Features/Snippets/UI/SnippetEditorSession.swift b/Tinycast/Features/Snippets/UI/SnippetEditorSession.swift
+index 6ad27b154f1d503cab39a78751218c377273f256..aa930be344256c50684c4c1f0938516df49a27c6 100644
+--- a/Tinycast/Features/Snippets/UI/SnippetEditorSession.swift
++++ b/Tinycast/Features/Snippets/UI/SnippetEditorSession.swift
+@@ -8,6 +8,8 @@ final class SnippetEditorSession {
+     }
+ 
+     let record: StoredSnippet?
++    /// The clipboard entry this draft came from, found again on return to the history.
++    let sourceClipboardID: UUID?
+     var name: String
+     var keyword: String
+     var text: String
+@@ -18,14 +20,19 @@ final class SnippetEditorSession {
+     var errorMessage: String?
+     var isSaving = false
+ 
+-    init(record: StoredSnippet?) {
++    init(
++        record: StoredSnippet?, prefilledText: String? = nil, sourceClipboardID: UUID? = nil
++    ) {
+         self.record = record
++        self.sourceClipboardID = sourceClipboardID
+         let snippet = record?.snippet
+         name = snippet?.name ?? ""
+         keyword = snippet?.keyword ?? ""
+-        text = snippet?.text ?? ""
++        text = snippet?.text ?? prefilledText ?? ""
+         isEnabled = snippet?.isEnabled ?? true
+         showsConfirmation = snippet?.showsConfirmation ?? false
++        // The text is already there; what's missing is the name.
++        if record == nil, prefilledText != nil { focusedField = .name }
+     }
+ 
+     var canSave: Bool {
+diff --git a/Tinycast/Features/Snippets/UI/SnippetsScreen.swift b/Tinycast/Features/Snippets/UI/SnippetsScreen.swift
+index b30d7587f0a99ff26f2216ae897eb7c867dc91d2..61da5e8ecbf5ecfade173dafd419bd39bfcb6b86 100644
+--- a/Tinycast/Features/Snippets/UI/SnippetsScreen.swift
++++ b/Tinycast/Features/Snippets/UI/SnippetsScreen.swift
+@@ -36,10 +36,10 @@ struct SnippetsScreen: PaletteScreen {
+         core.snippetCoordinator.expandSnippetFromPalette(id: record.id)
+     }
+ 
+-    /// ⌘↵ reveals the file, as it does on a snippet's launcher row.
++    /// ⌘↵ copies, as it does on a clipboard entry; Show in Finder moves to ⌘F.
+     func secondary(at selection: Int) -> Bool {
+         guard let record = record(at: selection) else { return false }
+-        core.snippetCoordinator.showSnippetInFinder(record)
++        core.snippetCoordinator.copySnippetFromPalette(id: record.id)
+         return true
+     }
+ 
+@@ -52,6 +52,8 @@ struct SnippetsScreen: PaletteScreen {
+         switch shortcut {
+         case .edit:
+             core.snippetCoordinator.editSnippet(record)
++        case .showInFinder:
++            core.snippetCoordinator.showSnippetInFinder(record)
+         case .delete:
+             Task { await core.snippetCoordinator.deleteSnippet(id: record.id) }
+         default: return false
+@@ -108,6 +110,12 @@ enum SnippetActionsMenu {
+                 ) {
+                     core.snippetCoordinator.expandSnippetFromPalette(id: record.id)
+                 },
++                PopoverMenuItem(
++                    title: String(localized: "Copy to Clipboard"), systemImage: "doc.on.doc",
++                    shortcut: "⌘↵"
++                ) {
++                    core.snippetCoordinator.copySnippetFromPalette(id: record.id)
++                },
+                 PopoverMenuItem(
+                     title: String(localized: "Edit Snippet"), systemImage: "pencil", startsSection: true,
+                     shortcut: "⌘E"
+@@ -121,7 +129,7 @@ enum SnippetActionsMenu {
+                 },
+                 PopoverMenuItem(
+                     title: String(localized: "Show in Finder"), systemImage: "folder", startsSection: true,
+-                    shortcut: "⌘↵"
++                    shortcut: "⌘F"
+                 ) {
+                     core.snippetCoordinator.showSnippetInFinder(record)
+                 },
+diff --git a/Tinycast/Palette/PaletteShortcut.swift b/Tinycast/Palette/PaletteShortcut.swift
+index 1cf4e2e18cc042ed8305b18889bebc7047deaecc..72afad026b0e6fa4d2e11e77a5637f0c1f235a14 100644
+--- a/Tinycast/Palette/PaletteShortcut.swift
++++ b/Tinycast/Palette/PaletteShortcut.swift
+@@ -46,6 +46,8 @@ enum PaletteShortcut: Equatable {
+     case edit
+     /// ⌘D.
+     case duplicate
++    /// ⌘S, a clipboard entry's text kept as a snippet.
++    case saveAsSnippet
+     /// ⌘F, for a screen whose ⌘↵ already does something else.
+     case showInFinder
+     /// ⌥⌘,, the screen's own settings; ⌘, alone stays the app's.
+@@ -83,6 +85,7 @@ enum PaletteShortcut: Equatable {
+         if command, !shift, matches("n") { return .newItem }
+         if command, !shift, !option, !control, matches("e") { return .edit }
+         if command, !shift, matches("d") { return .duplicate }
++        if command, !shift, !option, !control, matches("s") { return .saveAsSnippet }
+         if command, option, matches(",") { return .settings }
+         if command, matches("j") { return .continueInChat }
+         return nil
+@@ -93,7 +96,7 @@ enum PaletteShortcut: Equatable {
+         switch self {
+         case .copyFile, .copyName, .copyPath, .copyText, .pasteFile, .quickLook, .openInApp,
+             .showDetails, .toggleFavorite, .hideFromSearch, .quit, .forceQuit, .minimizeWindow,
+-            .hideApp, .restart, .edit, .duplicate, .showInFinder:
++            .hideApp, .restart, .edit, .duplicate, .showInFinder, .saveAsSnippet:
+             true
+         case .commandDelete, .delete, .deleteAll, .pin, .favoriteSlot, .continueInChat, .newItem,
+             .settings, .copyCalculation:
+@@ -105,7 +108,7 @@ enum PaletteShortcut: Equatable {
+         switch self {
+         case .delete, .deleteAll, .copyFile, .copyName, .copyPath, .copyText, .copyCalculation,
+             .quickLook, .openInApp, .showDetails, .toggleFavorite, .hideFromSearch, .minimizeWindow,
+-            .newItem, .settings, .edit, .duplicate, .showInFinder:
++            .newItem, .settings, .edit, .duplicate, .showInFinder, .saveAsSnippet:
+             true
+         case .commandDelete, .pasteFile, .quit, .forceQuit, .hideApp, .restart, .pin, .favoriteSlot,
+             .continueInChat:
+diff --git a/Tinycast/Palette/PaletteState.swift b/Tinycast/Palette/PaletteState.swift
+index dbb48261b6264413ee79c39d9cbc9c6e8a7444e0..50abf13b0b4425a8fc25a347085d8d4bf788b71a 100644
+--- a/Tinycast/Palette/PaletteState.swift
++++ b/Tinycast/Palette/PaletteState.swift
+@@ -5,6 +5,8 @@ struct PaletteFrame: Equatable {
+     let mode: PaletteMode
+     let query: String
+     let selection: Int
++    /// tinycast-space: a clipboard screen is left and returned to with its filter.
++    var clipboardFilter: ClipboardFilter = .all
+ }
+ 
+ @MainActor
+@@ -98,14 +100,23 @@ final class PaletteState {
+ 
+     func push(mode: PaletteMode) {
+         if !self.mode.isNativeEditor {
+-            backStack.append(PaletteFrame(mode: self.mode, query: query, selection: selection))
++            backStack.append(
++                PaletteFrame(
++                    mode: self.mode, query: query, selection: selection, clipboardFilter: clipboardFilter))
+         }
+         replace(mode: mode)
+     }
+ 
++    /// Lands on a row that moved while the screen was away.
++    func restoreSelection(_ index: Int) {
++        selection = index
++        restoredSelection = index
++    }
++
+     func pop(preservingSelection: Bool = false) -> Bool {
+         guard let frame = backStack.popLast() else { return false }
+         openScreen(frame.mode)
++        clipboardFilter = frame.clipboardFilter
+         query = frame.query
+         selection = frame.selection
+         restoredSelection = preservingSelection ? frame.selection : nil
+@@ -116,7 +127,9 @@ final class PaletteState {
+ 
+     /// Tab's step deeper into the ring: the screen crossed from is the step back, query and all.
+     func pushCarryingQuery(mode: PaletteMode) {
+-        backStack.append(PaletteFrame(mode: self.mode, query: query, selection: selection))
++        backStack.append(
++            PaletteFrame(
++                mode: self.mode, query: query, selection: selection, clipboardFilter: clipboardFilter))
+         self.mode = mode
+     }
+ 
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 06e8f3f0c88c1ee782283820ba51b92e8a329819..7d4e26df79277ab4dfaa33fa5b4bc1d6c2f1ee65 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -421,7 +421,8 @@ struct RootPaletteView: View {
+                 fileSearch.search(vm.query, filter: vm.fileSearchFilter)
+             }
+             .onChange(of: vm.mode) {
+-                vm.clipboardFilter = .all
++                // tinycast-space: a screen popped back to keeps the filter it was left with.
++                if vm.restoredSelection == nil { vm.clipboardFilter = .all }
+                 vm.fileSearchFilter = .all
+                 vm.emojiCategoryFilter = .all
+                 vm.emojiGridColumnsOverride = nil

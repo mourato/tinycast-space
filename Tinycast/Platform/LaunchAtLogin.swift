@@ -1,7 +1,8 @@
 import ServiceManagement
 
 enum LaunchAtLogin {
-    static var isEnabled: Bool {
+    /// The status is an XPC round trip (~40 ms), so callers read it off the main thread.
+    @concurrent static func isEnabled() async -> Bool {
         SMAppService.mainApp.status == .enabled
     }
 

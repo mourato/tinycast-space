@@ -34,6 +34,7 @@ struct FileIndexTests {
 
         layout(snapshot, root: root.path)
         search(index, root: root.path)
+        scopedSearch(index, root: root.path)
         try live(index, root: root, policy: policy)
 
         print(failures == 0 ? "File index tests passed" : "\(failures) file index tests failed")
@@ -87,6 +88,24 @@ struct FileIndexTests {
         expect(recent.contains("notes.txt"), "recent lists files under home")
         expect(!recent.contains("config"), "recent leaves hidden files out")
         expect(index.itemCount == 15, "the count matches the snapshot")
+    }
+
+    static func scopedSearch(_ index: FileIndex, root: String) {
+        let query = FileSearchQuery.prepare("todo")!
+        let documents = root + "/Documents"
+        let found = index.search(query, filter: .all, folder: documents)
+        expect(found.map(\.id) == [documents + "/Archive/todo.md"], "a scope includes descendants only")
+        expect(index.search(query, filter: .images, folder: documents).isEmpty, "a scope keeps the type filter")
+        expect(
+            index.search(query, filter: .all, folder: documents + "Missing").isEmpty,
+            "a missing scope finds nothing")
+        let blank = index.recent(filter: .all, folder: documents).map(\.id)
+        expect(blank.contains(documents + "/Archive"), "an empty scope lists folders for another Tab")
+        expect(!blank.contains(documents), "the scoped folder never lists itself")
+        expect(blank.allSatisfy { $0.hasPrefix(documents + "/") }, "an empty scope never leaks siblings")
+        expect(
+            index.search(query, filter: .all, isCancelled: { true }).isEmpty,
+            "a cancelled scan yields no results")
     }
 
     static func live(_ index: FileIndex, root: URL, policy: FileSearchPolicy) throws {

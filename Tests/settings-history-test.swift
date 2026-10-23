@@ -30,6 +30,8 @@ struct SettingsHistoryTests {
         catalogFindsKnownRows()
         catalogRanksTitlesFirst()
         catalogAnchorsMatchTheirPane()
+        scopeBareQueryBrowsesPanes()
+        scopeSearchFindsRows()
         revealingRecordsANewRequestEachTime()
         flashOutlivesThePaneThatLitIt()
 
@@ -180,6 +182,28 @@ struct SettingsHistoryTests {
         expect(
             SettingsSearchCatalog.results(for: "nothing here matches at all").isEmpty,
             "and an unmatched query returns nothing")
+    }
+
+    /// A bare `?` browses every pane once, so the scope is useful before typing.
+    static func scopeBareQueryBrowsesPanes() {
+        let panes = SettingsSearchCatalog.scopeResults(for: "")
+        expect(
+            panes.count == SettingsTab.allCases.count
+                && Set(panes.map(\.tab)) == Set(SettingsTab.allCases),
+            "a bare scope lists every pane exactly once")
+        expect(panes.allSatisfy { $0.target == nil }, "and every row opens its pane")
+        expect(
+            SettingsSearchCatalog.scopeResults(for: "   ").count == panes.count,
+            "and whitespace alone still browses")
+    }
+
+    /// `?text` searches rows and panes through the same ranking as Settings search.
+    static func scopeSearchFindsRows() {
+        let found = SettingsSearchCatalog.scopeResults(for: "extensions")
+        expect(found.first?.tab == .extensions, "a scoped search lands on the pane")
+        expect(
+            SettingsSearchCatalog.scopeResults(for: "nothing here matches at all").isEmpty,
+            "and an unmatched scope returns nothing")
     }
 
     // MARK: - Revealing a section

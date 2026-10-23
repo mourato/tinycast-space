@@ -93,13 +93,18 @@ final class FileIndex: Sendable {
         }
     }
 
-    func search(_ query: FileSearchQuery.Prepared, filter: FileSearchFilter) -> [FileSearchResult] {
+    func search(
+        _ query: FileSearchQuery.Prepared, filter: FileSearchFilter, folder: String? = nil,
+        isCancelled: @Sendable () -> Bool = { false }
+    ) -> [FileSearchResult] {
         let state = state.withLock { $0 }
         guard let snapshot = state.snapshot, let policy = state.policy else { return [] }
         let limit = FileSearchQuery.resultLimit
         let names = NameScores(count: snapshot.nameCount)
         Self.chunked(0..<snapshot.nameCount, alignment: 64) { range in
-            for id in range where snapshot.nameMask[id] & query.mask == query.mask {
+            for id in range {
+                if id & 255 == 0, isCancelled() { return }
+                guard snapshot.nameMask[id] & query.mask == query.mask else { continue }
                 let score = FileSearchQuery.score(
                     query, name: snapshot.name(id: id), mask: snapshot.nameMask[id], prior: 0)
                 if let score { names.set(id, score) }
@@ -108,9 +113,12 @@ final class FileIndex: Sendable {
         let base =
             names.isEmpty
             ? []
-            : Self.collect(snapshot, limit: limit) { range, top in
+            : Self.collect(
+                snapshot, range: searchRange(folder, snapshot: snapshot, state: state), limit: limit
+            ) { range, top in
                 var types = TypeFilter(filter: filter)
                 for index in range {
+                    if index & 255 == 0, isCancelled() { return }
                     let id = Int(snapshot.nameID[index])
                     guard let score = names.score(id), !state.isDead(index),
                         types.accepts(name: snapshot.name(id: id), isDirectory: snapshot.isDirectory(index))
@@ -124,7 +132,11 @@ final class FileIndex: Sendable {
                 isDirectory: snapshot.isDirectory(hit.index))
         }
         var types = TypeFilter(filter: filter)
-        for (path, entry) in state.added where entry.mask & query.mask == query.mask {
+        for (offset, element) in state.added.enumerated() {
+            if offset & 255 == 0, isCancelled() { return [] }
+            let (path, entry) = element
+            guard entry.mask & query.mask == query.mask else { continue }
+            if let folder, path == folder || !FileSearchScope.contains(folder, path) { continue }
             var name = entry.name
             let score = name.withUTF8 { name -> Int? in
                 guard
@@ -137,32 +149,54 @@ final class FileIndex: Sendable {
             guard let score else { continue }
             ranked.append(Ranked(score: score, path: path, isDirectory: entry.isDirectory))
         }
-        return Self.results(ranked, limit: limit, policy: policy)
+        return isCancelled() ? [] : Self.results(ranked, limit: limit, policy: policy)
     }
 
-    func recent(filter: FileSearchFilter) -> [FileSearchResult] {
+    func recent(
+        filter: FileSearchFilter, folder: String? = nil,
+        isCancelled: @Sendable () -> Bool = { false }
+    ) -> [FileSearchResult] {
         let state = state.withLock { $0 }
         guard let snapshot = state.snapshot, let policy = state.policy else { return [] }
-        let limit = FileSearchQuery.recentLimit
-        let base = Self.collect(snapshot, limit: limit) { range, top in
+        let limit = folder == nil ? FileSearchQuery.recentLimit : FileSearchQuery.resultLimit
+        let base = Self.collect(
+            snapshot, range: searchRange(folder, snapshot: snapshot, state: state), limit: limit
+        ) { range, top in
             var types = TypeFilter(filter: filter)
-            for index in range where snapshot.prior[index] == 2 && !snapshot.isDirectory(index) {
+            for index in range {
+                if index & 255 == 0, isCancelled() { return }
+                let isDirectory = snapshot.isDirectory(index)
+                if folder == nil, snapshot.prior[index] != 2 || isDirectory { continue }
                 guard !state.isDead(index),
-                    types.accepts(name: snapshot.name(index), isDirectory: false)
+                    types.accepts(name: snapshot.name(index), isDirectory: isDirectory)
                 else { continue }
-                top.insert(Int(snapshot.mtime[index]), index)
+                top.insert(Int(snapshot.prior[index]) << 40 | Int(snapshot.mtime[index]), index)
             }
         }
         var ranked = base.map { hit in
-            Ranked(score: hit.score, path: snapshot.path(of: hit.index), isDirectory: false)
+            Ranked(
+                score: hit.score, path: snapshot.path(of: hit.index),
+                isDirectory: snapshot.isDirectory(hit.index))
         }
         var types = TypeFilter(filter: filter)
-        for (path, entry) in state.added where entry.isRecent {
+        for (offset, element) in state.added.enumerated() {
+            if offset & 255 == 0, isCancelled() { return [] }
+            let (path, entry) = element
+            if let folder {
+                guard path != folder, FileSearchScope.contains(folder, path) else { continue }
+            } else if !entry.isRecent { continue }
             var name = entry.name
-            guard name.withUTF8({ types.accepts(name: $0, isDirectory: false) }) else { continue }
-            ranked.append(Ranked(score: Int(entry.mtime), path: path, isDirectory: false))
+            guard name.withUTF8({ types.accepts(name: $0, isDirectory: entry.isDirectory) }) else { continue }
+            ranked.append(Ranked(
+                score: Int(entry.prior) << 40 | Int(entry.mtime), path: path, isDirectory: entry.isDirectory))
         }
-        return Self.results(ranked, limit: limit, policy: policy)
+        return isCancelled() ? [] : Self.results(ranked, limit: limit, policy: policy)
+    }
+
+    private func searchRange(_ folder: String?, snapshot: FileIndexSnapshot, state: State) -> Range<Int> {
+        guard let folder else { return snapshot.rootCount..<snapshot.entryCount }
+        guard let index = snapshot.lookup(folder), !state.isDead(index) else { return 0..<0 }
+        return snapshot.subtree(of: index)
     }
 
     private struct Ranked {
@@ -189,11 +223,11 @@ final class FileIndex: Sendable {
 
     /// Only the overall best come back, so no more paths are built than can be shown.
     private static func collect(
-        _ snapshot: FileIndexSnapshot, limit: Int,
+        _ snapshot: FileIndexSnapshot, range: Range<Int>, limit: Int,
         _ scan: @Sendable (Range<Int>, inout TopHits) -> Void
     ) -> [TopHits.Hit] {
         let gathered = Gathered()
-        chunked(snapshot.rootCount..<snapshot.entryCount) { range in
+        chunked(range) { range in
             var top = TopHits(limit: limit)
             scan(range, &top)
             gathered.append(top.best)

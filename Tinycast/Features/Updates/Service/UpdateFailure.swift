@@ -1,6 +1,7 @@
 import Foundation
 
 enum UpdateFailure: LocalizedError, Equatable {
+    case checkFailed(String)
     case downloadFailed(String)
     case extractFailed(String)
     case noAppInArchive
@@ -12,6 +13,8 @@ enum UpdateFailure: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .checkFailed(let detail):
+            return String(localized: "Tinycast could not check for updates. \(detail)")
         case .downloadFailed(let detail):
             return String(localized: "The download did not finish. \(detail)")
         case .extractFailed(let detail):
@@ -49,6 +52,8 @@ enum UpdateFailure: LocalizedError, Equatable {
                     """)
         case .quarantined:
             return String(localized: "Nothing was installed.")
+        case .checkFailed:
+            return String(localized: "Try again in a few minutes.")
         default:
             return nil
         }

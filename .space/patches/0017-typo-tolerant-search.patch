@@ -1,0 +1,188 @@
+diff --git a/Tests/fuzz-test.swift b/Tests/fuzz-test.swift
+index 869c2b6204a3c02617912ac9a76822e563e2ff30..d1fea392bbd145b0ff05d879f25364183e3d6fc3 100644
+--- a/Tests/fuzz-test.swift
++++ b/Tests/fuzz-test.swift
+@@ -21,6 +21,7 @@ struct FuzzTest {
+         naming()
+         categories()
+         comparator()
++        typoTolerance()
+         denseIndex()
+         suggestions()
+         sharedFold()
+@@ -388,6 +389,31 @@ struct FuzzTest {
+         }
+     }
+ 
++    static func typoTolerance() {
++        print("\n# typo tolerance")
++        check("'chorme' finds Google Chrome", rank("chorme", [Item(name: "Google Chrome")]) == ["Google Chrome"])
++        check(
++            "a typo of a later word finds its entry",
++            rank("managment", [Item(name: "Window Management")]) == ["Window Management"])
++        check(
++            "typos are a fallback: a real match hides them",
++            rank("safar", [Item(name: "Sofar", frecency: 900), Item(name: "Safari")]) == ["Safari"])
++        check(
++            "the closer typo ranks first",
++            rank("chrommes", [Item(name: "Chromebook", frecency: 900), Item(name: "Chromes")])
++                == ["Chromes", "Chromebook"])
++        check("'cat' is not a typo of Chess", rank("cat", [Item(name: "Chess")]).isEmpty)
++        check("'finder' is not a typo of Find My", rank("finder", [Item(name: "Find My")]).isEmpty)
++        check(
++            "a typo reaches the title alone",
++            rank("chorme", [Item(name: "Browser", subtitle: "Chrome", keywords: ["chrome"])]).isEmpty)
++        check(
++            "the allowance grows with the query",
++            LauncherMatch.allowedTypos(forQueryLength: 3) == 0
++                && LauncherMatch.allowedTypos(forQueryLength: 6) == 1
++                && LauncherMatch.allowedTypos(forQueryLength: 9) == 2)
++    }
++
+     static func denseIndex() {
+         print("\n# a dense index")
+         let cases: [(query: String, first: String, why: String)] = [
+diff --git a/Tinycast/Features/Launcher/Model/LauncherMatch.swift b/Tinycast/Features/Launcher/Model/LauncherMatch.swift
+index b7f79ac1de54788b30f90710bc8ff1e4253b0d5f..6aa60c0d3234ac430f042f9c80a37eca93569fed 100644
+--- a/Tinycast/Features/Launcher/Model/LauncherMatch.swift
++++ b/Tinycast/Features/Launcher/Model/LauncherMatch.swift
+@@ -170,6 +170,72 @@ enum LauncherMatch {
+     private static func wordPoints(_ t: [UInt16], _ column: Int, humps: [Int]) -> Int {
+         (isSeparator(t[column - 1]) && !isSeparator(t[column])) || humps.contains(column) ? 3 : 2
+     }
++
++    // MARK: - Typos
++
++    /// Edits a query of this length may be off by; none below four letters, where nearly
++    /// everything is one edit from something.
++    static func allowedTypos(forQueryLength length: Int) -> Int {
++        switch length {
++        case ..<4: 0
++        case 4...7: 1
++        case 8...11: 2
++        default: 3
++        }
++    }
++
++    /// Edits from the query to the start of the text or of one of its words, nil past the allowance.
++    static func typoDistance(_ query: SearchText, in target: SearchText) -> Int? {
++        let q = query.units
++        let t = target.units
++        let allowed = allowedTypos(forQueryLength: q.count)
++        // Quadratic per word start: fine for a name, not for a pathological one.
++        guard allowed > 0, !t.isEmpty, t.count <= 64 else { return nil }
++        return wordStarts(t, humps: target.humps)
++            .compactMap { prefixDistance(q, t, from: $0, allowed: allowed) }
++            .min()
++    }
++
++    private static func wordStarts(_ t: [UInt16], humps: [Int]) -> [Int] {
++        var starts = [0]
++        for index in 1..<t.count where isSeparator(t[index - 1]) && !isSeparator(t[index]) {
++            starts.append(index)
++        }
++        return starts + humps.filter { $0 > 0 && $0 < t.count }
++    }
++
++    /// Damerau–Levenshtein to the closest prefix of `t[from...]`: the rest of the name is free.
++    private static func prefixDistance(
++        _ q: [UInt16], _ t: [UInt16], from: Int, allowed: Int
++    ) -> Int? {
++        let columns = t.count - from
++        guard columns > 0 else { return nil }
++        var twoBack = [Int](repeating: 0, count: columns + 1)
++        // Row 0 charges every skipped leading letter; only the trailing ones are free.
++        var previous = Array(0...columns)
++        var current = [Int](repeating: 0, count: columns + 1)
++        for row in 1...q.count {
++            current[0] = row
++            var rowBest = row
++            for column in 1...columns {
++                let cost = q[row - 1] == t[from + column - 1] ? 0 : 1
++                var value = min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + cost)
++                if row > 1, column > 1, q[row - 1] == t[from + column - 2],
++                    q[row - 2] == t[from + column - 1]
++                {
++                    value = min(value, twoBack[column - 2] + 1)
++                }
++                current[column] = value
++                rowBest = min(rowBest, value)
++            }
++            // No later row can come back under the allowance.
++            guard rowBest <= allowed else { return nil }
++            twoBack = previous
++            swap(&previous, &current)
++        }
++        let distance = previous.min() ?? .max
++        return distance <= allowed ? distance : nil
++    }
+ }
+ 
+ /// How loose a fuzzy hit may be and still show.
+diff --git a/Tinycast/Features/Launcher/Model/LauncherOrder.swift b/Tinycast/Features/Launcher/Model/LauncherOrder.swift
+index e4ea7c2c0efdbb632d5d78885615945d7e8ec155..0f7134835620670f37fa35cd70d5798a767ec2af 100644
+--- a/Tinycast/Features/Launcher/Model/LauncherOrder.swift
++++ b/Tinycast/Features/Launcher/Model/LauncherOrder.swift
+@@ -57,14 +57,20 @@ enum LauncherOrder {
+         profile: (Item) -> SearchProfile, signals: (Item) -> Signals
+     ) -> [Item] {
+         guard !query.isEmpty else { return [] }
+-        let scored = items.enumerated().compactMap { position, item -> (Item, Candidate)? in
+-            let signals = signals(item)
+-            guard
+-                let facts = Facts(
+-                    profile: profile(item), signals: signals, query: query, sensitivity: sensitivity)
+-            else { return nil }
+-            return (item, Candidate(facts: facts, signals: signals, position: position))
++        func score(allowingTypos: Bool) -> [(Item, Candidate)] {
++            items.enumerated().compactMap { position, item -> (Item, Candidate)? in
++                let signals = signals(item)
++                guard
++                    let facts = Facts(
++                        profile: profile(item), signals: signals, query: query,
++                        sensitivity: sensitivity, allowingTypos: allowingTypos)
++                else { return nil }
++                return (item, Candidate(facts: facts, signals: signals, position: position))
++            }
+         }
++        // Only a query nothing matches is read as a misspelling, so no real match is ever displaced.
++        var scored = score(allowingTypos: false)
++        if scored.isEmpty { scored = score(allowingTypos: true) }
+         let length = query.latin.units.count
+         return
+             scored
+@@ -134,8 +140,13 @@ enum LauncherOrder {
+         let subtitleExact: Bool
+         let subtitle: Int
+         let term: TermHit
++        /// Set only on the fallback pass, when the title is a near-miss of the query.
++        let typo: Int?
+ 
+-        init?(profile: SearchProfile, signals: Signals, query: Query, sensitivity: SearchSensitivity) {
++        init?(
++            profile: SearchProfile, signals: Signals, query: Query, sensitivity: SearchSensitivity,
++            allowingTypos: Bool = false
++        ) {
+             let latinLength = query.latin.units.count
+             let typedLength = query.typed.units.count
+             alias = signals.alias.map { Self.aliasHit($0, query.typed) } ?? .none
+@@ -155,7 +166,8 @@ enum LauncherOrder {
+                 || profile.keywords.contains {
+                     passes(LauncherMatch.match(query.latin, in: $0), latinLength)
+                 }
+-            guard isMatching else { return nil }
++            typo = isMatching || !allowingTypos ? nil : LauncherMatch.typoDistance(query.latin, in: profile.title)
++            guard isMatching || typo != nil else { return nil }
+ 
+             titleExact = titleMatch == .exact || alternates.contains { $0 == .exact }
+             title = alternates.reduce(Self.value(titleMatch)) { max($0, Self.value($1)) }
+@@ -220,6 +232,9 @@ enum LauncherOrder {
+     /// Negative puts `a` first; the first rule that separates the two decides.
+     private static func compare(_ a: Candidate, _ b: Candidate, length: Int) -> Int {
+         guard let x = a.facts, let y = b.facts else { return tiebreak(a, b) }
++        if let left = x.typo, let right = y.typo {
++            return first(descending(right, left), frecency(a, b)) ?? tiebreak(a, b)
++        }
+         if x.alias != y.alias, x.alias == .exact || y.alias == .exact {
+             return x.alias == .exact ? -1 : 1
+         }

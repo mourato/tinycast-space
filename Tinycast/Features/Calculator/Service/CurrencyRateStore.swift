@@ -22,6 +22,8 @@ final class CurrencyRateStore {
     @ObservationIgnored private var pump: Task<Void, Never>?
     /// Drives the schedule: a partial snapshot answers, but only a whole one resets the clock.
     @ObservationIgnored private var completedAt: Date?
+    /// The pump and a manual refresh can overlap; only the latest fetch started may land.
+    @ObservationIgnored private var fetchGeneration = 0
 
     init() {
         fileURL = AppPaths.caches().appendingPathComponent("currency-rates.json")
@@ -62,7 +64,9 @@ final class CurrencyRateStore {
 
     @discardableResult
     private func fetchAndStore() async -> Bool {
-        guard let result = await Self.fetch() else { return false }
+        fetchGeneration &+= 1
+        let generation = fetchGeneration
+        guard let result = await Self.fetch(), generation == fetchGeneration else { return false }
         rates = result.rates
         // Never persist a coin-less run: `pricesCoins` reads the cache as whole by definition.
         guard result.complete, let data = try? JSONEncoder().encode(result.rates) else { return false }

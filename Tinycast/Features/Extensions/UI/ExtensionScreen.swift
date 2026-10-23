@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 /// The one source of row order, so the palette's flat `selection` maps 1:1 onto visible rows.
-struct ExtensionScreen: Equatable {
+struct ExtensionScreen {
     struct SelectionChange: Equatable {
         let handler: String
         let itemID: String?
@@ -18,14 +18,14 @@ struct ExtensionScreen: Equatable {
     }
 
     /// `id` is the scroll target: an `.id()` inside a row exists only once it is realized.
-    struct Item: Equatable, Identifiable {
+    struct Item: Identifiable {
         let node: RenderNode
         let index: Int
 
         var id: String { "item:\(node.id)" }
     }
 
-    enum Row: Equatable, Identifiable {
+    enum Row: Identifiable {
         case header(title: String, subtitle: String?, id: String)
         case item(Item)
 
@@ -228,6 +228,25 @@ struct ExtensionScreen: Equatable {
 
     var autoFocusedField: Int {
         items.first { $0.node.bool("autoFocus") == true }?.index ?? 0
+    }
+
+    /// The second action takes ⌘↵ unless it declares a key, or another action already holds ⌘↵.
+    static func secondaryAction(in actions: [ExtensionAction]) -> ExtensionAction? {
+        guard actions.count > 1, actions[1].enclosingSubmenuTitle == nil,
+            actions[1].node.object("shortcut") == nil,
+            !actions.contains(where: { $0.matches(key: .return, modifiers: .command) })
+        else { return nil }
+        return actions[1]
+    }
+
+    /// The keys the panel states for actions that carry none: ↵ on the first, ⌘↵ on the second.
+    static func implicitShortcuts(in actions: [ExtensionAction]) -> [ExtensionAction.ID: [String]] {
+        var result: [ExtensionAction.ID: [String]] = [:]
+        if let first = actions.first, first.node.object("shortcut") == nil {
+            result[first.id] = ["↵"]
+        }
+        if let second = secondaryAction(in: actions) { result[second.id] = ["⌘", "↵"] }
+        return result
     }
 
     /// Submenus flatten into their section: the palette's menu is flat.

@@ -75,14 +75,19 @@ final class UpdateCoordinator {
         present()
         Task { [weak self] in
             guard let self else { return }
-            let answered = await store.check()
+            var failure: UpdateFailure?
+            do {
+                try await store.check()
+            } catch {
+                failure = error as? UpdateFailure ?? .checkFailed(error.localizedDescription)
+            }
             guard case .checking = stage else { return }
             if let release = store.update {
                 stage = .available(release)
-            } else if answered {
-                stage = .upToDate
+            } else if let failure {
+                stage = .failed(failure)
             } else {
-                stage = .failed(.downloadFailed(String(localized: "Tinycast could not reach GitHub.")))
+                stage = .upToDate
             }
         }
     }

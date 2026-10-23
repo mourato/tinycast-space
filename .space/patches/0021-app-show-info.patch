@@ -1,0 +1,69 @@
+diff --git a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+index dad71c2c793ecb238fd3b393f34da3889f916fa9..ed217f78ded9f2d84aabd1870d22bb2ec3f3f169 100644
+--- a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
++++ b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+@@ -194,6 +194,15 @@ enum AppActionsMenu {
+                     core.launcherCoordinator.showInFinder(app)
+                 })
+         }
++        if app.kind == .application {  // tinycast-space
++            items.append(
++                PopoverMenuItem(
++                    title: String(localized: "Show Info in Finder"), systemImage: "info.circle",
++                    shortcut: "⌘I"
++                ) {
++                    core.launcherCoordinator.showInfoInFinder(app)
++                })
++        }
+         return items
+     }
+ }
+diff --git a/Tinycast/Features/Launcher/UI/LauncherCoordinator.swift b/Tinycast/Features/Launcher/UI/LauncherCoordinator.swift
+index cdc1cc6b9b3eb40854dd2f3230411cea355d4001..f3381160ae8936f09f5f64d40462c42edb13016e 100644
+--- a/Tinycast/Features/Launcher/UI/LauncherCoordinator.swift
++++ b/Tinycast/Features/Launcher/UI/LauncherCoordinator.swift
+@@ -291,6 +291,23 @@ final class LauncherCoordinator {
+         AppLauncher.showInFinder(app.url)
+     }
+ 
++    /// tinycast-space: Finder's Get Info for an app, as Raycast's ⌘I; the same route Uninstall takes.
++    func showInfoInFinder(_ app: AppEntry) {
++        guard app.kind == .application else { return }
++        paletteCoordinator.hidePalette(restoreFocus: false)
++        Task {
++            guard await !AppLauncher.showInfoInFinder(app.url) else { return }
++            await core.showNotice(
++                title: String(localized: "Couldn’t Open Get Info"),
++                message: String(
++                    localized: """
++                        Allow Tinycast to control Finder in System Settings › Privacy & Security \
++                        › Automation, then try again.
++                        """),
++                symbol: "info.circle", tone: .danger)
++        }
++    }
++
+     /// Focus is never handed back: the relaunch takes it, or the app that refused has it.
+     func restart(_ app: AppEntry) {
+         guard app.kind == .application, let bundleID = app.bundleID else { return }
+diff --git a/Tinycast/Features/Launcher/UI/LauncherScreen.swift b/Tinycast/Features/Launcher/UI/LauncherScreen.swift
+index 15ee90a234e209d44a1a74d81e2aee866ff20318..b7df3272a6323f89cb08a5f82fd353177f128098 100644
+--- a/Tinycast/Features/Launcher/UI/LauncherScreen.swift
++++ b/Tinycast/Features/Launcher/UI/LauncherScreen.swift
+@@ -331,8 +331,14 @@ struct LauncherScreen: PaletteScreen {
+         case .favoriteSlot(let index): return launchFavorite(at: index)
+         case .copyCalculation: return copyCalculation(at: selection)
+         case .openInApp, .showDetails:
+-            guard let meeting = meeting(at: selection) else { return false }
+-            return MeetingActionsMenu.perform(shortcut, meeting: meeting, core: core)
++            if let meeting = meeting(at: selection) {
++                return MeetingActionsMenu.perform(shortcut, meeting: meeting, core: core)
++            }
++            // tinycast-space: ⌘I on an app opens Finder's Get Info, as in Raycast.
++            guard shortcut == .showDetails, let app = entry(at: selection), app.kind == .application
++            else { return false }
++            core.launcherCoordinator.showInfoInFinder(app)
++            return true
+         default: return false
+         }
+     }

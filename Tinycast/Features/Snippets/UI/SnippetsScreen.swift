@@ -36,10 +36,10 @@ struct SnippetsScreen: PaletteScreen {
         core.snippetCoordinator.expandSnippetFromPalette(id: record.id)
     }
 
-    /// ⌘↵ reveals the file, as it does on a snippet's launcher row.
+    /// ⌘↵ copies, as it does on a clipboard entry; Show in Finder moves to ⌘F.
     func secondary(at selection: Int) -> Bool {
         guard let record = record(at: selection) else { return false }
-        core.snippetCoordinator.showSnippetInFinder(record)
+        core.snippetCoordinator.copySnippetFromPalette(id: record.id)
         return true
     }
 
@@ -52,6 +52,8 @@ struct SnippetsScreen: PaletteScreen {
         switch shortcut {
         case .edit:
             core.snippetCoordinator.editSnippet(record)
+        case .showInFinder:
+            core.snippetCoordinator.showSnippetInFinder(record)
         case .delete:
             Task { await core.snippetCoordinator.deleteSnippet(id: record.id) }
         default: return false
@@ -109,6 +111,12 @@ enum SnippetActionsMenu {
                     core.snippetCoordinator.expandSnippetFromPalette(id: record.id)
                 },
                 PopoverMenuItem(
+                    title: String(localized: "Copy to Clipboard"), systemImage: "doc.on.doc",
+                    shortcut: "⌘↵"
+                ) {
+                    core.snippetCoordinator.copySnippetFromPalette(id: record.id)
+                },
+                PopoverMenuItem(
                     title: String(localized: "Edit Snippet"), systemImage: "pencil", startsSection: true,
                     shortcut: "⌘E"
                 ) {
@@ -121,7 +129,7 @@ enum SnippetActionsMenu {
                 },
                 PopoverMenuItem(
                     title: String(localized: "Show in Finder"), systemImage: "folder", startsSection: true,
-                    shortcut: "⌘↵"
+                    shortcut: "⌘F"
                 ) {
                     core.snippetCoordinator.showSnippetInFinder(record)
                 },

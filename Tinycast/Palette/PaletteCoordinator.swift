@@ -55,8 +55,10 @@ final class PaletteCoordinator {
         windowController.isVisible && palette.mode == mode
     }
 
+    /// A visible palette hides whatever screen is up; the summon after it restores that screen
+    /// until Pop to Root Search expires, so the pair reads as minimise and restore.
     func togglePalette() {
-        if isShowing(.launcher) {
+        if isVisible {
             hidePalette()
         } else {
             showPalette(mode: .launcher, restoreAnyMode: true)
@@ -97,7 +99,7 @@ final class PaletteCoordinator {
         // Before the show: `targetApp` must still name the app in front, and no row may pop in.
         onScreenOpening?(palette.mode)
         windowController.show()
-        if palette.mode == .fileSearch { fileSearch.search(palette.query) }
+        if palette.mode == .fileSearch { fileSearch.search(palette.query, filter: palette.fileSearchFilter) }
         if palette.mode == .menuSearch { menuSearch.filter(palette.query) }
         if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
         // Re-scan on open so an app uninstalled since the last scan drops out of the launcher.

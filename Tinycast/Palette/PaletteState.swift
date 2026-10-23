@@ -5,6 +5,8 @@ struct PaletteFrame: Equatable {
     let mode: PaletteMode
     let query: String
     let selection: Int
+    /// tinycast-space: a clipboard screen is left and returned to with its filter.
+    var clipboardFilter: ClipboardFilter = .all
 }
 
 @MainActor
@@ -22,6 +24,12 @@ final class PaletteState {
         didSet { if oldValue != clipboardFilter { restoredSelection = nil } }
     }
     var fileSearchFilter: FileSearchFilter = .all
+    /// tinycast-space: File Search narrowed to one folder. Leaving it is a step back of its own,
+    /// taken by `pop` before the stack's; `FileSearchCoordinator` searches again on each change.
+    var fileSearchFolder: String? {
+        didSet { if oldValue != fileSearchFolder { onFileSearchFolderChanged?() } }
+    }
+    @ObservationIgnored var onFileSearchFolderChanged: (() -> Void)?
     var emojiCategoryFilter: EmojiCategoryFilter = .all
     /// Nil means the configured default; zoom only overrides it for this picker session.
     var emojiGridColumnsOverride: EmojiGridColumns?
@@ -83,7 +91,7 @@ final class PaletteState {
         isVisible = visible
     }
 
-    var canGoBack: Bool { !backStack.isEmpty }
+    var canGoBack: Bool { !backStack.isEmpty || isInFileSearchFolder }
 
     func prepare(mode: PaletteMode) {
         backStack.removeAll()
@@ -98,14 +106,24 @@ final class PaletteState {
 
     func push(mode: PaletteMode) {
         if !self.mode.isNativeEditor {
-            backStack.append(PaletteFrame(mode: self.mode, query: query, selection: selection))
+            backStack.append(
+                PaletteFrame(
+                    mode: self.mode, query: query, selection: selection, clipboardFilter: clipboardFilter))
         }
         replace(mode: mode)
     }
 
+    /// Lands on a row that moved while the screen was away.
+    func restoreSelection(_ index: Int) {
+        selection = index
+        restoredSelection = index
+    }
+
     func pop(preservingSelection: Bool = false) -> Bool {
+        if leaveFileSearchFolder() { return true }
         guard let frame = backStack.popLast() else { return false }
         openScreen(frame.mode)
+        clipboardFilter = frame.clipboardFilter
         query = frame.query
         selection = frame.selection
         restoredSelection = preservingSelection ? frame.selection : nil
@@ -116,7 +134,9 @@ final class PaletteState {
 
     /// Tab's step deeper into the ring: the screen crossed from is the step back, query and all.
     func pushCarryingQuery(mode: PaletteMode) {
-        backStack.append(PaletteFrame(mode: self.mode, query: query, selection: selection))
+        backStack.append(
+            PaletteFrame(
+                mode: self.mode, query: query, selection: selection, clipboardFilter: clipboardFilter))
         self.mode = mode
     }
 
@@ -144,6 +164,7 @@ final class PaletteState {
         argumentEntryID = nil
         clipboardFilter = .all
         fileSearchFilter = .all
+        fileSearchFolder = nil
         emojiCategoryFilter = .all
         emojiGridColumnsOverride = nil
         forceExpanded = false
@@ -236,5 +257,20 @@ final class PaletteState {
         guard hoverHighlightArmed else { return }
         hoverHighlightArmed = false
         hoverDisarmToken = UUID()
+    }
+}
+
+// tinycast-space: File Search's folder scope; see `fileSearchFolder`.
+extension PaletteState {
+    /// Read only in File Search: the Tab ring leaves for the launcher without resetting the screen.
+    var isInFileSearchFolder: Bool { mode == .fileSearch && fileSearchFolder != nil }
+
+    /// The query is cleared first, so the search the folder change starts is already the right one.
+    @discardableResult
+    func leaveFileSearchFolder() -> Bool {
+        guard isInFileSearchFolder else { return false }
+        rewriteQuery("")
+        fileSearchFolder = nil
+        return true
     }
 }

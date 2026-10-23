@@ -957,6 +957,21 @@ struct ExtensionTests {
             "deeplink decodes arguments JSON",
             args?.arguments == ["title": "Triage"], String(describing: args?.arguments))
 
+        let withContext = ExtensionDeepLink.parse(
+            url: URL(
+                string:
+                    "raycast://extensions/demo/search?context=%7B%22id%22%3A7%2C%22tags%22%3A%5B%22a%22%5D%7D"
+            )!)
+        check(
+            "deeplink decodes context JSON as launchContext",
+            withContext?.context == ["id": .number(7), "tags": .array([.string("a")])],
+            String(describing: withContext?.context))
+        check(
+            "deeplink without context has none",
+            ExtensionDeepLink.parse(url: URL(string: "raycast://extensions/demo/search")!)?.context
+                == [:])
+        check("deeplink ignores malformed context", ExtensionDeepLink.parseContext("[1]") == [:])
+
         let coerced = ExtensionDeepLink.parseArguments(#"{"q":"","n":3,"flag":true}"#)
         check(
             "deeplink coerces non-string arguments",
@@ -1420,6 +1435,7 @@ struct ExtensionTests {
             failingRecorder.failures.joined(separator: "|"))
         await failing.stop(session: "s3")
 
+        await missingExecutableChecks()
         await swiftHelperChecks()
         await processKillChecks()
         zlibChecks()
@@ -1793,6 +1809,63 @@ struct ExtensionTests {
             check("state inside an async command still updates", false, "no dispatchable action")
         }
         await runtime.stop(session: "sAsync")
+    }
+
+    @MainActor
+    static func missingExecutableChecks() async {
+        let name = "tinycast-missing-\(UUID().uuidString)"
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("\(name)-fallback")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("#!/bin/sh\necho custom-path\n".utf8).write(to: helper)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        } catch {
+            check("create executable lookup fixtures", false, error.localizedDescription)
+            return
+        }
+        let (runtime, _, recorder) = makeRuntime()
+        try? await runtime.boot(
+            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        let command = """
+            const { Detail } = require("@raycast/api");
+            const React = require("react");
+            const { execFile, execFileSync } = require("child_process");
+            const { promisify } = require("util");
+            module.exports.default = function Command() {
+              const [state, setState] = React.useState("pending");
+              React.useEffect(() => {
+                (async () => {
+                  const results = [];
+                  try { await promisify(execFile)("\(name)", ["hello"]); results.push(false); }
+                  catch (error) {
+                    results.push(error.code === "ENOENT" && error.errno === -2
+                      && error.syscall === "spawn \(name)" && error.path === "\(name)"
+                      && JSON.stringify(error.spawnargs) === '["hello"]');
+                  }
+                  try { execFileSync("\(name)", []); results.push(false); }
+                  catch (error) { results.push(error.syscall === "spawnSync \(name)"); }
+                  const found = await promisify(execFile)("\(name)-fallback", [], { env: { PATH: "\(directory.path)" } });
+                  results.push(found.stdout.trim() === "custom-path");
+                  setState(JSON.stringify(results));
+                })().catch((error) => setState(error.message));
+              }, []);
+              return React.createElement(Detail, { markdown: state });
+            };
+            """
+        await runtime.start(
+            session: "sMissing", code: command, file: URL(fileURLWithPath: "/tmp/missing-executable.js"),
+            mode: .view, context: launchContext())
+        await settle(until: {
+            guard let value = recorder.trees.last?.activeRoot?.string("markdown") else { return false }
+            return value != "pending"
+        })
+        check(
+            "missing executables report Node's spawn error and bare names search env.PATH",
+            recorder.trees.last?.activeRoot?.string("markdown") == "[true,true,true]",
+            recorder.trees.last?.activeRoot?.string("markdown") ?? "no tree")
+        await runtime.stop(session: "sMissing")
     }
 
     /// Raycast's `swift:` wrapper chmods its bundled helper before spawning it: store zips ship it 644.

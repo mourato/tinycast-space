@@ -6,38 +6,77 @@ import AuthenticationServices
 final class ExtensionSignInSession: NSObject, ASWebAuthenticationPresentationContextProviding {
     enum Failure: LocalizedError {
         case cancelled
+        case failedToStart
 
-        var errorDescription: String? { "Sign-in was cancelled." }
+        var errorDescription: String? {
+            switch self {
+            case .cancelled: "Sign-in was cancelled."
+            case .failedToStart: "The browser could not start sign-in. Please try again."
+            }
+        }
     }
 
-    private nonisolated let anchor: ASPresentationAnchor
-    private var session: ASWebAuthenticationSession?
+    typealias SessionFactory = (
+        URL, String, @escaping @Sendable (URL?, (any Error)?) -> Void
+    ) -> ASWebAuthenticationSession
 
-    override init() {
+    private let makeSession: SessionFactory
+    private nonisolated let anchor: ASPresentationAnchor
+
+    init(makeSession: @escaping SessionFactory = { url, scheme, completion in
+        ASWebAuthenticationSession(url: url, callback: .customScheme(scheme), completionHandler: completion)
+    }) {
+        self.makeSession = makeSession
         anchor = NSApp.keyWindow ?? ASPresentationAnchor()
     }
 
     /// Resolves with the redirect URL; cancelling the task closes the browser window.
     func run(url: URL, callbackScheme: String) async throws -> URL {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let session = ASWebAuthenticationSession(
-                    url: url, callback: .customScheme(callbackScheme)
-                ) { @Sendable redirect, error in
-                    if let redirect {
-                        continuation.resume(returning: redirect)
-                    } else if let error, (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(throwing: Failure.cancelled)
+        let pending = Pending()
+        let redirect = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                pending.continuation = continuation
+                let session = makeSession(url, callbackScheme) { @Sendable redirect, error in
+                    Task { @MainActor in
+                        if let redirect {
+                            pending.finish(.success(redirect))
+                        } else if let error, (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin {
+                            pending.finish(.failure(error))
+                        } else {
+                            pending.finish(.failure(Failure.cancelled))
+                        }
                     }
                 }
                 session.presentationContextProvider = self
-                self.session = session
-                session.start()
+                pending.session = session
+                if !session.start() {
+                    pending.finish(.failure(Failure.failedToStart))
+                }
             }
         } onCancel: {
-            Task { @MainActor in self.session?.cancel() }
+            Task { @MainActor in pending.cancel() }
+        }
+        try Task.checkCancellation()
+        return redirect
+    }
+
+    @MainActor
+    private final class Pending {
+        var continuation: CheckedContinuation<URL, any Error>?
+        var session: ASWebAuthenticationSession?
+
+        func finish(_ result: Result<URL, any Error>) {
+            let continuation = continuation
+            self.continuation = nil
+            session = nil
+            continuation?.resume(with: result)
+        }
+
+        func cancel() {
+            let session = session
+            finish(.failure(CancellationError()))
+            session?.cancel()
         }
     }
 

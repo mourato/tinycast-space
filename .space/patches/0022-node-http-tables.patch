@@ -1,0 +1,92 @@
+diff --git a/Scripts/raycast-runtime/fixtures.mjs b/Scripts/raycast-runtime/fixtures.mjs
+index 86fc9a152e9b9584a667bb084002a8ee298272c7..c8637a1a9e1f96ee1e7bb35f3a3ab94c60d21ddb 100644
+--- a/Scripts/raycast-runtime/fixtures.mjs
++++ b/Scripts/raycast-runtime/fixtures.mjs
+@@ -834,6 +834,21 @@ export default async function Command() {
+ }
+ `;
+ 
++const httpTablesSource = `
++const http = require("http");
++const https = require("https");
++
++export default function Command() {
++  globalThis.__httpTables = {
++    codes: Object.keys(http.STATUS_CODES).length,
++    notFound: http.STATUS_CODES["404"],
++    shared: https.STATUS_CODES === http.STATUS_CODES,
++    methods: http.METHODS.length,
++    getAndPatch: http.METHODS.includes("GET") && http.METHODS.includes("PATCH"),
++  };
++}
++`;
++
+ const cookieAgentSource = `
+ import * as http from "node:http";
+ import * as url from "node:url";
+@@ -1461,6 +1476,15 @@ export async function runFixtures() {
+     check("AsyncResource keeps its type", result?.type === "tracked", String(result?.type));
+   });
+ 
++  await run("http carries Node's status and method tables", httpTablesSource, "no-view", async (harness) => {
++    const result = harness.call("globalThis.__httpTables");
++    check("STATUS_CODES holds every code", result?.codes === 63, JSON.stringify(result));
++    check("a code maps to its reason phrase", result?.notFound === "Not Found", JSON.stringify(result));
++    check("https shares the same table", result?.shared === true, JSON.stringify(result));
++    check("METHODS holds every method", result?.methods === 35, JSON.stringify(result));
++    check("METHODS lists GET and PATCH", result?.getAndPatch === true, JSON.stringify(result));
++  });
++
+   await run(
+     "an http.Agent subclass carries cookies between requests",
+     cookieAgentSource,
+diff --git a/Scripts/raycast-runtime/src/node-shims.js b/Scripts/raycast-runtime/src/node-shims.js
+index 580744c8b70c02ea4b88892434181e9c5acc51f1..7837fd5e6a7f83e51fba0ae3c63bd4886c29d87d 100644
+--- a/Scripts/raycast-runtime/src/node-shims.js
++++ b/Scripts/raycast-runtime/src/node-shims.js
+@@ -1687,6 +1687,34 @@ function makeUnsupported(label) {
+   });
+ }
+ 
++/// Node's tables verbatim: extensions build whole lists from them, such as HTTP Status Codes.
++const STATUS_CODES = {
++  100: "Continue", 101: "Switching Protocols", 102: "Processing", 103: "Early Hints", 200: "OK",
++  201: "Created", 202: "Accepted", 203: "Non-Authoritative Information", 204: "No Content",
++  205: "Reset Content", 206: "Partial Content", 207: "Multi-Status", 208: "Already Reported",
++  226: "IM Used", 300: "Multiple Choices", 301: "Moved Permanently", 302: "Found", 303: "See Other",
++  304: "Not Modified", 305: "Use Proxy", 307: "Temporary Redirect", 308: "Permanent Redirect",
++  400: "Bad Request", 401: "Unauthorized", 402: "Payment Required", 403: "Forbidden",
++  404: "Not Found", 405: "Method Not Allowed", 406: "Not Acceptable",
++  407: "Proxy Authentication Required", 408: "Request Timeout", 409: "Conflict", 410: "Gone",
++  411: "Length Required", 412: "Precondition Failed", 413: "Payload Too Large", 414: "URI Too Long",
++  415: "Unsupported Media Type", 416: "Range Not Satisfiable", 417: "Expectation Failed",
++  418: "I'm a Teapot", 421: "Misdirected Request", 422: "Unprocessable Entity", 423: "Locked",
++  424: "Failed Dependency", 425: "Too Early", 426: "Upgrade Required", 428: "Precondition Required",
++  429: "Too Many Requests", 431: "Request Header Fields Too Large",
++  451: "Unavailable For Legal Reasons", 500: "Internal Server Error", 501: "Not Implemented",
++  502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
++  505: "HTTP Version Not Supported", 506: "Variant Also Negotiates", 507: "Insufficient Storage",
++  508: "Loop Detected", 509: "Bandwidth Limit Exceeded", 510: "Not Extended",
++  511: "Network Authentication Required",
++};
++const METHODS = [
++  "ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD", "LINK", "LOCK", "M-SEARCH",
++  "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL", "MOVE", "NOTIFY", "OPTIONS", "PATCH", "POST",
++  "PROPFIND", "PROPPATCH", "PURGE", "PUT", "QUERY", "REBIND", "REPORT", "SEARCH", "SOURCE",
++  "SUBSCRIBE", "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE",
++];
++
+ const httpLike = (name) =>
+   unsupportedModule(name, {
+     // The scheme rides with the module: `ws` and axios both pass an options bag with no protocol.
+@@ -1699,8 +1727,8 @@ const httpLike = (name) =>
+     ServerResponse,
+     Agent,
+     globalAgent: new Agent(),
+-    STATUS_CODES: {},
+-    METHODS: [],
++    STATUS_CODES,
++    METHODS,
+   });
+ 
+ /// Node's streams are ES5 functions: follow-redirects, inside axios, calls `Writable` on its `this`.

@@ -1,0 +1,96 @@
+diff --git a/Tests/clipboard-search-test.swift b/Tests/clipboard-search-test.swift
+index f356c51fb73d5e189837c464610bff8c1aed9959..fedb8ddb662183d428dda13bc21d292e80a996a5 100644
+--- a/Tests/clipboard-search-test.swift
++++ b/Tests/clipboard-search-test.swift
+@@ -23,7 +23,8 @@ struct ClipboardSearchTests {
+             let item = ClipboardItem(
+                 id: UUID(), kind: kind,
+                 text: kind == .text
+-                    ? "Common alphabet" + suffix : kind == .file ? "/fixture/common\(index).pdf" : nil,
++                    ? "Common alphabet" + suffix
++                    : kind == .file ? "/fixture/common\(index)" + (index % 2 == 0 ? ".pdf" : ".png") : nil,
+                 imagePath: kind == .image ? "/fixture/\(index).png" : nil,
+                 createdAt: now.addingTimeInterval(Double(-index)), sourceBundleID: nil,
+                 pinnedAt: index < 220 ? now.addingTimeInterval(Double(-index)) : nil)
+diff --git a/Tests/clipboard-test.swift b/Tests/clipboard-test.swift
+index cdafef02a7828c69b067b513b64dba410c0d3908..0cff0278605ce93edc5f541e58b10aff19e8cc00 100644
+--- a/Tests/clipboard-test.swift
++++ b/Tests/clipboard-test.swift
+@@ -582,6 +582,15 @@ struct ClipboardTests {
+             expect(
+                 texts(store, filter: .link) == ["https://apple.com", "second.link.dev"],
+                 "a pinned link leads its filtered block")
++
++            store.addFiles(
++                ["/Users/me/Desktop/Shot.png", "/Users/me/Desktop/Report.pdf"], sourceBundleID: nil)
++            expect(
++                texts(store, filter: .image) == ["/Users/me/Desktop/Shot.png"],
++                "an image copied in Finder is an image")
++            expect(
++                texts(store, filter: .file) == ["/Users/me/Desktop/Report.pdf"],
++                "so Files Only leaves it out, and keeps a PDF")
+         }
+     }
+ 
+diff --git a/Tinycast/Features/Clipboard/Model/ClipboardFilter.swift b/Tinycast/Features/Clipboard/Model/ClipboardFilter.swift
+index e51ff23d0a2d65b7bb5c232f8126108ca0fb71eb..f0cf987c29f158b148073f4d196f200dc86a3016 100644
+--- a/Tinycast/Features/Clipboard/Model/ClipboardFilter.swift
++++ b/Tinycast/Features/Clipboard/Model/ClipboardFilter.swift
+@@ -51,8 +51,8 @@ enum ClipboardFilter: CaseIterable, Sendable {
+     func matches(_ item: ClipboardItem) -> Bool {
+         switch self {
+         case .all: return true
+-        case .image: return item.kind == .image
+-        case .file: return item.kind == .file
++        case .image: return item.kind == .image || item.isImageFile
++        case .file: return item.kind == .file && !item.isImageFile
+         case .text: return item.textForm == .plain
+         case .color: return item.textForm == .color
+         case .link: return item.textForm == .link
+diff --git a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
+index 3cfdd18de7840cdf2be56b8021613b3f1d6fc64f..501b5f4f8af12a7afef76bc3e4e24bef11132e97 100644
+--- a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
++++ b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
+@@ -24,6 +24,9 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
+     /// The referenced path, so no call site re-derives a file entry's meaning from `text`.
+     var filePath: String? { kind == .file ? text : nil }
+ 
++    /// A referenced file the type filter files under images, by its extension rather than its kind.
++    var isImageFile: Bool { filePath.map { ClipboardFileKind.of(path: $0) == .image } ?? false }
++
+     /// What Paste as Plain Text writes: the text, or a file's path in place of the file.
+     var plainText: String? { kind == .image ? nil : text }
+ 
+@@ -31,7 +34,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
+     var offersTextExtraction: Bool {
+         switch kind {
+         case .image: return imagePath != nil
+-        case .file: return filePath.map { ClipboardFileKind.of(path: $0) == .image } ?? false
++        case .file: return isImageFile
+         case .text: return false
+         }
+     }
+@@ -707,8 +710,22 @@ final class ClipboardStore {
+         defer { sqlite3_close_v2(db) }
+         sqlite3_exec(db, "PRAGMA cache_size=-2048", nil, nil, nil)
+         sqlite3_progress_handler(db, 1000, { _ in Task.isCancelled ? 1 : 0 }, nil)
++        // Shares `isImageFile`'s classifier, so the LIMIT below counts only the filter's rows.
++        sqlite3_create_function_v2(
++            db, "is_image_file", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil,
++            { context, _, values in
++                guard let values, let text = sqlite3_value_text(values[0]) else {
++                    sqlite3_result_int(context, 0)
++                    return
++                }
++                let count = Int(sqlite3_value_bytes(values[0]))
++                let path = String(decoding: UnsafeBufferPointer(start: text, count: count), as: UTF8.self)
++                sqlite3_result_int(context, ClipboardFileKind.of(path: path) == .image ? 1 : 0)
++            }, nil, nil, nil)
+         let isShort = query.count < 3
+-        let kind = filter == .image ? "i.kind = 'image'" : filter == .file ? "i.kind = 'file'" : "1"
++        let kind =
++            filter == .image ? "(i.kind = 'image' OR (i.kind = 'file' AND is_image_file(i.text)))"
++            : filter == .file ? "(i.kind = 'file' AND NOT is_image_file(i.text))" : "1"
+         let columns = "i.id, i.kind, i.text, i.image_path, i.created_at, i.source_app, i.pinned_at"
+         let sql =
+             isShort

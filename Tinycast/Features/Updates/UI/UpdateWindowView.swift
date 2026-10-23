@@ -74,6 +74,7 @@ struct UpdateWindowView: View {
             return String(
                 localized: "\(Bundle.main.appDisplayName) \(release.version.description) is available")
         case .readyToRelaunch: return String(localized: "Update installed")
+        case .failed(.checkFailed): return String(localized: "Could not check for updates")
         case .failed: return String(localized: "Update failed")
         }
     }

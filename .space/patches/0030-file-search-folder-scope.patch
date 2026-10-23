@@ -1,0 +1,658 @@
+diff --git a/Tests/file-index-test.swift b/Tests/file-index-test.swift
+index fc59f351ca5a16fc91a80b38c3da20a73ce1b98a..3b8249b19dc193505c9a43341993d0c2b579ec8c 100644
+--- a/Tests/file-index-test.swift
++++ b/Tests/file-index-test.swift
+@@ -34,6 +34,7 @@ struct FileIndexTests {
+ 
+         layout(snapshot, root: root.path)
+         search(index, root: root.path)
++        scopedSearch(index, root: root.path)
+         try live(index, root: root, policy: policy)
+ 
+         print(failures == 0 ? "File index tests passed" : "\(failures) file index tests failed")
+@@ -89,6 +90,24 @@ struct FileIndexTests {
+         expect(index.itemCount == 15, "the count matches the snapshot")
+     }
+ 
++    static func scopedSearch(_ index: FileIndex, root: String) {
++        let query = FileSearchQuery.prepare("todo")!
++        let documents = root + "/Documents"
++        let found = index.search(query, filter: .all, folder: documents)
++        expect(found.map(\.id) == [documents + "/Archive/todo.md"], "a scope includes descendants only")
++        expect(index.search(query, filter: .images, folder: documents).isEmpty, "a scope keeps the type filter")
++        expect(
++            index.search(query, filter: .all, folder: documents + "Missing").isEmpty,
++            "a missing scope finds nothing")
++        let blank = index.recent(filter: .all, folder: documents).map(\.id)
++        expect(blank.contains(documents + "/Archive"), "an empty scope lists folders for another Tab")
++        expect(!blank.contains(documents), "the scoped folder never lists itself")
++        expect(blank.allSatisfy { $0.hasPrefix(documents + "/") }, "an empty scope never leaks siblings")
++        expect(
++            index.search(query, filter: .all, isCancelled: { true }).isEmpty,
++            "a cancelled scan yields no results")
++    }
++
+     static func live(_ index: FileIndex, root: URL, policy: FileSearchPolicy) throws {
+         let documents = root.appending(path: "Documents")
+         let revision = index.recentRevision
+diff --git a/Tests/file-search-session-test.swift b/Tests/file-search-session-test.swift
+index ebbd191f9c235a9c68eaa8d4f3e8f7e3210ad889..17493942df3a5dbd3f5670e8ec01ac9a9cbd490a 100644
+--- a/Tests/file-search-session-test.swift
++++ b/Tests/file-search-session-test.swift
+@@ -4,6 +4,7 @@ actor FileSearchProbe {
+     private var active = 0
+     private var calls: [String] = []
+     private var maximumActive = 0
++    private var cancelled: [String] = []
+     private let pausedQuery: String?
+     private var pauseEnabled: Bool
+     private var pausedContinuation: CheckedContinuation<Void, Never>?
+@@ -13,7 +14,7 @@ actor FileSearchProbe {
+         pauseEnabled = query != nil
+     }
+ 
+-    func search(query: String, filter: FileSearchFilter) async -> [FileSearchResult] {
++    func search(query: String, filter: FileSearchFilter, folder: String?) async -> [FileSearchResult] {
+         active += 1
+         calls.append(filter == .all ? query : "\(query) [\(filter.title)]")
+         maximumActive = max(maximumActive, active)
+@@ -24,13 +25,14 @@ actor FileSearchProbe {
+         } else {
+             try? await Task.sleep(for: .milliseconds(80))
+         }
++        if Task.isCancelled { cancelled.append(query) }
+         active -= 1
+-        let home = URL(fileURLWithPath: "/Users/test")
++        let home = URL(fileURLWithPath: folder ?? "/Users/test")
+         return [FileSearchResult(url: home.appending(path: query), isDirectory: false, homeDirectory: home)]
+     }
+ 
+-    func snapshot() -> (calls: [String], maximumActive: Int) {
+-        (calls, maximumActive)
++    func snapshot() -> (calls: [String], maximumActive: Int, cancelled: [String]) {
++        (calls, maximumActive, cancelled)
+     }
+ 
+     func waitUntilPaused() async -> Bool {
+@@ -64,6 +66,8 @@ struct FileSearchSessionTests {
+     }
+ 
+     static func main() async {
++        await cancelsSupersededScans()
++        await folderChangeRejectsStaleResults()
+         await coalescesQueuedQueries()
+         await serializesRunningQueries()
+         await cancellationPreventsPendingWork()
+@@ -78,6 +82,47 @@ struct FileSearchSessionTests {
+         exit(failures == 0 ? 0 : 1)
+     }
+ 
++    static func cancelsSupersededScans() async {
++        let probe = FileSearchProbe(pausing: "a")
++        let session = makeSession(probe: probe)
++        session.search("a")
++        guard await probe.waitUntilPaused() else { return expect(false, "the first query starts") }
++        session.search("annual")
++        await probe.resumePausedSearch()
++        await waitUntil { session.state == .ready }
++        let snapshot = await probe.snapshot()
++        expect(snapshot.calls == ["a", "annual"], "the newer query runs once the scan it supersedes stops")
++        expect(snapshot.cancelled == ["a"], "a newer query cancels the scan it supersedes")
++        expect(session.results.first?.name == "annual", "only the newest query publishes")
++
++        session.search("queued")
++        session.cancel()
++        try? await Task.sleep(for: .milliseconds(120))
++        let cancelled = await probe.snapshot()
++        expect(cancelled.calls == snapshot.calls || cancelled.calls == snapshot.calls + ["queued"],
++               "cancelling never leaves the session publishing")
++        expect(session.results.isEmpty, "a cancelled search publishes nothing")
++    }
++
++    static func folderChangeRejectsStaleResults() async {
++        let probe = FileSearchProbe(pausing: "report")
++        let session = makeSession(probe: probe)
++        session.folderScope = { "/old" }
++        session.search("report")
++        guard await probe.waitUntilPaused() else { return expect(false, "scoped query starts") }
++        session.folderScope = { "/new" }
++        session.search("report")
++        expect(session.results(folder: "/old").isEmpty, "a new folder clears the previous folder's rows")
++        await probe.resumePausedSearch()
++        await waitUntil { session.state == .ready }
++        expect(session.results.first?.id == "/new/report", "a late result from the old folder cannot publish")
++        expect(session.results().isEmpty, "scoped rows never show as root search results")
++        expect(!session.results(folder: "/new").isEmpty, "the current folder's rows show")
++        session.folderScope = { nil }
++        session.search("report")
++        await waitUntil { session.state == .ready && session.results.first?.id == "/Users/test/report" }
++    }
++
+     static func coalescesQueuedQueries() async {
+         let probe = FileSearchProbe(pausing: "a")
+         let session = makeSession(probe: probe)
+@@ -120,6 +165,7 @@ struct FileSearchSessionTests {
+ 
+         let snapshot = await probe.snapshot()
+         expect(snapshot.calls == ["running"], "cancelling drops the queued search")
++        expect(snapshot.cancelled == ["running"], "cancellation reaches the running search operation")
+         expect(session.state == .idle && session.results.isEmpty, "cancellation clears the session")
+     }
+ 
+@@ -152,7 +198,7 @@ struct FileSearchSessionTests {
+ 
+         let snapshot = await probe.snapshot()
+         expect(
+-            snapshot.calls == ["", "report", "report", ""],
++            snapshot.calls.sorted() == ["", "", "report", "report"],
+             "an idle session prepares recents, and an open one re-asks its query and refreshes them")
+     }
+ 
+@@ -219,8 +265,8 @@ struct FileSearchSessionTests {
+     }
+ 
+     static func makeSession(probe: FileSearchProbe) -> FileSearchSession {
+-        FileSearchSession { query, filter in
+-            await probe.search(query: query, filter: filter)
++        FileSearchSession { query, filter, folder in
++            await probe.search(query: query, filter: filter, folder: folder)
+         }
+     }
+ 
+diff --git a/Tinycast/Features/FileSearch/Service/FileIndex.swift b/Tinycast/Features/FileSearch/Service/FileIndex.swift
+index 536a196c36c9905fe0e43f7db4852ab795dff12c..4800e39446b78fa38efde347f339dd35ee35604e 100644
+--- a/Tinycast/Features/FileSearch/Service/FileIndex.swift
++++ b/Tinycast/Features/FileSearch/Service/FileIndex.swift
+@@ -93,13 +93,18 @@ final class FileIndex: Sendable {
+         }
+     }
+ 
+-    func search(_ query: FileSearchQuery.Prepared, filter: FileSearchFilter) -> [FileSearchResult] {
++    func search(
++        _ query: FileSearchQuery.Prepared, filter: FileSearchFilter, folder: String? = nil,
++        isCancelled: @Sendable () -> Bool = { false }
++    ) -> [FileSearchResult] {
+         let state = state.withLock { $0 }
+         guard let snapshot = state.snapshot, let policy = state.policy else { return [] }
+         let limit = FileSearchQuery.resultLimit
+         let names = NameScores(count: snapshot.nameCount)
+         Self.chunked(0..<snapshot.nameCount, alignment: 64) { range in
+-            for id in range where snapshot.nameMask[id] & query.mask == query.mask {
++            for id in range {
++                if id & 255 == 0, isCancelled() { return }
++                guard snapshot.nameMask[id] & query.mask == query.mask else { continue }
+                 let score = FileSearchQuery.score(
+                     query, name: snapshot.name(id: id), mask: snapshot.nameMask[id], prior: 0)
+                 if let score { names.set(id, score) }
+@@ -108,9 +113,12 @@ final class FileIndex: Sendable {
+         let base =
+             names.isEmpty
+             ? []
+-            : Self.collect(snapshot, limit: limit) { range, top in
++            : Self.collect(
++                snapshot, range: searchRange(folder, snapshot: snapshot, state: state), limit: limit
++            ) { range, top in
+                 var types = TypeFilter(filter: filter)
+                 for index in range {
++                    if index & 255 == 0, isCancelled() { return }
+                     let id = Int(snapshot.nameID[index])
+                     guard let score = names.score(id), !state.isDead(index),
+                         types.accepts(name: snapshot.name(id: id), isDirectory: snapshot.isDirectory(index))
+@@ -124,7 +132,11 @@ final class FileIndex: Sendable {
+                 isDirectory: snapshot.isDirectory(hit.index))
+         }
+         var types = TypeFilter(filter: filter)
+-        for (path, entry) in state.added where entry.mask & query.mask == query.mask {
++        for (offset, element) in state.added.enumerated() {
++            if offset & 255 == 0, isCancelled() { return [] }
++            let (path, entry) = element
++            guard entry.mask & query.mask == query.mask else { continue }
++            if let folder, path == folder || !FileSearchScope.contains(folder, path) { continue }
+             var name = entry.name
+             let score = name.withUTF8 { name -> Int? in
+                 guard
+@@ -137,32 +149,54 @@ final class FileIndex: Sendable {
+             guard let score else { continue }
+             ranked.append(Ranked(score: score, path: path, isDirectory: entry.isDirectory))
+         }
+-        return Self.results(ranked, limit: limit, policy: policy)
++        return isCancelled() ? [] : Self.results(ranked, limit: limit, policy: policy)
+     }
+ 
+-    func recent(filter: FileSearchFilter) -> [FileSearchResult] {
++    func recent(
++        filter: FileSearchFilter, folder: String? = nil,
++        isCancelled: @Sendable () -> Bool = { false }
++    ) -> [FileSearchResult] {
+         let state = state.withLock { $0 }
+         guard let snapshot = state.snapshot, let policy = state.policy else { return [] }
+-        let limit = FileSearchQuery.recentLimit
+-        let base = Self.collect(snapshot, limit: limit) { range, top in
++        let limit = folder == nil ? FileSearchQuery.recentLimit : FileSearchQuery.resultLimit
++        let base = Self.collect(
++            snapshot, range: searchRange(folder, snapshot: snapshot, state: state), limit: limit
++        ) { range, top in
+             var types = TypeFilter(filter: filter)
+-            for index in range where snapshot.prior[index] == 2 && !snapshot.isDirectory(index) {
++            for index in range {
++                if index & 255 == 0, isCancelled() { return }
++                let isDirectory = snapshot.isDirectory(index)
++                if folder == nil, snapshot.prior[index] != 2 || isDirectory { continue }
+                 guard !state.isDead(index),
+-                    types.accepts(name: snapshot.name(index), isDirectory: false)
++                    types.accepts(name: snapshot.name(index), isDirectory: isDirectory)
+                 else { continue }
+-                top.insert(Int(snapshot.mtime[index]), index)
++                top.insert(Int(snapshot.prior[index]) << 40 | Int(snapshot.mtime[index]), index)
+             }
+         }
+         var ranked = base.map { hit in
+-            Ranked(score: hit.score, path: snapshot.path(of: hit.index), isDirectory: false)
++            Ranked(
++                score: hit.score, path: snapshot.path(of: hit.index),
++                isDirectory: snapshot.isDirectory(hit.index))
+         }
+         var types = TypeFilter(filter: filter)
+-        for (path, entry) in state.added where entry.isRecent {
++        for (offset, element) in state.added.enumerated() {
++            if offset & 255 == 0, isCancelled() { return [] }
++            let (path, entry) = element
++            if let folder {
++                guard path != folder, FileSearchScope.contains(folder, path) else { continue }
++            } else if !entry.isRecent { continue }
+             var name = entry.name
+-            guard name.withUTF8({ types.accepts(name: $0, isDirectory: false) }) else { continue }
+-            ranked.append(Ranked(score: Int(entry.mtime), path: path, isDirectory: false))
++            guard name.withUTF8({ types.accepts(name: $0, isDirectory: entry.isDirectory) }) else { continue }
++            ranked.append(Ranked(
++                score: Int(entry.prior) << 40 | Int(entry.mtime), path: path, isDirectory: entry.isDirectory))
+         }
+-        return Self.results(ranked, limit: limit, policy: policy)
++        return isCancelled() ? [] : Self.results(ranked, limit: limit, policy: policy)
++    }
++
++    private func searchRange(_ folder: String?, snapshot: FileIndexSnapshot, state: State) -> Range<Int> {
++        guard let folder else { return snapshot.rootCount..<snapshot.entryCount }
++        guard let index = snapshot.lookup(folder), !state.isDead(index) else { return 0..<0 }
++        return snapshot.subtree(of: index)
+     }
+ 
+     private struct Ranked {
+@@ -189,11 +223,11 @@ final class FileIndex: Sendable {
+ 
+     /// Only the overall best come back, so no more paths are built than can be shown.
+     private static func collect(
+-        _ snapshot: FileIndexSnapshot, limit: Int,
++        _ snapshot: FileIndexSnapshot, range: Range<Int>, limit: Int,
+         _ scan: @Sendable (Range<Int>, inout TopHits) -> Void
+     ) -> [TopHits.Hit] {
+         let gathered = Gathered()
+-        chunked(snapshot.rootCount..<snapshot.entryCount) { range in
++        chunked(range) { range in
+             var top = TopHits(limit: limit)
+             scan(range, &top)
+             gathered.append(top.best)
+diff --git a/Tinycast/Features/FileSearch/Service/FileSearchSession.swift b/Tinycast/Features/FileSearch/Service/FileSearchSession.swift
+index 1c21245979af4cd1c23112811e9d9329cd373fc7..42d97701806462598185d67f5c3623a09faa6da6 100644
+--- a/Tinycast/Features/FileSearch/Service/FileSearchSession.swift
++++ b/Tinycast/Features/FileSearch/Service/FileSearchSession.swift
+@@ -1,9 +1,10 @@
+ import Foundation
++import Synchronization
+ 
+ @MainActor
+ @Observable
+ final class FileSearchSession {
+-    typealias SearchOperation = @Sendable (String, FileSearchFilter) async -> [FileSearchResult]
++    typealias SearchOperation = @Sendable (String, FileSearchFilter, String?) async -> [FileSearchResult]
+ 
+     enum State: Equatable {
+         case idle
+@@ -14,31 +15,49 @@ final class FileSearchSession {
+     private(set) var results: [FileSearchResult] = []
+     private(set) var state: State = .idle
+     /// The published search: the filter belongs to it, so narrowing re-runs the same words.
+-    private var request: Request?
++    @ObservationIgnored private var request: Request?
+     private var revision = 0
+     @ObservationIgnored private var pending: (request: Request, revision: Int)?
+     @ObservationIgnored private var workerTask: Task<Void, Never>?
++    @ObservationIgnored private var operationTask: Task<[FileSearchResult], Never>?
++    @ObservationIgnored private var recentTask: Task<Void, Never>?
+     @ObservationIgnored private let searchOperation: SearchOperation
++    /// The folder File Search is narrowed to, read as each request is made, so every caller's
++    /// search stays inside it without passing it along.
++    @ObservationIgnored var folderScope: @MainActor () -> String? = { nil }
+     /// Kept across closes, so the blank screen opens on its rows instead of on nothing.
+     @ObservationIgnored private var recent: [FileSearchResult]?
+     @ObservationIgnored private var recentStamp = 0
+ 
+     private struct Request: Equatable {
+-        static let recent = Request(query: "", filter: .all)
++        static let recent = Request(query: "", filter: .all, folder: nil)
+ 
+         let query: String
+         let filter: FileSearchFilter
++        let folder: String?
+     }
+ 
+     /// No debounce: a search costs milliseconds, and the worker already runs only the newest.
+     init(index: FileIndex) {
+-        searchOperation = { query, filter in
+-            await Task.detached(priority: .userInitiated) {
+-                guard let prepared = FileSearchQuery.prepare(query) else {
+-                    return index.recent(filter: filter)
+-                }
+-                return index.search(prepared, filter: filter)
+-            }.value
++        searchOperation = { query, filter, folder in
++            await Self.search(index: index, query: query, filter: filter, folder: folder)
++        }
++    }
++
++    @concurrent
++    private static func search(
++        index: FileIndex, query: String, filter: FileSearchFilter, folder: String?
++    ) async -> [FileSearchResult] {
++        let cancelled = Mutex(false)
++        return await withTaskCancellationHandler {
++            guard !Task.isCancelled else { return [] }
++            let isCancelled: @Sendable () -> Bool = { cancelled.withLock { $0 } }
++            guard let prepared = FileSearchQuery.prepare(query) else {
++                return index.recent(filter: filter, folder: folder, isCancelled: isCancelled)
++            }
++            return index.search(prepared, filter: filter, folder: folder, isCancelled: isCancelled)
++        } onCancel: {
++            cancelled.withLock { $0 = true }
+         }
+     }
+ 
+@@ -49,7 +68,7 @@ final class FileSearchSession {
+     /// An empty query is a request too: the blank screen lists what changed recently.
+     func search(_ rawQuery: String, filter: FileSearchFilter = .all) {
+         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+-        let request = Request(query: query, filter: filter)
++        let request = Request(query: query, filter: filter, folder: folderScope())
+         guard request != self.request else { return }
+         enqueue(request)
+         guard request == .recent, let recent else { return }
+@@ -57,6 +76,11 @@ final class FileSearchSession {
+         state = .ready
+     }
+ 
++    func results(filter: FileSearchFilter = .all, folder: String? = nil) -> [FileSearchResult] {
++        let results = results
++        return request?.filter == filter && request?.folder == folder ? results : []
++    }
++
+     /// Re-runs the published request; Recent's kept rows follow even behind a typed query.
+     func refresh() {
+         if let request { enqueue(request) }
+@@ -65,13 +89,14 @@ final class FileSearchSession {
+ 
+     /// Only the kept rows move, so a list on screen never shifts under the pointer.
+     func refreshRecent() {
+-        Task { [weak self] in await self?.run(.recent) }
++        recentTask?.cancel()
++        recentTask = Task { [weak self] in await self?.run(.recent) }
+     }
+ 
+-    /// Idle already means no results and nothing that can publish, so it notifies no observer.
+     func cancel() {
+         guard request != nil else { return }
+         revision &+= 1
++        operationTask?.cancel()
+         pending = nil
+         request = nil
+         results = []
+@@ -84,8 +109,16 @@ final class FileSearchSession {
+         recent?.removeAll { $0.id == result.id }
+     }
+ 
++    isolated deinit {
++        workerTask?.cancel()
++        operationTask?.cancel()
++        recentTask?.cancel()
++    }
++
+     private func enqueue(_ request: Request) {
+         revision &+= 1
++        operationTask?.cancel()
++        if self.request?.filter != request.filter || self.request?.folder != request.folder { results = [] }
+         self.request = request
+         state = .searching
+         pending = (request, revision)
+@@ -98,8 +131,14 @@ final class FileSearchSession {
+     private func runWorker() async {
+         while let next = pending {
+             pending = nil
+-            let found = await run(next.request)
+-            guard revision == next.revision, request == next.request else { continue }
++            let operation = Task { [weak self] in
++                guard !Task.isCancelled, let self else { return [FileSearchResult]() }
++                return await run(next.request)
++            }
++            operationTask = operation
++            let found = await operation.value
++            operationTask = nil
++            guard !operation.isCancelled, revision == next.revision, request == next.request else { continue }
+             if results != found { results = found }
+             state = .ready
+         }
+@@ -109,11 +148,13 @@ final class FileSearchSession {
+     /// Recent's rows are kept whoever asked; stamped, so a late finisher never replaces newer rows.
+     @discardableResult
+     private func run(_ request: Request) async -> [FileSearchResult] {
+-        guard request == .recent else { return await searchOperation(request.query, request.filter) }
++        guard request == .recent else {
++            return await searchOperation(request.query, request.filter, request.folder)
++        }
+         recentStamp &+= 1
+         let stamp = recentStamp
+-        let found = await searchOperation(request.query, request.filter)
+-        if stamp == recentStamp { recent = found }
++        let found = await searchOperation(request.query, request.filter, request.folder)
++        if !Task.isCancelled, stamp == recentStamp { recent = found }
+         return found
+     }
+ }
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+index 4588fab05ea20ad7354513ea63a0a0c16a7f4511..c446423cba6e282471a3d485f4257cff6e9cf4ed 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+@@ -27,6 +27,10 @@ final class FileSearchCoordinator {
+         self.core = core
+         indexer.onIndexChanged = { [weak session] in session?.refresh() }
+         indexer.onRecentChanged = { [weak session] in session?.refreshRecent() }
++        session.folderScope = { [weak palette] in
++            palette?.isInFileSearchFolder == true ? palette?.fileSearchFolder : nil
++        }
++        palette.onFileSearchFolderChanged = { [weak self] in self?.folderChanged() }
+     }
+ 
+     func applyEnabled() {
+@@ -63,7 +67,7 @@ final class FileSearchCoordinator {
+     /// Checks the switch before reading the session, so with it off the launcher observes nothing.
+     func launcherFiles(for query: String) -> [FileSearchResult] {
+         guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query) else { return [] }
+-        return Array(session.results.prefix(FileSearchQuery.launcherLimit))
++        return Array(session.results().prefix(FileSearchQuery.launcherLimit))
+     }
+ 
+     func applyLauncherFiles() {
+@@ -71,6 +75,19 @@ final class FileSearchCoordinator {
+         searchFromLauncher(palette.query)
+     }
+ 
++    func searchInFolder(_ result: FileSearchResult) {
++        guard palette.mode == .fileSearch, result.isDirectory else { return }
++        palette.rewriteQuery("")
++        palette.fileSearchFolder = result.id
++    }
++
++    /// The folder is part of the request, so entering or leaving it lands the list and searches again.
++    private func folderChanged() {
++        guard palette.mode == .fileSearch else { return }
++        palette.resetToken = UUID()
++        session.search(palette.query, filter: palette.fileSearchFilter)
++    }
++
+     func rebuildIndex() {
+         indexer.rebuild()
+     }
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift b/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift
+index 6889cba97617e3458ba3b6309cef05f7ed370f85..b2f85b486d8b54ad4c77d4e5f1a09f58b741f6ef 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchScreen.swift
+@@ -8,10 +8,12 @@ struct FileSearchScreen: PaletteScreen {
+ 
+     private var metrics: InterfaceMetrics { core.settings.interfaceSize.metrics }
+ 
+-    var rows: [FileSearchResult] { session.results }
++    var rows: [FileSearchResult] {
++        session.results(filter: vm.fileSearchFilter, folder: vm.fileSearchFolder)
++    }
+ 
+     private var isShowingRecents: Bool {
+-        vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
++        vm.fileSearchFolder == nil && vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+     }
+ 
+     private var indexer: FileIndexer { core.fileIndexer }
+@@ -53,6 +55,39 @@ struct FileSearchScreen: PaletteScreen {
+         return true
+     }
+ 
++    /// Owned here, not by the palette's ring: ⇥ on a folder row narrows to it, on any other row it falls through.
++    func tab(at selection: Int, backwards: Bool) -> Bool {
++        guard !backwards, let result = result(at: selection), result.isDirectory else { return false }
++        core.fileSearchCoordinator.searchInFolder(result)
++        return true
++    }
++
++    func headerAccessory(
++        at selection: Int, focus: FocusState<String?>.Binding
++    ) -> PaletteHeaderAccessory? {
++        guard let folder = vm.fileSearchFolder else { return nil }
++        return PaletteHeaderAccessory(
++            width: metrics.size.clipboardListWidth, fieldNames: [], firstIncompleteField: nil,
++            placement: .besideSearchField,
++            view: AnyView(
++                BarButton(action: { vm.leaveFileSearchFolder() }) {
++                    HStack(spacing: metrics.spacing.sm) {
++                        SymbolImage(name: "folder", size: metrics.size.menuIcon)
++                        Text(
++                            verbatim: FileSearchScope.abbreviate(
++                                folder, homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
++                        )
++                        .lineLimit(1).truncationMode(.middle)
++                        SymbolImage(name: "xmark", size: metrics.size.menuIcon)
++                    }
++                    .font(metrics.typography.bar)
++                }
++                .frame(maxWidth: metrics.size.clipboardListWidth)
++                .accessibilityLabel(String(localized: "Leave Folder"))
++                .accessibilityValue(folder)
++                .tooltip(String(localized: "Leave Folder"), edge: .bottom)))
++    }
++
+     func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
+         guard let result = result(at: selection) else { return false }
+         return FileSearchActionsMenu.perform(shortcut, result: result, core: core)
+@@ -130,7 +165,7 @@ enum FileSearchActionsMenu {
+         result: FileSearchResult, core: AppCore, target: PasteTarget?
+     ) -> PopoverMenuContent {
+         let coordinator = core.fileSearchCoordinator
+-        let items = [
++        var items = [
+             PopoverMenuItem(
+                 title: result.isDirectory ? String(localized: "Open Folder") : String(localized: "Open File"),
+                 systemImage: result.isDirectory ? "folder" : "doc", shortcut: "↵"
+@@ -161,6 +196,13 @@ enum FileSearchActionsMenu {
+                 shortcut: "⌃X", isDestructive: true
+             ) { coordinator.trash(result) }
+         ]
++        if core.palette.mode == .fileSearch, result.isDirectory {
++            items.insert(
++                PopoverMenuItem(
++                    title: String(localized: "Search in Folder"), systemImage: "folder.badge.magnifyingglass",
++                    shortcut: "⇥"
++                ) { coordinator.searchInFolder(result) }, at: 1)
++        }
+         return PopoverMenuContent(header: result.name, items: items)
+     }
+ 
+diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
+index e44e22312d707217b6ffaae161c75bd813edd9e2..3c3a0501cdec7af3c7da53b5cced8b1f60974c34 100644
+--- a/Tinycast/Palette/PaletteCoordinator.swift
++++ b/Tinycast/Palette/PaletteCoordinator.swift
+@@ -99,7 +99,7 @@ final class PaletteCoordinator {
+         // Before the show: `targetApp` must still name the app in front, and no row may pop in.
+         onScreenOpening?(palette.mode)
+         windowController.show()
+-        if palette.mode == .fileSearch { fileSearch.search(palette.query) }
++        if palette.mode == .fileSearch { fileSearch.search(palette.query, filter: palette.fileSearchFilter) }
+         if palette.mode == .menuSearch { menuSearch.filter(palette.query) }
+         if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
+         // Re-scan on open so an app uninstalled since the last scan drops out of the launcher.
+diff --git a/Tinycast/Palette/PaletteState.swift b/Tinycast/Palette/PaletteState.swift
+index 50abf13b0b4425a8fc25a347085d8d4bf788b71a..70f0f44816cb5a8c5894a75d88d18ac7204f4825 100644
+--- a/Tinycast/Palette/PaletteState.swift
++++ b/Tinycast/Palette/PaletteState.swift
+@@ -24,6 +24,12 @@ final class PaletteState {
+         didSet { if oldValue != clipboardFilter { restoredSelection = nil } }
+     }
+     var fileSearchFilter: FileSearchFilter = .all
++    /// tinycast-space: File Search narrowed to one folder. Leaving it is a step back of its own,
++    /// taken by `pop` before the stack's; `FileSearchCoordinator` searches again on each change.
++    var fileSearchFolder: String? {
++        didSet { if oldValue != fileSearchFolder { onFileSearchFolderChanged?() } }
++    }
++    @ObservationIgnored var onFileSearchFolderChanged: (() -> Void)?
+     var emojiCategoryFilter: EmojiCategoryFilter = .all
+     /// Nil means the configured default; zoom only overrides it for this picker session.
+     var emojiGridColumnsOverride: EmojiGridColumns?
+@@ -85,7 +91,7 @@ final class PaletteState {
+         isVisible = visible
+     }
+ 
+-    var canGoBack: Bool { !backStack.isEmpty }
++    var canGoBack: Bool { !backStack.isEmpty || isInFileSearchFolder }
+ 
+     func prepare(mode: PaletteMode) {
+         backStack.removeAll()
+@@ -114,6 +120,7 @@ final class PaletteState {
+     }
+ 
+     func pop(preservingSelection: Bool = false) -> Bool {
++        if leaveFileSearchFolder() { return true }
+         guard let frame = backStack.popLast() else { return false }
+         openScreen(frame.mode)
+         clipboardFilter = frame.clipboardFilter
+@@ -157,6 +164,7 @@ final class PaletteState {
+         argumentEntryID = nil
+         clipboardFilter = .all
+         fileSearchFilter = .all
++        fileSearchFolder = nil
+         emojiCategoryFilter = .all
+         emojiGridColumnsOverride = nil
+         forceExpanded = false
+@@ -251,3 +259,18 @@ final class PaletteState {
+         hoverDisarmToken = UUID()
+     }
+ }
++
++// tinycast-space: File Search's folder scope; see `fileSearchFolder`.
++extension PaletteState {
++    /// Read only in File Search: the Tab ring leaves for the launcher without resetting the screen.
++    var isInFileSearchFolder: Bool { mode == .fileSearch && fileSearchFolder != nil }
++
++    /// The query is cleared first, so the search the folder change starts is already the right one.
++    @discardableResult
++    func leaveFileSearchFolder() -> Bool {
++        guard isInFileSearchFolder else { return false }
++        rewriteQuery("")
++        fileSearchFolder = nil
++        return true
++    }
++}

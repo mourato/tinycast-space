@@ -170,6 +170,72 @@ enum LauncherMatch {
     private static func wordPoints(_ t: [UInt16], _ column: Int, humps: [Int]) -> Int {
         (isSeparator(t[column - 1]) && !isSeparator(t[column])) || humps.contains(column) ? 3 : 2
     }
+
+    // MARK: - Typos
+
+    /// Edits a query of this length may be off by; none below four letters, where nearly
+    /// everything is one edit from something.
+    static func allowedTypos(forQueryLength length: Int) -> Int {
+        switch length {
+        case ..<4: 0
+        case 4...7: 1
+        case 8...11: 2
+        default: 3
+        }
+    }
+
+    /// Edits from the query to the start of the text or of one of its words, nil past the allowance.
+    static func typoDistance(_ query: SearchText, in target: SearchText) -> Int? {
+        let q = query.units
+        let t = target.units
+        let allowed = allowedTypos(forQueryLength: q.count)
+        // Quadratic per word start: fine for a name, not for a pathological one.
+        guard allowed > 0, !t.isEmpty, t.count <= 64 else { return nil }
+        return wordStarts(t, humps: target.humps)
+            .compactMap { prefixDistance(q, t, from: $0, allowed: allowed) }
+            .min()
+    }
+
+    private static func wordStarts(_ t: [UInt16], humps: [Int]) -> [Int] {
+        var starts = [0]
+        for index in 1..<t.count where isSeparator(t[index - 1]) && !isSeparator(t[index]) {
+            starts.append(index)
+        }
+        return starts + humps.filter { $0 > 0 && $0 < t.count }
+    }
+
+    /// Damerau–Levenshtein to the closest prefix of `t[from...]`: the rest of the name is free.
+    private static func prefixDistance(
+        _ q: [UInt16], _ t: [UInt16], from: Int, allowed: Int
+    ) -> Int? {
+        let columns = t.count - from
+        guard columns > 0 else { return nil }
+        var twoBack = [Int](repeating: 0, count: columns + 1)
+        // Row 0 charges every skipped leading letter; only the trailing ones are free.
+        var previous = Array(0...columns)
+        var current = [Int](repeating: 0, count: columns + 1)
+        for row in 1...q.count {
+            current[0] = row
+            var rowBest = row
+            for column in 1...columns {
+                let cost = q[row - 1] == t[from + column - 1] ? 0 : 1
+                var value = min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + cost)
+                if row > 1, column > 1, q[row - 1] == t[from + column - 2],
+                    q[row - 2] == t[from + column - 1]
+                {
+                    value = min(value, twoBack[column - 2] + 1)
+                }
+                current[column] = value
+                rowBest = min(rowBest, value)
+            }
+            // No later row can come back under the allowance.
+            guard rowBest <= allowed else { return nil }
+            twoBack = previous
+            swap(&previous, &current)
+        }
+        let distance = previous.min() ?? .max
+        return distance <= allowed ? distance : nil
+    }
 }
 
 /// How loose a fuzzy hit may be and still show.

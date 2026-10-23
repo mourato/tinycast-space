@@ -121,6 +121,9 @@ enum ExtensionHostError: LocalizedError {
 
 @MainActor
 final class ExtensionHostBridge: ExtensionHostAPI {
+    /// tinycast-space: Raycast Explorer closes the window right after opening a theme link, but the
+    /// link now asks first, in a dialog over the window, so the close that follows is skipped.
+    private var keepsWindowUntil = Date.distantPast
     weak var context: ExtensionHostContext?
     private let clipboardStore: ClipboardStore
     private let fetcher: ExtensionFetcher
@@ -352,6 +355,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         guard context?.activeLaunchType != .background else { return nil }
         switch method {
         case "close":
+            guard Date.now > keepsWindowUntil else { return nil }  // tinycast-space
             let options = arguments.first?.objectValue ?? [:]
             context?.closeMainWindow(clearRootSearch: options["clearRootSearch"]?.boolValue ?? false)
         case "popToRoot":
@@ -548,6 +552,12 @@ final class ExtensionHostBridge: ExtensionHostAPI {
 
     /// A command URL runs it when installed; every other Raycast URL just brings the palette back.
     private func openRaycastURL(_ url: URL) {
+        // tinycast-space: a theme or confetti link goes where an outside `open` lands, in AppCore.
+        if ["theme", "confetti"].contains(url.host()?.lowercased() ?? "") {
+            if RaycastThemeLink(url: url)?.applies == false { keepsWindowUntil = .now + 1 }
+            NSApp.delegate?.application?(NSApp, open: [url])
+            return
+        }
         if let link = ExtensionDeepLink.parse(url: url), (try? context?.launch(link)) != nil {
             return
         }

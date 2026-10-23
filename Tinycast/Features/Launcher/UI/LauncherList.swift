@@ -10,6 +10,9 @@ struct LauncherList: View {
     let meetingCount: Int
     let suggestionCount: Int
     let matchCount: Int
+    /// A query is typed, so ⌘1–⌘9 open the first results instead of favorites.
+    let numbersResults: Bool
+    static let numberedResultLimit = 9
     /// Changes only when the list should scroll, so mouse selection never yanks it.
     let scroll: ScrollIntent
     /// The card at flat index 0, when one leads. At most one ever does.
@@ -147,7 +150,14 @@ struct LauncherList: View {
             grouped.keys.allSatisfy(kinds.contains),
             "kind missing from the launcher's section order: "
                 + grouped.keys.filter { !kinds.contains($0) }.map(\.rawValue).joined(separator: ", "))
-        return rows + fileRows + fallbackRows
+        guard numbersResults else { return rows + fileRows + fallbackRows }
+        var number = 0
+        let numbered = rows.map { row -> Row in
+            guard case .app(let app, nil) = row, number < Self.numberedResultLimit else { return row }
+            defer { number += 1 }
+            return .app(app, slot: FavoriteSlots.digit(at: number))
+        }
+        return numbered + fileRows + fallbackRows
     }
 
     var body: some View {

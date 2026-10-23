@@ -1,0 +1,325 @@
+diff --git a/Tests/entry-icon-test.swift b/Tests/entry-icon-test.swift
+index 2690decdc592bcac8510831fcd100e02598be7e5..50bb13ea86fd2a1bb482984353268343cfb64bec 100644
+--- a/Tests/entry-icon-test.swift
++++ b/Tests/entry-icon-test.swift
+@@ -144,6 +144,28 @@ struct EntryIconTests {
+             "the moved stamp misses the bitmap decoded before the change")
+     }
+ 
++    /// Extensions ship `icon@dark.png` beside `icon.png`; a dark surface paints the sibling.
++    static func darkSurfacePrefersTheDarkVariant() {
++        guard let light = writePNG(.red) else { return expect(false, "the fixture writes") }
++        defer { try? FileManager.default.removeItem(at: light.deletingLastPathComponent()) }
++        let darkURL = light.deletingLastPathComponent().appendingPathComponent("fixture@dark.png")
++        guard writePNG(.blue, at: darkURL) != nil else { return expect(false, "the sibling writes") }
++        let entry = EntryIcon.artwork(path: light.path, extent: 0.76)
++
++        IconCache.setDarkSurface(false)
++        let onLight = bitmap(IconCache.icon(for: entry, fileURL: light))
++        IconCache.setDarkSurface(true)
++        let onDark = bitmap(IconCache.icon(for: entry, fileURL: light))
++        expect(onLight != nil && onDark != nil, "both surfaces rasterize")
++        expect(onLight != onDark, "the dark surface paints the @dark sibling")
++
++        try? FileManager.default.removeItem(at: darkURL)
++        IconCache.invalidateStyled()
++        expect(
++            bitmap(IconCache.icon(for: entry, fileURL: light)) == onLight,
++            "a missing sibling falls back to the light file")
++    }
++
+     // MARK: - Helpers
+ 
+     static func bitmap(_ image: NSImage) -> Data? { image.tiffRepresentation }
+@@ -160,7 +182,7 @@ struct EntryIconTests {
+     }
+ 
+     /// A red square filling its canvas, so fitting it to an extent is visible in the result.
+-    static func writePNG() -> URL? {
++    static func writePNG(_ color: NSColor = .red, at existing: URL? = nil) -> URL? {
+         let side = 256
+         guard
+             let rep = NSBitmapImageRep(
+@@ -170,13 +192,15 @@ struct EntryIconTests {
+         else { return nil }
+         NSGraphicsContext.saveGraphicsState()
+         NSGraphicsContext.current = ctx
+-        NSColor.red.setFill()
++        color.setFill()
+         NSRect(x: 0, y: 0, width: side, height: side).fill()
+         NSGraphicsContext.restoreGraphicsState()
+ 
++        guard let data = rep.representation(using: .png, properties: [:]) else { return nil }
++        if let existing { return (try? data.write(to: existing)) != nil ? existing : nil }
+         let dir = FileManager.default.temporaryDirectory
+             .appendingPathComponent("entry-icon-test-\(UUID().uuidString)")
+-        guard let data = rep.representation(using: .png, properties: [:]),
++        guard
+             (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true))
+                 != nil
+         else { return nil }
+@@ -221,6 +245,7 @@ struct EntryIconTests {
+         askingTwiceIsStable()
+         cacheOnlyLookupMatchesTheDrawnIcon()
+         aChangedIconRetiresTheCachedBitmap()
++        darkSurfacePrefersTheDarkVariant()
+ 
+         print(failures == 0 ? "Entry icon tests passed" : "\(failures) tests failed")
+         exit(failures == 0 ? 0 : 1)
+diff --git a/Tests/ext-test.swift b/Tests/ext-test.swift
+index e298a74a876e2aa324b10f2e4e9944f68878422b..9a5a6aef84722b610d331a6899210f768d5d401b 100644
+--- a/Tests/ext-test.swift
++++ b/Tests/ext-test.swift
+@@ -957,6 +957,21 @@ struct ExtensionTests {
+             "deeplink decodes arguments JSON",
+             args?.arguments == ["title": "Triage"], String(describing: args?.arguments))
+ 
++        let withContext = ExtensionDeepLink.parse(
++            url: URL(
++                string:
++                    "raycast://extensions/demo/search?context=%7B%22id%22%3A7%2C%22tags%22%3A%5B%22a%22%5D%7D"
++            )!)
++        check(
++            "deeplink decodes context JSON as launchContext",
++            withContext?.context == ["id": .number(7), "tags": .array([.string("a")])],
++            String(describing: withContext?.context))
++        check(
++            "deeplink without context has none",
++            ExtensionDeepLink.parse(url: URL(string: "raycast://extensions/demo/search")!)?.context
++                == [:])
++        check("deeplink ignores malformed context", ExtensionDeepLink.parseContext("[1]") == [:])
++
+         let coerced = ExtensionDeepLink.parseArguments(#"{"q":"","n":3,"flag":true}"#)
+         check(
+             "deeplink coerces non-string arguments",
+diff --git a/Tinycast/Features/Extensions/Model/ExtensionDeepLink.swift b/Tinycast/Features/Extensions/Model/ExtensionDeepLink.swift
+index 66d40371159b058b77968224768a231079dce0fe..c57f89f454ae8e5b60ad026627f5e9cf849444dd 100644
+--- a/Tinycast/Features/Extensions/Model/ExtensionDeepLink.swift
++++ b/Tinycast/Features/Extensions/Model/ExtensionDeepLink.swift
+@@ -19,6 +19,7 @@ struct ExtensionDeepLink: Sendable, Equatable {
+     let arguments: [String: String]
+     let fallbackText: String?
+     let launchType: ExtensionLaunchType
++    var context: [String: RenderValue] = [:]
+ 
+     /// `owner/ext` first so a scoped manifest wins over a bare slug collision.
+     var extensionCandidates: [String] {
+@@ -79,10 +80,13 @@ struct ExtensionDeepLink: Sendable, Equatable {
+         var arguments: [String: String] = [:]
+         var fallbackText: String?
+         var launchType = ExtensionLaunchType.userInitiated
++        var context: [String: RenderValue] = [:]
+         for item in items {
+             switch item.name.lowercased() {
+             case "arguments":
+                 if let raw = item.value { arguments = parseArguments(raw) }
++            case "context":
++                if let raw = item.value { context = parseContext(raw) }
+             case "fallbacktext":
+                 fallbackText = item.value
+             case "launchtype", "launch_type":
+@@ -94,7 +98,16 @@ struct ExtensionDeepLink: Sendable, Equatable {
+         return .command(
+             ExtensionDeepLink(
+                 ownerOrAuthor: ownerOrAuthor, extensionName: extensionName, commandName: commandName,
+-                arguments: arguments, fallbackText: fallbackText, launchType: launchType))
++                arguments: arguments, fallbackText: fallbackText, launchType: launchType,
++                context: context))
++    }
++
++    /// `launchContext` is any JSON object; anything else means no context.
++    nonisolated static func parseContext(_ raw: String) -> [String: RenderValue] {
++        guard let data = raw.data(using: .utf8),
++            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
++        else { return [:] }
++        return json.mapValues(RenderValue.init(json:))
+     }
+ 
+     /// Raycast sends one URL-encoded JSON object; anything else means no arguments, not a failure.
+diff --git a/Tinycast/Features/Extensions/Service/ExtensionManager.swift b/Tinycast/Features/Extensions/Service/ExtensionManager.swift
+index 9767f9f86fbb5fa80306fd961d475440e5dec022..546036dfb337cac03c8722421903d96c44978261 100644
+--- a/Tinycast/Features/Extensions/Service/ExtensionManager.swift
++++ b/Tinycast/Features/Extensions/Service/ExtensionManager.swift
+@@ -1007,6 +1007,7 @@ final class ExtensionManager: ExtensionRuntimeDelegate, ExtensionHostContext {
+         }
+         coordinator?.runExtensionCommand(
+             entry(for: command, in: owner), arguments: link.arguments,
+-            fallbackText: link.fallbackText, launchType: link.launchType)
++            fallbackText: link.fallbackText, launchType: link.launchType,
++            launchContext: link.context)
+     }
+ }
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift b/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift
+index 4b4e40790863ac11ef690696746b26045327d4ad..62f1436c471d7a89ca839e97b26d054e84d0d04b 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift
+@@ -101,7 +101,9 @@ struct ExtensionCommandScreen: PaletteScreen {
+         let screen = screen
+         let assetsPath = assetsPath
+         let extensions = extensions
+-        var items = ExtensionActionsMenu.rows(filteredActions, assetsPath: assetsPath)
++        var items = ExtensionActionsMenu.rows(
++            filteredActions, assetsPath: assetsPath,
++            implicitShortcuts: ExtensionScreen.implicitShortcuts(in: actions))
+         for index in items.indices { items[index].startsSection = filteredSectionStarts[index] }
+         return PaletteMenuContent(
+             rowCount: filteredActions.count, preferredSelection: bestMatch?.index,
+@@ -140,7 +142,15 @@ struct ExtensionCommandScreen: PaletteScreen {
+         extensions.dispatch(handler: handler)
+     }
+ 
+-    func secondary(at selection: Int) -> Bool { false }
++    /// ⌘↵ fires the panel's second action, as Raycast assigns it unless that action has its own key.
++    func secondary(at selection: Int) -> Bool {
++        let actions = ExtensionScreen.actions(in: screen.actionPanel(forItemAt: selection))
++        guard let handler = ExtensionScreen.secondaryAction(in: actions)?.handler else {
++            return false
++        }
++        extensions.dispatch(handler: handler)
++        return true
++    }
+ 
+     /// The `searchBarAccessory` dropdown; an empty one states and opens nothing, so it is none.
+     var searchAccessory: ExtensionSearchAccessory? {
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionCommandView.swift b/Tinycast/Features/Extensions/UI/ExtensionCommandView.swift
+index 7cb5ea0b753765e3c8c9bea06d27ee8cda34568a..b7e68509c7e34f34b10c7e91104e48a7dd2482e8 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionCommandView.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionCommandView.swift
+@@ -239,7 +239,10 @@ enum ExtensionActionsMenu {
+     }
+ 
+     /// Rows carry a resolved `ExtensionImage`; resolving per ↑/↓ would probe symbols on main.
+-    static func rows(_ actions: [ExtensionAction], assetsPath: String?) -> [ExtensionActionItem] {
++    static func rows(
++        _ actions: [ExtensionAction], assetsPath: String?,
++        implicitShortcuts: [ExtensionAction.ID: [String]] = [:]
++    ) -> [ExtensionActionItem] {
+         actions.map { action in
+             ExtensionActionItem(
+                 title: action.title,
+@@ -248,7 +251,7 @@ enum ExtensionActionsMenu {
+                     // Read rather than injected: a panel is rebuilt each time it opens.
+                     isDark: NSApp.effectiveAppearance.isDark,
+                     isDestructive: action.isDestructive),
+-                shortcutCaps: action.shortcutCaps ?? [],
++                shortcutCaps: action.shortcutCaps ?? implicitShortcuts[action.id] ?? [],
+                 isDestructive: action.isDestructive,
+                 startsSection: action.startsSection)
+         }
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift b/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift
+index 35c731b5ed1d5e91b9ff4b05caf3bf79808e062d..ef8e5d02e211fbdeb02678f340f413cb7d3311e7 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionCoordinator.swift
+@@ -97,7 +97,7 @@ final class ExtensionCoordinator {
+         }
+         run(
+             owner, command: command, arguments: link.arguments, fallbackText: link.fallbackText,
+-            launchType: link.launchType)
++            launchType: link.launchType, launchContext: link.context)
+     }
+ 
+     // MARK: - Managing one extension from the launcher
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionFormView.swift b/Tinycast/Features/Extensions/UI/ExtensionFormView.swift
+index 6cedb403e36022e4ba15b38aa720d99370564339..e3b10f2e70bcbbe95ac2ff985d3fd458dd1477f3 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionFormView.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionFormView.swift
+@@ -46,7 +46,11 @@ struct ExtensionFormView: View {
+                 scroll, row: focusedRowID, atOrigin: selection == 0, proxy: proxy)
+         }
+         // A form arrives with whatever row the screen before it left behind, so it states its own.
+-        .onAppear { focus(screen.autoFocusedField) }
++        .task {
++            // Yields past the panel turning key, or AppKit's own first-responder pick wins.
++            await Task.yield()
++            focus(screen.autoFocusedField)
++        }
+         .onDisappear { palette.noteEditingField(false) }
+         // The palette moves the selection with ↑/↓ and ⇥; focus follows it, and a click leads it.
+         .onChange(of: selection) { focus(selection) }
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionScreen.swift b/Tinycast/Features/Extensions/UI/ExtensionScreen.swift
+index 1de4cfc1b29cf47efd445d8a03f9d94fc13eb1c6..e65ac73a0f6f7fb3a4ec02f43f0b61d6e5e9ef44 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionScreen.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionScreen.swift
+@@ -2,7 +2,7 @@ import Foundation
+ import SwiftUI
+ 
+ /// The one source of row order, so the palette's flat `selection` maps 1:1 onto visible rows.
+-struct ExtensionScreen: Equatable {
++struct ExtensionScreen {
+     struct SelectionChange: Equatable {
+         let handler: String
+         let itemID: String?
+@@ -18,14 +18,14 @@ struct ExtensionScreen: Equatable {
+     }
+ 
+     /// `id` is the scroll target: an `.id()` inside a row exists only once it is realized.
+-    struct Item: Equatable, Identifiable {
++    struct Item: Identifiable {
+         let node: RenderNode
+         let index: Int
+ 
+         var id: String { "item:\(node.id)" }
+     }
+ 
+-    enum Row: Equatable, Identifiable {
++    enum Row: Identifiable {
+         case header(title: String, subtitle: String?, id: String)
+         case item(Item)
+ 
+@@ -230,6 +230,25 @@ struct ExtensionScreen: Equatable {
+         items.first { $0.node.bool("autoFocus") == true }?.index ?? 0
+     }
+ 
++    /// The second action takes ⌘↵ unless it declares a key, or another action already holds ⌘↵.
++    static func secondaryAction(in actions: [ExtensionAction]) -> ExtensionAction? {
++        guard actions.count > 1, actions[1].enclosingSubmenuTitle == nil,
++            actions[1].node.object("shortcut") == nil,
++            !actions.contains(where: { $0.matches(key: .return, modifiers: .command) })
++        else { return nil }
++        return actions[1]
++    }
++
++    /// The keys the panel states for actions that carry none: ↵ on the first, ⌘↵ on the second.
++    static func implicitShortcuts(in actions: [ExtensionAction]) -> [ExtensionAction.ID: [String]] {
++        var result: [ExtensionAction.ID: [String]] = [:]
++        if let first = actions.first, first.node.object("shortcut") == nil {
++            result[first.id] = ["↵"]
++        }
++        if let second = secondaryAction(in: actions) { result[second.id] = ["⌘", "↵"] }
++        return result
++    }
++
+     /// Submenus flatten into their section: the palette's menu is flat.
+     static func actions(in panel: RenderNode?) -> [ExtensionAction] {
+         guard let panel else { return [] }
+diff --git a/Tinycast/Platform/Images/IconCache.swift b/Tinycast/Platform/Images/IconCache.swift
+index 67d84e60522f74467378b607a03f0e24fb652360..0154159f4e577433a15f5fd69e78133f76ab8271 100644
+--- a/Tinycast/Platform/Images/IconCache.swift
++++ b/Tinycast/Platform/Images/IconCache.swift
+@@ -313,7 +313,7 @@ enum IconCache {
+     static func artwork(atPath path: String, extent: CGFloat) -> NSImage {
+         let key = artworkKey(path, extent)
+         if let cached = cache.object(forKey: key) { return cached }
+-        guard let source = NSImage(contentsOfFile: path) else {
++        guard let source = NSImage(contentsOfFile: appearanceVariant(of: path)) else {
+             return symbolIcon(named: "questionmark.square.dashed")
+         }
+         let (icon, cost) = fitted(source, to: extent)
+@@ -321,6 +321,17 @@ enum IconCache {
+         return icon
+     }
+ 
++    /// `icon@dark.png` beside `icon.png` is what extensions ship for dark mode. Resolved at decode,
++    /// and a surface change purges every artwork key, so only the current variant is ever held.
++    static func appearanceVariant(of path: String) -> String {
++        guard darkSurface.withLock({ $0 }) else { return path }
++        let url = URL(fileURLWithPath: path)
++        let ext = url.pathExtension
++        let base = url.deletingPathExtension().path
++        let dark = ext.isEmpty ? base + "@dark" : "\(base)@dark.\(ext)"
++        return FileManager.default.fileExists(atPath: dark) ? dark : path
++    }
++
+     static func cachedArtwork(atPath path: String, extent: CGFloat) -> NSImage? {
+         cache.object(forKey: artworkKey(path, extent))
+     }

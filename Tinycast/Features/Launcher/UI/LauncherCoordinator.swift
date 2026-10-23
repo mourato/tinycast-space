@@ -291,6 +291,23 @@ final class LauncherCoordinator {
         AppLauncher.showInFinder(app.url)
     }
 
+    /// tinycast-space: Finder's Get Info for an app, as Raycast's ⌘I; the same route Uninstall takes.
+    func showInfoInFinder(_ app: AppEntry) {
+        guard app.kind == .application else { return }
+        paletteCoordinator.hidePalette(restoreFocus: false)
+        Task {
+            guard await !AppLauncher.showInfoInFinder(app.url) else { return }
+            await core.showNotice(
+                title: String(localized: "Couldn’t Open Get Info"),
+                message: String(
+                    localized: """
+                        Allow Tinycast to control Finder in System Settings › Privacy & Security \
+                        › Automation, then try again.
+                        """),
+                symbol: "info.circle", tone: .danger)
+        }
+    }
+
     /// Focus is never handed back: the relaunch takes it, or the app that refused has it.
     func restart(_ app: AppEntry) {
         guard app.kind == .application, let bundleID = app.bundleID else { return }

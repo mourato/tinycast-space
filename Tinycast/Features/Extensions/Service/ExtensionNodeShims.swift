@@ -27,7 +27,14 @@ final class ExtensionNodeShims: @unchecked Sendable {
             let value = try dispatch(api: api, method: method, arguments: arguments)
             return envelope(["ok": true, "value": value ?? NSNull()])
         } catch let error as ShimError {
-            return envelope(["ok": false, "error": error.message, "code": error.code])
+            var payload: [String: Any] = ["ok": false, "error": error.message, "code": error.code]
+            if let command = error.spawnCommand {
+                payload["errno"] = -Int(ENOENT)
+                payload["syscall"] = "\(error.spawnOperation) \(command)"
+                payload["path"] = command
+                payload["spawnargs"] = error.spawnArguments
+            }
+            return envelope(payload)
         } catch {
             return envelope(["ok": false, "error": error.localizedDescription, "code": "EUNKNOWN"])
         }
@@ -42,6 +49,15 @@ final class ExtensionNodeShims: @unchecked Sendable {
     struct ShimError: Error {
         let message: String
         let code: String
+        var spawnCommand: String?
+        var spawnArguments: [String] = []
+        var spawnOperation = "spawn"
+
+        static func missingExecutable(_ command: String, arguments: [String], operation: String) -> ShimError {
+            ShimError(
+                message: "\(operation) \(command) ENOENT", code: "ENOENT",
+                spawnCommand: command, spawnArguments: arguments, spawnOperation: operation)
+        }
 
         static func noEntry(_ path: String, _ syscall: String) -> ShimError {
             ShimError(message: "ENOENT: no such file or directory, \(syscall) '\(path)'", code: "ENOENT")
@@ -428,9 +444,9 @@ final class ExtensionNodeShims: @unchecked Sendable {
         switch method {
         case "run":
             // This runs on the JS queue, so a child that never exits would freeze the whole runtime.
-            return try launch(spec).collect(timeout: timeout)
+            return try launch(spec, operation: "spawnSync").collect(timeout: timeout)
         case "start":
-            let child = try launch(spec)
+            let child = try launch(spec, operation: "spawn")
             // A detached child outlives its caller, so nothing ever waits on it.
             if spec["detached"] as? Bool != true {
                 ExtensionAsyncProcess.enqueue(child, timeout: timeout)
@@ -441,18 +457,21 @@ final class ExtensionNodeShims: @unchecked Sendable {
         }
     }
 
-    private func launch(_ spec: [String: Any]) throws -> ExtensionAsyncProcess.Child {
+    private func launch(_ spec: [String: Any], operation: String) throws -> ExtensionAsyncProcess.Child {
         let command = spec["command"] as? String ?? ""
         guard !command.isEmpty else { throw ShimError.failed("No command given.", "EINVAL") }
         let useShell = spec["shell"] as? Bool ?? false
+        let environment = spec["env"] as? [String: String]
 
         let task = Process()
         if useShell {
             task.executableURL = URL(fileURLWithPath: "/bin/sh")
             task.arguments = ["-c", command]
         } else {
-            guard let resolved = ExtensionAsyncProcess.resolveExecutable(command) else {
-                throw ShimError.noEntry(command, "spawn")
+            guard let resolved = ExtensionAsyncProcess.resolveExecutable(command, searchPath: environment?["PATH"])
+            else {
+                throw ShimError.missingExecutable(
+                    command, arguments: spec["args"] as? [String] ?? [], operation: operation)
             }
             task.executableURL = resolved
             task.arguments = (spec["args"] as? [String] ?? [])
@@ -460,11 +479,7 @@ final class ExtensionNodeShims: @unchecked Sendable {
         if let cwd = spec["cwd"] as? String, !cwd.isEmpty {
             task.currentDirectoryURL = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
         }
-        if let overrides = spec["env"] as? [String: String] {
-            task.environment = overrides
-        } else {
-            task.environment = ProcessInfo.processInfo.environment
-        }
+        task.environment = environment ?? ProcessInfo.processInfo.environment
 
         let stdout = Pipe()
         let stderr = Pipe()

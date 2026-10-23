@@ -414,6 +414,18 @@ export default async function Command() {
 }
 `;
 
+const oauthQueueSource = `
+import { OAuth } from "@raycast/api";
+
+export default async function Command() {
+  const client = new OAuth.PKCEClient({ redirectMethod: OAuth.RedirectMethod.Web, providerName: "GitHub" });
+  const settle = (promise) => promise.then((value) => ({ value }), (error) => ({ error: error.message }));
+  const first = settle(client.authorize({ url: "https://auth.example.test/first" }));
+  const second = settle(client.authorize({ url: "https://auth.example.test/second" }));
+  globalThis.__oauthQueue = Promise.all([first, second]);
+}
+`;
+
 const formDataSource = `
 export default async function Command() {
   const form = new FormData();
@@ -456,6 +468,118 @@ export default async function Command() {
   await send({});
   const request = new Request(url, { method: "POST", body: new URLSearchParams({ a: "1" }) });
   globalThis.__contentType = request.headers.get("content-type");
+}
+`;
+
+const missingExecutableSource = `
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
+const missing = "/tinycast-fixture-missing/executable";
+const shape = (error, syscall = "spawn") => error.message === syscall + " " + missing + " ENOENT"
+  && error.code === "ENOENT" && error.errno === -2
+  && error.syscall === syscall + " " + missing && error.path === missing
+  && JSON.stringify(error.spawnargs) === '["hello"]';
+export default async function Command() {
+  const results = [];
+  await new Promise(resolve => execFile(missing, ["hello"], (error, stdout, stderr) => {
+    results.push(shape(error) && stdout === "" && stderr === "");
+    resolve();
+  }));
+  try { await promisify(execFile)(missing, ["hello"]); results.push(false); }
+  catch (error) { results.push(shape(error) && error.stdout === "" && error.stderr === ""); }
+  try { execFileSync(missing, ["hello"]); results.push(false); }
+  catch (error) { results.push(shape(error, "spawnSync")); }
+  results.push(shape(spawnSync(missing, ["hello"]).error, "spawnSync"));
+  await new Promise(resolve => {
+    const child = spawn(missing, ["hello"]);
+    let output = "", failure;
+    child.stdout.on("data", chunk => output += chunk);
+    child.stderr.on("data", chunk => output += chunk);
+    child.on("error", error => { failure = error; });
+    child.on("close", () => { results.push(shape(failure) && output === ""); resolve(); });
+  });
+  // The caller's env.PATH decides which executable a bare name finds.
+  const withPath = execFileSync("sh", ["-c", "echo $PATH"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" });
+  results.push(withPath.trim() === "/usr/bin:/bin");
+  globalThis.__missingExecutable = results;
+}
+`;
+
+// `got` leans on five Node behaviours at once: `prependOnceListener`, `request.end(callback)`, draining an
+// ended stream with `read()`, a `highWaterMark: 0` duplex, and `pipeline` into a `Request.pipe` that
+// tests its destination against `http.ServerResponse`.
+const gotCompatSource = `
+import { EventEmitter } from "node:events";
+import http, { ServerResponse } from "node:http";
+import { Duplex, PassThrough, Readable, pipeline } from "node:stream";
+import { promisify } from "node:util";
+
+export default async function Command() {
+  const results = {};
+  const emitter = new EventEmitter();
+  const order = [];
+  emitter.on("x", () => order.push("on"));
+  emitter.prependOnceListener("x", () => order.push("once"));
+  emitter.emit("x");
+  emitter.emit("x");
+  results.prependOnce = order.join() === "once,on,on";
+
+  results.end = await new Promise((resolve) => {
+    const request = http.request("http://example.test/", () => {});
+    const seen = [];
+    request.on("finish", () => seen.push("finish"));
+    request.on("error", () => {});
+    request.end((error) => { seen.push("callback"); resolve({ error: error ?? null, seen: seen.join() }); });
+  });
+  results.endBody = await new Promise((resolve) => {
+    const request = http.request("http://example.test/", { method: "POST" }, () => {});
+    request.on("error", () => {});
+    request.end("body", "utf8", () => resolve(true));
+  });
+
+  results.pausedEnd = await new Promise((resolve) => {
+    const source = new Readable({ read() {} });
+    source.push("abc");
+    source.push(null);
+    setTimeout(() => {
+      source.on("end", () => resolve(true));
+      let data;
+      while ((data = source.read()) !== null) { /* drain */ }
+    }, 10);
+    setTimeout(() => resolve(false), 200);
+  });
+
+  results.zeroHwm = await new Promise((resolve) => {
+    let reads = 0;
+    const duplex = new Duplex({
+      highWaterMark: 0,
+      read() { if (reads++ === 0) this.push("hi"); else this.push(null); },
+      write(chunk, encoding, callback) { callback(); },
+    });
+    const chunks = [];
+    duplex.on("data", (chunk) => chunks.push(String(chunk)));
+    duplex.on("end", () => resolve(chunks.join()));
+    setTimeout(() => resolve("deadlock"), 200);
+  });
+
+  results.serverResponse = typeof ServerResponse === "function" && !(new PassThrough() instanceof ServerResponse);
+  class Request extends Duplex {
+    constructor() { super({ highWaterMark: 0 }); this.sent = false; }
+    _read() { if (!this.sent) { this.sent = true; this.push("payload"); } else this.push(null); }
+    _write(chunk, encoding, callback) { callback(); }
+    pipe(destination) {
+      if (destination instanceof ServerResponse) throw new Error("server response");
+      return super.pipe(destination);
+    }
+  }
+  const sink = new PassThrough();
+  const collected = [];
+  sink.on("data", (chunk) => collected.push(String(chunk)));
+  results.pipeline = await Promise.race([
+    promisify(pipeline)(new Request(), sink).then(() => collected.join(), (error) => "rejected: " + error.message),
+    new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+  ]);
+  globalThis.__gotCompat = results;
 }
 `;
 
@@ -718,6 +842,21 @@ export default async function Command() {
     refusals: [refusal(() => new net.Socket()), refusal(() => vm.runInNewContext("1"))],
     scope: [tracked.record("a"), tracked.record("b"), tracked.seen.join("")],
     type: tracked.type,
+  };
+}
+`;
+
+const httpTablesSource = `
+const http = require("http");
+const https = require("https");
+
+export default function Command() {
+  globalThis.__httpTables = {
+    codes: Object.keys(http.STATUS_CODES).length,
+    notFound: http.STATUS_CODES["404"],
+    shared: https.STATUS_CODES === http.STATUS_CODES,
+    methods: http.METHODS.length,
+    getAndPatch: http.METHODS.includes("GET") && http.METHODS.includes("PATCH"),
   };
 }
 `;
@@ -1146,6 +1285,31 @@ export async function runFixtures() {
     },
   );
 
+  const queuedSignIns = [];
+  let cancelFirst;
+  await run(
+    "concurrent OAuth sign-ins run one after another and a cancelled one settles",
+    oauthQueueSource,
+    "no-view",
+    async (harness) => {
+      check("only the first sign-in opens the browser", queuedSignIns.length === 1, JSON.stringify(queuedSignIns));
+      cancelFirst(new Error("Sign-in was cancelled."));
+      const [first, second] = await harness.call("globalThis.__oauthQueue");
+      check("a cancelled sign-in rejects with the host's error", first?.error?.includes("Sign-in was cancelled."), JSON.stringify(first));
+      check("the next sign-in starts after the failure", queuedSignIns.length === 2 && queuedSignIns[1].endsWith("/second"), JSON.stringify(queuedSignIns));
+      check("the queued sign-in still succeeds", second?.value?.authorizationCode === "code-2", JSON.stringify(second));
+    },
+    {
+      stubs: {
+        "oauth.authorize": ([url]) => {
+          queuedSignIns.push(url);
+          if (queuedSignIns.length === 1) return new Promise((_, reject) => (cancelFirst = reject));
+          return "raycast://oauth?code=code-2";
+        },
+      },
+    },
+  );
+
   const formPosts = [];
   await run(
     "FormData holds entries and serialises as multipart",
@@ -1182,6 +1346,27 @@ export async function runFixtures() {
       },
     },
   );
+
+  await run("missing executable errors cross the host bridge", missingExecutableSource, "no-view", async (harness) => {
+    const result = harness.call("globalThis.__missingExecutable");
+    check("execFile callback has Node metadata and empty output", result?.[0] === true, JSON.stringify(result));
+    check("promisified execFile rejects with Node metadata", result?.[1] === true, JSON.stringify(result));
+    check("execFileSync throws spawnSync metadata", result?.[2] === true, JSON.stringify(result));
+    check("spawnSync reports the failure through error", result?.[3] === true, JSON.stringify(result));
+    check("spawn emits error with empty streams", result?.[4] === true, JSON.stringify(result));
+    check("env is passed to the child", result?.[5] === true, JSON.stringify(result));
+  });
+
+  await run("got's Node runtime expectations", gotCompatSource, "no-view", async (harness) => {
+    const result = harness.call("globalThis.__gotCompat");
+    check("prependOnceListener runs first, once", result?.prependOnce === true, JSON.stringify(result));
+    check("ClientRequest.end(callback) finishes and calls back", result?.end?.error === null && result?.end?.seen === "finish,callback", JSON.stringify(result?.end));
+    check("ClientRequest.end(chunk, encoding, callback) calls back", result?.endBody === true, JSON.stringify(result));
+    check("read() draining an ended stream emits end", result?.pausedEnd === true, JSON.stringify(result));
+    check("a highWaterMark of 0 still reads", result?.zeroHwm === "hi", JSON.stringify(result));
+    check("http.ServerResponse exists for instanceof", result?.serverResponse === true, JSON.stringify(result));
+    check("pipeline passes a Duplex into a PassThrough", result?.pipeline === "payload", JSON.stringify(result));
+  }, { stubs: { "fetch.request": () => ({ status: 200, headers: {}, bodyBase64: "" }) }, settle: 800 });
 
   await run("spawn's stdout survives a late reader", spawnSource, "no-view", async (harness) => {
     const result = harness.call("globalThis.__spawn");
@@ -1326,6 +1511,15 @@ export async function runFixtures() {
     check("a refusal names the member that was called", result?.refusals?.[1]?.startsWith("vm.runInNewContext is not supported"), JSON.stringify(result?.refusals));
     check("AsyncResource runs the callback in place", JSON.stringify(result?.scope) === JSON.stringify([1, 2, "ab"]), JSON.stringify(result?.scope));
     check("AsyncResource keeps its type", result?.type === "tracked", String(result?.type));
+  });
+
+  await run("http carries Node's status and method tables", httpTablesSource, "no-view", async (harness) => {
+    const result = harness.call("globalThis.__httpTables");
+    check("STATUS_CODES holds every code", result?.codes === 63, JSON.stringify(result));
+    check("a code maps to its reason phrase", result?.notFound === "Not Found", JSON.stringify(result));
+    check("https shares the same table", result?.shared === true, JSON.stringify(result));
+    check("METHODS holds every method", result?.methods === 35, JSON.stringify(result));
+    check("METHODS lists GET and PATCH", result?.getAndPatch === true, JSON.stringify(result));
   });
 
   await run(

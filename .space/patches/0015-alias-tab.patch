@@ -1,0 +1,42 @@
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index bc62f9669e819ab31b31dca96f2bbe51b08842eb..06e8f3f0c88c1ee782283820ba51b92e8a329819 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -598,7 +598,7 @@ struct RootPaletteView: View {
+                 return .handled
+             }
+             // tinycast-space: the alias jump. Later in the chain is asked first; see `aliasKeyPress`.
+-            .onKeyPress(keys: [.space], phases: .down) { aliasKeyPress($0) }
++            .onKeyPress(keys: [.space, .tab], phases: .down) { aliasKeyPress($0) }
+             .modifier(
+                 ExtensionShortcutKeys(
+                     screen: { menuOpen ? nil : screen as? ExtensionCommandScreen }, selection: sel)
+@@ -1479,14 +1479,15 @@ struct RootPaletteView: View {
+ 
+ }
+ 
+-// tinycast-space: typing a user alias exactly and pressing Space opens its entry, the way Raycast
+-// does. Kept out of the view, so upstream's code only carries the one line in `keyHandlers` that
+-// calls in and the fallback in `focusPendingArgument`.
++// tinycast-space: typing a user alias exactly and pressing Space or Tab opens its entry, the way
++// Raycast does. Kept out of the view, so upstream's code only carries the one line in
++// `keyHandlers` that calls in and the fallback in `focusPendingArgument`.
+ extension RootPaletteView {
+     /// A row with inline arguments gets its first field focused; anything else runs, so further
+     /// typing lands in the command's own search field. Apps and settings panes keep searching,
+     /// since "tg something" is more often a query. Hooked after upstream's own key handlers: of
+-    /// one view's `onKeyPress` handlers, the one later in the chain is asked first.
++    /// one view's `onKeyPress` handlers, the one later in the chain is asked first, so Tab on an
++    /// alias reaches this before the field order does.
+     private func aliasKeyPress(_ press: KeyPress) -> KeyPress.Result {
+         guard vm.mode == .launcher, searchFocused, argumentFocused == nil, !menuOpen,
+             !vm.isComposing, !vm.isControlListOpen, !isCollapsed,
+@@ -1494,7 +1495,7 @@ extension RootPaletteView {
+             !vm.query.isEmpty, searchCaretAtEnd
+         else { return .ignored }
+         // "\ " escapes the Space: the backslash becomes a plain space and the query searches on.
+-        if vm.query.hasSuffix("\\") {
++        if press.key == .space, vm.query.hasSuffix("\\") {
+             vm.query.removeLast()
+             vm.query += " "
+             return .handled

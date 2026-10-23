@@ -24,6 +24,9 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     /// The referenced path, so no call site re-derives a file entry's meaning from `text`.
     var filePath: String? { kind == .file ? text : nil }
 
+    /// A referenced file the type filter files under images, by its extension rather than its kind.
+    var isImageFile: Bool { filePath.map { ClipboardFileKind.of(path: $0) == .image } ?? false }
+
     /// What Paste as Plain Text writes: the text, or a file's path in place of the file.
     var plainText: String? { kind == .image ? nil : text }
 
@@ -31,7 +34,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     var offersTextExtraction: Bool {
         switch kind {
         case .image: return imagePath != nil
-        case .file: return filePath.map { ClipboardFileKind.of(path: $0) == .image } ?? false
+        case .file: return isImageFile
         case .text: return false
         }
     }
@@ -597,6 +600,23 @@ final class ClipboardStore {
         return search(query, filter: filter).prefix(while: \.isPinned).dropFirst(index).first
     }
 
+    /// tinycast-space: ⌘1–⌘9 reach this many rows whether pinned or not; ⌘0 stays for a tenth pin.
+    static let numberedRowLimit = 9
+
+    /// Whether the visible row at `index` answers a ⌘-digit. The Pinned section always leads the
+    /// list, so a pinned slot is its row's index and the rows after it carry on the count.
+    static func isNumbered(row index: Int, pinned: Bool) -> Bool {
+        index >= 0 && (pinned || index < numberedRowLimit)
+    }
+
+    /// The row ⌘ plus slot `index` opens: pinned slots as `pinnedItem`, then unpinned rows in order.
+    func numberedItem(at index: Int, in query: String, filter: ClipboardFilter) -> ClipboardItem? {
+        let rows = search(query, filter: filter)
+        guard rows.indices.contains(index), Self.isNumbered(row: index, pinned: rows[index].isPinned)
+        else { return nil }
+        return rows[index]
+    }
+
     /// Where a reset lands: past the pins to the newest clip, or on the first match once typed.
     func landingIndex(in query: String, filter: ClipboardFilter) -> Int {
         guard query.trimmingCharacters(in: .whitespaces).isEmpty else { return 0 }
@@ -707,8 +727,22 @@ final class ClipboardStore {
         defer { sqlite3_close_v2(db) }
         sqlite3_exec(db, "PRAGMA cache_size=-2048", nil, nil, nil)
         sqlite3_progress_handler(db, 1000, { _ in Task.isCancelled ? 1 : 0 }, nil)
+        // Shares `isImageFile`'s classifier, so the LIMIT below counts only the filter's rows.
+        sqlite3_create_function_v2(
+            db, "is_image_file", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil,
+            { context, _, values in
+                guard let values, let text = sqlite3_value_text(values[0]) else {
+                    sqlite3_result_int(context, 0)
+                    return
+                }
+                let count = Int(sqlite3_value_bytes(values[0]))
+                let path = String(decoding: UnsafeBufferPointer(start: text, count: count), as: UTF8.self)
+                sqlite3_result_int(context, ClipboardFileKind.of(path: path) == .image ? 1 : 0)
+            }, nil, nil, nil)
         let isShort = query.count < 3
-        let kind = filter == .image ? "i.kind = 'image'" : filter == .file ? "i.kind = 'file'" : "1"
+        let kind =
+            filter == .image ? "(i.kind = 'image' OR (i.kind = 'file' AND is_image_file(i.text)))"
+            : filter == .file ? "(i.kind = 'file' AND NOT is_image_file(i.text))" : "1"
         let columns = "i.id, i.kind, i.text, i.image_path, i.created_at, i.source_app, i.pinned_at"
         let sql =
             isShort

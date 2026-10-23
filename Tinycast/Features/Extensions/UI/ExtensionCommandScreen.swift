@@ -101,7 +101,9 @@ struct ExtensionCommandScreen: PaletteScreen {
         let screen = screen
         let assetsPath = assetsPath
         let extensions = extensions
-        var items = ExtensionActionsMenu.rows(filteredActions, assetsPath: assetsPath)
+        var items = ExtensionActionsMenu.rows(
+            filteredActions, assetsPath: assetsPath,
+            implicitShortcuts: ExtensionScreen.implicitShortcuts(in: actions))
         for index in items.indices { items[index].startsSection = filteredSectionStarts[index] }
         return PaletteMenuContent(
             rowCount: filteredActions.count, preferredSelection: bestMatch?.index,
@@ -140,7 +142,15 @@ struct ExtensionCommandScreen: PaletteScreen {
         extensions.dispatch(handler: handler)
     }
 
-    func secondary(at selection: Int) -> Bool { false }
+    /// ⌘↵ fires the panel's second action, as Raycast assigns it unless that action has its own key.
+    func secondary(at selection: Int) -> Bool {
+        let actions = ExtensionScreen.actions(in: screen.actionPanel(forItemAt: selection))
+        guard let handler = ExtensionScreen.secondaryAction(in: actions)?.handler else {
+            return false
+        }
+        extensions.dispatch(handler: handler)
+        return true
+    }
 
     /// The `searchBarAccessory` dropdown; an empty one states and opens nothing, so it is none.
     var searchAccessory: ExtensionSearchAccessory? {

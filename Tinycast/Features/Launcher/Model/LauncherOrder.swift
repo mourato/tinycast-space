@@ -57,14 +57,20 @@ enum LauncherOrder {
         profile: (Item) -> SearchProfile, signals: (Item) -> Signals
     ) -> [Item] {
         guard !query.isEmpty else { return [] }
-        let scored = items.enumerated().compactMap { position, item -> (Item, Candidate)? in
-            let signals = signals(item)
-            guard
-                let facts = Facts(
-                    profile: profile(item), signals: signals, query: query, sensitivity: sensitivity)
-            else { return nil }
-            return (item, Candidate(facts: facts, signals: signals, position: position))
+        func score(allowingTypos: Bool) -> [(Item, Candidate)] {
+            items.enumerated().compactMap { position, item -> (Item, Candidate)? in
+                let signals = signals(item)
+                guard
+                    let facts = Facts(
+                        profile: profile(item), signals: signals, query: query,
+                        sensitivity: sensitivity, allowingTypos: allowingTypos)
+                else { return nil }
+                return (item, Candidate(facts: facts, signals: signals, position: position))
+            }
         }
+        // Only a query nothing matches is read as a misspelling, so no real match is ever displaced.
+        var scored = score(allowingTypos: false)
+        if scored.isEmpty { scored = score(allowingTypos: true) }
         let length = query.latin.units.count
         return
             scored
@@ -134,8 +140,13 @@ enum LauncherOrder {
         let subtitleExact: Bool
         let subtitle: Int
         let term: TermHit
+        /// Set only on the fallback pass, when the title is a near-miss of the query.
+        let typo: Int?
 
-        init?(profile: SearchProfile, signals: Signals, query: Query, sensitivity: SearchSensitivity) {
+        init?(
+            profile: SearchProfile, signals: Signals, query: Query, sensitivity: SearchSensitivity,
+            allowingTypos: Bool = false
+        ) {
             let latinLength = query.latin.units.count
             let typedLength = query.typed.units.count
             alias = signals.alias.map { Self.aliasHit($0, query.typed) } ?? .none
@@ -155,7 +166,8 @@ enum LauncherOrder {
                 || profile.keywords.contains {
                     passes(LauncherMatch.match(query.latin, in: $0), latinLength)
                 }
-            guard isMatching else { return nil }
+            typo = isMatching || !allowingTypos ? nil : LauncherMatch.typoDistance(query.latin, in: profile.title)
+            guard isMatching || typo != nil else { return nil }
 
             titleExact = titleMatch == .exact || alternates.contains { $0 == .exact }
             title = alternates.reduce(Self.value(titleMatch)) { max($0, Self.value($1)) }
@@ -220,6 +232,9 @@ enum LauncherOrder {
     /// Negative puts `a` first; the first rule that separates the two decides.
     private static func compare(_ a: Candidate, _ b: Candidate, length: Int) -> Int {
         guard let x = a.facts, let y = b.facts else { return tiebreak(a, b) }
+        if let left = x.typo, let right = y.typo {
+            return first(descending(right, left), frecency(a, b)) ?? tiebreak(a, b)
+        }
         if x.alias != y.alias, x.alias == .exact || y.alias == .exact {
             return x.alias == .exact ? -1 : 1
         }

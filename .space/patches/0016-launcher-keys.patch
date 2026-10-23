@@ -1,0 +1,76 @@
+diff --git a/Tinycast/Features/Launcher/UI/LauncherList.swift b/Tinycast/Features/Launcher/UI/LauncherList.swift
+index 471056b2643c30db26c561c1538078d505cb5152..695104d611775dede5d30e81e7ee7fbb93424997 100644
+--- a/Tinycast/Features/Launcher/UI/LauncherList.swift
++++ b/Tinycast/Features/Launcher/UI/LauncherList.swift
+@@ -10,6 +10,9 @@ struct LauncherList: View {
+     let meetingCount: Int
+     let suggestionCount: Int
+     let matchCount: Int
++    /// A query is typed, so ⌘1–⌘9 open the first results instead of favorites.
++    let numbersResults: Bool
++    static let numberedResultLimit = 9
+     /// Changes only when the list should scroll, so mouse selection never yanks it.
+     let scroll: ScrollIntent
+     /// The card at flat index 0, when one leads. At most one ever does.
+@@ -147,7 +150,14 @@ struct LauncherList: View {
+             grouped.keys.allSatisfy(kinds.contains),
+             "kind missing from the launcher's section order: "
+                 + grouped.keys.filter { !kinds.contains($0) }.map(\.rawValue).joined(separator: ", "))
+-        return rows + fileRows + fallbackRows
++        guard numbersResults else { return rows + fileRows + fallbackRows }
++        var number = 0
++        let numbered = rows.map { row -> Row in
++            guard case .app(let app, nil) = row, number < Self.numberedResultLimit else { return row }
++            defer { number += 1 }
++            return .app(app, slot: FavoriteSlots.digit(at: number))
++        }
++        return numbered + fileRows + fallbackRows
+     }
+ 
+     var body: some View {
+diff --git a/Tinycast/Features/Launcher/UI/LauncherScreen.swift b/Tinycast/Features/Launcher/UI/LauncherScreen.swift
+index a39c6c4a20a3431fc1c098ab59922cc842259364..15ee90a234e209d44a1a74d81e2aee866ff20318 100644
+--- a/Tinycast/Features/Launcher/UI/LauncherScreen.swift
++++ b/Tinycast/Features/Launcher/UI/LauncherScreen.swift
+@@ -395,8 +395,16 @@ struct LauncherScreen: PaletteScreen {
+         return true
+     }
+ 
+-    /// ⌘1–⌘9/⌘0 — launch a favorite by position, in either palette size.
++    /// ⌘1–⌘9/⌘0 — launch a favorite by position, in either palette size. While a query is
++    /// typed no favorite is pinned, so ⌘1–⌘9 open that many results down instead.
+     private func launchFavorite(at index: Int) -> Bool {
++        if !pinsFavorites {
++            guard index < LauncherList.numberedResultLimit,
++                let row = rows.indices.filter({ entry(at: $0) != nil }).dropFirst(index).first
++            else { return false }
++            activate(at: row)
++            return true
++        }
+         guard let app = pinnedFavorites.dropFirst(index).first else { return false }
+         core.launcherCoordinator.launch(app)
+         return true
+@@ -500,6 +508,7 @@ struct LauncherScreen: PaletteScreen {
+             meetingCount: meetingCount,
+             suggestionCount: suggestionCount,
+             matchCount: matchCount,
++            numbersResults: !pinsFavorites,
+             scroll: scroll,
+             card: leadCard,
+             cardSelected: isCardSelected(selection),
+diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
+index 152ffce1a76b6308c92ba57c535d383d9b748e58..e44e22312d707217b6ffaae161c75bd813edd9e2 100644
+--- a/Tinycast/Palette/PaletteCoordinator.swift
++++ b/Tinycast/Palette/PaletteCoordinator.swift
+@@ -55,8 +55,10 @@ final class PaletteCoordinator {
+         windowController.isVisible && palette.mode == mode
+     }
+ 
++    /// A visible palette hides whatever screen is up; the summon after it restores that screen
++    /// until Pop to Root Search expires, so the pair reads as minimise and restore.
+     func togglePalette() {
+-        if isShowing(.launcher) {
++        if isVisible {
+             hidePalette()
+         } else {
+             showPalette(mode: .launcher, restoreAnyMode: true)

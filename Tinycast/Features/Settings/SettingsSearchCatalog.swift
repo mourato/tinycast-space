@@ -58,6 +58,14 @@ enum SettingsSearchCatalog {
         var isEmpty: Bool { terms.isEmpty }
     }
 
+    /// Launcher `?` scope: a bare `?` browses every pane, `?text` searches rows and panes.
+    static func scopeResults(for scoped: String, limit: Int = 50) -> [SettingsSearchEntry] {
+        guard !scoped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return entries.filter { $0.target == nil }
+        }
+        return results(for: scoped, limit: limit)
+    }
+
     static func results(for raw: String, limit: Int = 50) -> [SettingsSearchEntry] {
         let query = Query(raw)
         guard !query.isEmpty else { return [] }
@@ -144,6 +152,15 @@ enum SettingsSearchCatalog {
             .generalAppearance, "Show animations",
             keywords: ["motion", "transitions", "reduce motion", "effects", "instant"]),
         .init(
+            .generalAppearance, "Light theme",
+            keywords: ["raycast theme", "ray.so", "colors", "palette", "import"]),
+        .init(
+            .generalAppearance, "Dark theme",
+            keywords: ["raycast theme", "ray.so", "colors", "palette", "import"]),
+        .init(
+            .generalAppearance, "Theme background",
+            keywords: ["opacity", "transparency", "raycast theme"]),
+        .init(
             .generalAppearance, "Interface size",
             keywords: ["text size", "font size", "scale", "zoom", "bigger", "larger", "legible"]),
         .init(
@@ -164,6 +181,9 @@ enum SettingsSearchCatalog {
         .init(
             .generalHyperKey, "Quick Press",
             keywords: ["tap", "escape", "single press"]),
+        .init(
+            .generalHyperKey, "Show ✦ for another app's Hyper key",
+            keywords: ["glyph", "karabiner", "hyperkey", "external", "modifier"]),
         .init(
             .generalHyperKey, "Include Shift (⇧)",
             keywords: ["modifier", "chord"]),

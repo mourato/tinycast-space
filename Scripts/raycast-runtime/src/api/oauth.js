@@ -18,6 +18,15 @@ const redirects = {
 
 const expiryMarginSeconds = 10;
 
+// The host runs one browser sign-in at a time, so concurrent authorize() calls take turns.
+let authorizationQueue = Promise.resolve();
+
+function authorizeInBrowser(url, scheme) {
+  const result = authorizationQueue.then(() => hostCall("oauth", "authorize", [url, scheme]));
+  authorizationQueue = result.then(() => {}, () => {});
+  return result;
+}
+
 const randomURLSafe = (size) => nodeModules.crypto.randomBytes(size).toString("base64url");
 
 // The hosted redirect page reads its target scheme out of `state`, so it must be encoded JSON.
@@ -72,7 +81,7 @@ class PKCEClient {
   async authorize(request) {
     const url = typeof request.toURL === "function" ? request.toURL() : request.url;
     const sentState = new URL(url).searchParams.get("state");
-    const redirect = await hostCall("oauth", "authorize", [url, redirects[this.redirectMethod].scheme]);
+    const redirect = await authorizeInBrowser(url, redirects[this.redirectMethod].scheme);
     const params = new URL(redirect).searchParams;
     const error = params.get("error");
     if (error) throw new Error(params.get("error_description") ?? error);

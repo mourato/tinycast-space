@@ -239,7 +239,10 @@ enum ExtensionActionsMenu {
     }
 
     /// Rows carry a resolved `ExtensionImage`; resolving per ↑/↓ would probe symbols on main.
-    static func rows(_ actions: [ExtensionAction], assetsPath: String?) -> [ExtensionActionItem] {
+    static func rows(
+        _ actions: [ExtensionAction], assetsPath: String?,
+        implicitShortcuts: [ExtensionAction.ID: [String]] = [:]
+    ) -> [ExtensionActionItem] {
         actions.map { action in
             ExtensionActionItem(
                 title: action.title,
@@ -248,7 +251,7 @@ enum ExtensionActionsMenu {
                     // Read rather than injected: a panel is rebuilt each time it opens.
                     isDark: NSApp.effectiveAppearance.isDark,
                     isDestructive: action.isDestructive),
-                shortcutCaps: action.shortcutCaps ?? [],
+                shortcutCaps: action.shortcutCaps ?? implicitShortcuts[action.id] ?? [],
                 isDestructive: action.isDestructive,
                 startsSection: action.startsSection)
         }

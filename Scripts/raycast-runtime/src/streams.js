@@ -91,11 +91,14 @@ export class Readable extends Stream {
     const state = this._readableState;
     if (!state.buffer.length) {
       this._pull();
+      // A late consumer draining an already-ended stream by `read()` is the only thing left to notice EOF.
+      if (state.ended) this._schedule();
       return null;
     }
     const chunk = state.buffer.shift();
     state.length -= sizeOf(chunk, state.objectMode);
     this._pull();
+    if (state.ended && !state.buffer.length) this._schedule();
     return chunk;
   }
 
@@ -179,7 +182,8 @@ export class Readable extends Stream {
   _pull() {
     const state = this._readableState;
     if (state.reading || state.ended || state.destroyed) return;
-    if (state.length >= state.highWaterMark) return;
+    // `highWaterMark: 0` (got's pull-based requests) still reads once whenever the buffer is empty.
+    if (state.length >= Math.max(1, state.highWaterMark)) return;
     state.reading = true;
     try {
       this._read(state.highWaterMark);

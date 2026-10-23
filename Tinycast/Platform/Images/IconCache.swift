@@ -313,12 +313,23 @@ enum IconCache {
     static func artwork(atPath path: String, extent: CGFloat) -> NSImage {
         let key = artworkKey(path, extent)
         if let cached = cache.object(forKey: key) { return cached }
-        guard let source = NSImage(contentsOfFile: path) else {
+        guard let source = NSImage(contentsOfFile: appearanceVariant(of: path)) else {
             return symbolIcon(named: "questionmark.square.dashed")
         }
         let (icon, cost) = fitted(source, to: extent)
         cache.setObject(icon, forKey: key, cost: cost)
         return icon
+    }
+
+    /// `icon@dark.png` beside `icon.png` is what extensions ship for dark mode. Resolved at decode,
+    /// and a surface change purges every artwork key, so only the current variant is ever held.
+    static func appearanceVariant(of path: String) -> String {
+        guard darkSurface.withLock({ $0 }) else { return path }
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension
+        let base = url.deletingPathExtension().path
+        let dark = ext.isEmpty ? base + "@dark" : "\(base)@dark.\(ext)"
+        return FileManager.default.fileExists(atPath: dark) ? dark : path
     }
 
     static func cachedArtwork(atPath path: String, extent: CGFloat) -> NSImage? {

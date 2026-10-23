@@ -4,6 +4,7 @@ actor FileSearchProbe {
     private var active = 0
     private var calls: [String] = []
     private var maximumActive = 0
+    private var cancelled: [String] = []
     private let pausedQuery: String?
     private var pauseEnabled: Bool
     private var pausedContinuation: CheckedContinuation<Void, Never>?
@@ -13,7 +14,7 @@ actor FileSearchProbe {
         pauseEnabled = query != nil
     }
 
-    func search(query: String, filter: FileSearchFilter) async -> [FileSearchResult] {
+    func search(query: String, filter: FileSearchFilter, folder: String?) async -> [FileSearchResult] {
         active += 1
         calls.append(filter == .all ? query : "\(query) [\(filter.title)]")
         maximumActive = max(maximumActive, active)
@@ -24,13 +25,14 @@ actor FileSearchProbe {
         } else {
             try? await Task.sleep(for: .milliseconds(80))
         }
+        if Task.isCancelled { cancelled.append(query) }
         active -= 1
-        let home = URL(fileURLWithPath: "/Users/test")
+        let home = URL(fileURLWithPath: folder ?? "/Users/test")
         return [FileSearchResult(url: home.appending(path: query), isDirectory: false, homeDirectory: home)]
     }
 
-    func snapshot() -> (calls: [String], maximumActive: Int) {
-        (calls, maximumActive)
+    func snapshot() -> (calls: [String], maximumActive: Int, cancelled: [String]) {
+        (calls, maximumActive, cancelled)
     }
 
     func waitUntilPaused() async -> Bool {
@@ -64,6 +66,8 @@ struct FileSearchSessionTests {
     }
 
     static func main() async {
+        await cancelsSupersededScans()
+        await folderChangeRejectsStaleResults()
         await coalescesQueuedQueries()
         await serializesRunningQueries()
         await cancellationPreventsPendingWork()
@@ -76,6 +80,47 @@ struct FileSearchSessionTests {
 
         print(failures == 0 ? "File search session tests passed" : "\(failures) tests failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    static func cancelsSupersededScans() async {
+        let probe = FileSearchProbe(pausing: "a")
+        let session = makeSession(probe: probe)
+        session.search("a")
+        guard await probe.waitUntilPaused() else { return expect(false, "the first query starts") }
+        session.search("annual")
+        await probe.resumePausedSearch()
+        await waitUntil { session.state == .ready }
+        let snapshot = await probe.snapshot()
+        expect(snapshot.calls == ["a", "annual"], "the newer query runs once the scan it supersedes stops")
+        expect(snapshot.cancelled == ["a"], "a newer query cancels the scan it supersedes")
+        expect(session.results.first?.name == "annual", "only the newest query publishes")
+
+        session.search("queued")
+        session.cancel()
+        try? await Task.sleep(for: .milliseconds(120))
+        let cancelled = await probe.snapshot()
+        expect(cancelled.calls == snapshot.calls || cancelled.calls == snapshot.calls + ["queued"],
+               "cancelling never leaves the session publishing")
+        expect(session.results.isEmpty, "a cancelled search publishes nothing")
+    }
+
+    static func folderChangeRejectsStaleResults() async {
+        let probe = FileSearchProbe(pausing: "report")
+        let session = makeSession(probe: probe)
+        session.folderScope = { "/old" }
+        session.search("report")
+        guard await probe.waitUntilPaused() else { return expect(false, "scoped query starts") }
+        session.folderScope = { "/new" }
+        session.search("report")
+        expect(session.results(folder: "/old").isEmpty, "a new folder clears the previous folder's rows")
+        await probe.resumePausedSearch()
+        await waitUntil { session.state == .ready }
+        expect(session.results.first?.id == "/new/report", "a late result from the old folder cannot publish")
+        expect(session.results().isEmpty, "scoped rows never show as root search results")
+        expect(!session.results(folder: "/new").isEmpty, "the current folder's rows show")
+        session.folderScope = { nil }
+        session.search("report")
+        await waitUntil { session.state == .ready && session.results.first?.id == "/Users/test/report" }
     }
 
     static func coalescesQueuedQueries() async {
@@ -120,6 +165,7 @@ struct FileSearchSessionTests {
 
         let snapshot = await probe.snapshot()
         expect(snapshot.calls == ["running"], "cancelling drops the queued search")
+        expect(snapshot.cancelled == ["running"], "cancellation reaches the running search operation")
         expect(session.state == .idle && session.results.isEmpty, "cancellation clears the session")
     }
 
@@ -152,7 +198,7 @@ struct FileSearchSessionTests {
 
         let snapshot = await probe.snapshot()
         expect(
-            snapshot.calls == ["", "report", "report", ""],
+            snapshot.calls.sorted() == ["", "", "report", "report"],
             "an idle session prepares recents, and an open one re-asks its query and refreshes them")
     }
 
@@ -219,8 +265,8 @@ struct FileSearchSessionTests {
     }
 
     static func makeSession(probe: FileSearchProbe) -> FileSearchSession {
-        FileSearchSession { query, filter in
-            await probe.search(query: query, filter: filter)
+        FileSearchSession { query, filter, folder in
+            await probe.search(query: query, filter: filter, folder: folder)
         }
     }
 

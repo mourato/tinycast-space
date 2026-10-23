@@ -27,6 +27,10 @@ final class FileSearchCoordinator {
         self.core = core
         indexer.onIndexChanged = { [weak session] in session?.refresh() }
         indexer.onRecentChanged = { [weak session] in session?.refreshRecent() }
+        session.folderScope = { [weak palette] in
+            palette?.isInFileSearchFolder == true ? palette?.fileSearchFolder : nil
+        }
+        palette.onFileSearchFolderChanged = { [weak self] in self?.folderChanged() }
     }
 
     func applyEnabled() {
@@ -51,7 +55,9 @@ final class FileSearchCoordinator {
 
     /// Borrows the screen's session, so Search Files then opens on the request already answered.
     func searchFromLauncher(_ query: String) {
-        guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query) else {
+        guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query),
+            SettingsSearchScreen.scope(of: query) == nil  // tinycast-space
+        else {
             session.cancel()
             return
         }
@@ -61,12 +67,25 @@ final class FileSearchCoordinator {
     /// Checks the switch before reading the session, so with it off the launcher observes nothing.
     func launcherFiles(for query: String) -> [FileSearchResult] {
         guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query) else { return [] }
-        return Array(session.results.prefix(FileSearchQuery.launcherLimit))
+        return Array(session.results().prefix(FileSearchQuery.launcherLimit))
     }
 
     func applyLauncherFiles() {
         guard palette.mode == .launcher else { return }
         searchFromLauncher(palette.query)
+    }
+
+    func searchInFolder(_ result: FileSearchResult) {
+        guard palette.mode == .fileSearch, result.isDirectory else { return }
+        palette.rewriteQuery("")
+        palette.fileSearchFolder = result.id
+    }
+
+    /// The folder is part of the request, so entering or leaving it lands the list and searches again.
+    private func folderChanged() {
+        guard palette.mode == .fileSearch else { return }
+        palette.resetToken = UUID()
+        session.search(palette.query, filter: palette.fileSearchFilter)
     }
 
     func rebuildIndex() {

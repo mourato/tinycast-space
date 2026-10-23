@@ -49,6 +49,10 @@ struct RootPaletteView: View {
     private var screen: any PaletteScreen {
         switch vm.mode {
         case .launcher:
+            // tinycast-space: a leading `?` scopes root search to Tinycast's settings.
+            if SettingsSearchScreen.scope(of: vm.query) != nil {
+                return SettingsSearchScreen(core: core, vm: vm, openActions: openActions)
+            }
             return LauncherScreen(
                 appIndex: appIndex, favorites: favorites, visibility: visibility,
                 currencyRates: currencyRates, core: core, vm: vm, running: selectionIsRunning,
@@ -212,7 +216,7 @@ struct RootPaletteView: View {
                     title: String(localized: "Changelog"),
                     systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90"
                 ) {
-                    if let url = URL(string: "https://github.com/abue-ammar/tinycast/releases") {
+                    if let url = URL(string: "https://github.com/sermelipharo/tinycast-space/releases") {
                         openURL(url)
                     }
                 },
@@ -339,7 +343,7 @@ struct RootPaletteView: View {
                 )
                 // The window's frame is the size source, so the glass and clip stay matched.
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(Theme.Colors.panelScrim)
+                .background(SpaceTheme.backdrop)  // tinycast-space: a Raycast theme's gradient
                 .background(GlassEffectView())
                 .overlay {
                     Theme.Colors.dialogDimming
@@ -411,6 +415,8 @@ struct RootPaletteView: View {
                 extensions.dispatch(handler: handler, arguments: [vm.query])
             }
             .modifier(ExtensionSelectionForwarder(screen: extensionScreen, selection: vm.selection))
+            // tinycast-space: a highlighted row offering a raycast://theme link previews it.
+            .modifier(RaycastThemeLinkPreview(screen: extensionScreen, selection: vm.selection))
             // A narrower list means the old index points at a different row, or at none.
             .onChange(of: vm.clipboardFilter) { land(restoringSelection: true) }
             // The filter is part of the query, so narrowing re-runs it rather than thinning rows.
@@ -419,7 +425,8 @@ struct RootPaletteView: View {
                 fileSearch.search(vm.query, filter: vm.fileSearchFilter)
             }
             .onChange(of: vm.mode) {
-                vm.clipboardFilter = .all
+                // tinycast-space: a screen popped back to keeps the filter it was left with.
+                if vm.restoredSelection == nil { vm.clipboardFilter = .all }
                 vm.fileSearchFilter = .all
                 vm.emojiCategoryFilter = .all
                 vm.emojiGridColumnsOverride = nil
@@ -595,6 +602,8 @@ struct RootPaletteView: View {
                 if !menuOpen { advanceTabFocus(backwards: press.modifiers.contains(.shift)) }
                 return .handled
             }
+            // tinycast-space: the alias jump. Later in the chain is asked first; see `aliasKeyPress`.
+            .onKeyPress(keys: [.space, .tab], phases: .down) { aliasKeyPress($0) }
             .modifier(
                 ExtensionShortcutKeys(
                     screen: { menuOpen ? nil : screen as? ExtensionCommandScreen }, selection: sel)
@@ -1103,6 +1112,7 @@ struct RootPaletteView: View {
         vm.menuQuery = ""
         // Stated here rather than mirrored later: the window delegate reads it during this turn.
         vm.menuOpen = false
+        InlineEntryEditor.shared.end(stoppingRecordingIn: core)  // tinycast-space
     }
 
     private func openInputOptions(
@@ -1331,6 +1341,8 @@ struct RootPaletteView: View {
     private func activateMenuItem(_ index: Int) {
         guard let content = menuContent, (0..<content.rowCount).contains(index) else { return }
         guard content.isSelectable(index) else { return }
+        // tinycast-space: a row that edits in place keeps its menu up. See InlineEntryEditor.
+        if content.keepsOpen(index) { return content.activate(index) }
         // Close first: an action opening a window must find the palette key, or nothing hides it.
         closeMenus()
         // A mouse click on a row takes the caret with it; menus close back into the field.
@@ -1404,7 +1416,8 @@ struct RootPaletteView: View {
     /// The palette was opened to fill one row's fields, so the caret starts in the first empty one.
     private func focusPendingArgument() {
         guard vm.pendingArgumentEntryID != nil,
-            let field = headerAccessory?.firstIncompleteField
+            // tinycast-space: alias + Space lands in an optional field too, as Raycast does.
+            let field = headerAccessory?.firstIncompleteField ?? headerAccessory?.fieldNames.first
         else { return }
         argumentFocused = field
         searchFocused = false
@@ -1469,6 +1482,87 @@ struct RootPaletteView: View {
         screen.activate(at: selection(in: screen))
     }
 
+}
+
+// tinycast-space: typing a user alias exactly and pressing Space or Tab opens its entry, the way
+// Raycast does. Kept out of the view, so upstream's code only carries the one line in
+// `keyHandlers` that calls in and the fallback in `focusPendingArgument`.
+extension RootPaletteView {
+    /// A row with inline arguments gets its first field focused; anything else runs, so further
+    /// typing lands in the command's own search field. Apps and settings panes keep searching,
+    /// since "tg something" is more often a query. Hooked after upstream's own key handlers: of
+    /// one view's `onKeyPress` handlers, the one later in the chain is asked first, so Tab on an
+    /// alias reaches this before the field order does.
+    private func aliasKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        guard vm.mode == .launcher, searchFocused, argumentFocused == nil, !menuOpen,
+            !vm.isComposing, !vm.isControlListOpen, !isCollapsed,
+            press.modifiers.subtracting(.capsLock).isEmpty,
+            !vm.query.isEmpty, searchCaretAtEnd
+        else { return .ignored }
+        // "\ " escapes the Space: the backslash becomes a plain space and the query searches on.
+        if press.key == .space, vm.query.hasSuffix("\\") {
+            vm.query.removeLast()
+            vm.query += " "
+            return .handled
+        }
+        return openAliasEntry() ? .handled : .ignored
+    }
+
+    /// False when the query is not exactly a user alias of an entry that opens.
+    private func openAliasEntry() -> Bool {
+        // Case-sensitive on purpose: "cc" opens its command, "CC" (Shift) just searches.
+        guard let key = core.aliases.aliases.first(where: { $0.value == vm.query })?.key,
+            let launcher = screen as? LauncherScreen,
+            let index = launcher.rows.firstIndex(where: {
+                if case .entry(let app) = $0 { return app.preferenceKey == key }
+                return false
+            }),
+            case .entry(let app) = launcher.rows[index],
+            app.kind != .application, app.kind != .systemSettings
+        else { return false }
+        vm.selection = index
+        scroll = ScrollIntent(kind: .follow)
+        // Asked of the row itself, not of the header: its fields are built a pass later, so
+        // reading the accessory here would miss them and open the row instead.
+        let wantsArguments: Bool
+        // A view command whose arguments are all optional opens instead, so what follows lands
+        // in its own search bar — Search Homebrew's query is just its first search.
+        var opensInside = false
+        switch app.kind {
+        case .quicklink:
+            wantsArguments = core.quicklinks.quicklink(entryID: app.id).map {
+                !SnippetTemplateEngine.declaredArguments(in: $0.link).isEmpty
+            } ?? false
+        case .customCommand:
+            wantsArguments = !(core.customCommands.command(entryID: app.id)?.arguments ?? []).isEmpty
+        case .extensionCommand:
+            let command = extensions.resolve(app)?.1
+            let arguments = command?.arguments ?? []
+            opensInside = command?.mode == .view && !arguments.contains(where: \.required)
+            wantsArguments = !arguments.isEmpty && !opensInside
+        default:
+            wantsArguments = false
+        }
+        if wantsArguments {
+            // The palette focuses the first unanswered field as soon as the fields exist.
+            vm.pendingArgumentEntryID = app.id
+        } else if !opensInside, let field = headerAccessory?.fieldNames.first {
+            argumentFocused = field
+            searchFocused = false
+        } else {
+            launcher.activate(at: index)
+        }
+        return true
+    }
+
+    /// Only when typing would have appended — never from a caret in the middle of the query or
+    /// over a selection. All fields edit through one editor.
+    private var searchCaretAtEnd: Bool {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor
+        else { return true }
+        let range = editor.selectedRange()
+        return range.length == 0 && range.location == (editor.string as NSString).length
+    }
 }
 
 /// The palette's in-window menus. One optional of these is the whole "only one is open" invariant.

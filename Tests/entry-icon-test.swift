@@ -144,6 +144,28 @@ struct EntryIconTests {
             "the moved stamp misses the bitmap decoded before the change")
     }
 
+    /// Extensions ship `icon@dark.png` beside `icon.png`; a dark surface paints the sibling.
+    static func darkSurfacePrefersTheDarkVariant() {
+        guard let light = writePNG(.red) else { return expect(false, "the fixture writes") }
+        defer { try? FileManager.default.removeItem(at: light.deletingLastPathComponent()) }
+        let darkURL = light.deletingLastPathComponent().appendingPathComponent("fixture@dark.png")
+        guard writePNG(.blue, at: darkURL) != nil else { return expect(false, "the sibling writes") }
+        let entry = EntryIcon.artwork(path: light.path, extent: 0.76)
+
+        IconCache.setDarkSurface(false)
+        let onLight = bitmap(IconCache.icon(for: entry, fileURL: light))
+        IconCache.setDarkSurface(true)
+        let onDark = bitmap(IconCache.icon(for: entry, fileURL: light))
+        expect(onLight != nil && onDark != nil, "both surfaces rasterize")
+        expect(onLight != onDark, "the dark surface paints the @dark sibling")
+
+        try? FileManager.default.removeItem(at: darkURL)
+        IconCache.invalidateStyled()
+        expect(
+            bitmap(IconCache.icon(for: entry, fileURL: light)) == onLight,
+            "a missing sibling falls back to the light file")
+    }
+
     // MARK: - Helpers
 
     static func bitmap(_ image: NSImage) -> Data? { image.tiffRepresentation }
@@ -160,7 +182,7 @@ struct EntryIconTests {
     }
 
     /// A red square filling its canvas, so fitting it to an extent is visible in the result.
-    static func writePNG() -> URL? {
+    static func writePNG(_ color: NSColor = .red, at existing: URL? = nil) -> URL? {
         let side = 256
         guard
             let rep = NSBitmapImageRep(
@@ -170,13 +192,15 @@ struct EntryIconTests {
         else { return nil }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = ctx
-        NSColor.red.setFill()
+        color.setFill()
         NSRect(x: 0, y: 0, width: side, height: side).fill()
         NSGraphicsContext.restoreGraphicsState()
 
+        guard let data = rep.representation(using: .png, properties: [:]) else { return nil }
+        if let existing { return (try? data.write(to: existing)) != nil ? existing : nil }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("entry-icon-test-\(UUID().uuidString)")
-        guard let data = rep.representation(using: .png, properties: [:]),
+        guard
             (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true))
                 != nil
         else { return nil }
@@ -221,6 +245,7 @@ struct EntryIconTests {
         askingTwiceIsStable()
         cacheOnlyLookupMatchesTheDrawnIcon()
         aChangedIconRetiresTheCachedBitmap()
+        darkSurfacePrefersTheDarkVariant()
 
         print(failures == 0 ? "Entry icon tests passed" : "\(failures) tests failed")
         exit(failures == 0 ? 0 : 1)

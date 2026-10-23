@@ -45,6 +45,14 @@ struct ClipboardScreen: PaletteScreen {
             return true
         case .pin: return pin(at: selection)
         case .favoriteSlot(let index): return activatePinned(at: index)
+        case .saveAsSnippet:
+            // A chord pressed mid-composition belongs to the input method.
+            guard core.settings.snippetsEnabled, !vm.isComposing,
+                (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true,
+                let item = item(at: selection), item.kind == .text
+            else { return false }
+            ClipboardActionsMenu.saveAsSnippet(item, core: core)
+            return true
         case .copyText:
             guard let item = item(at: selection), item.offersTextExtraction else { return false }
             core.clipboardCoordinator.copyImageText(item)
@@ -62,7 +70,7 @@ struct ClipboardScreen: PaletteScreen {
     }
 
     private func activatePinned(at index: Int) -> Bool {
-        guard let item = store.pinnedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
+        guard let item = store.numberedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
             return false
         }
         core.clipboardCoordinator.activate(item)
@@ -169,6 +177,13 @@ private struct ClipFollowKey: Equatable {
 
 @MainActor
 enum ClipboardActionsMenu {
+    /// tinycast-space: the editor opens on the entry's text; the name is left for the user to give.
+    /// Here rather than on ClipboardCoordinator, whose harness builds it against a stub AppCore.
+    static func saveAsSnippet(_ item: ClipboardItem, core: AppCore) {
+        guard item.kind == .text, let text = item.text else { return }
+        core.snippetCoordinator.editSnippet(nil, prefilledText: text, sourceClipboardID: item.id)
+    }
+
     static func content(
         item: ClipboardItem, core: AppCore, store: ClipboardStore, target: PasteTarget?
     ) -> PopoverMenuContent {
@@ -209,6 +224,14 @@ enum ClipboardActionsMenu {
             ) {
                 core.clipboardCoordinator.togglePinnedClip(item)
             })
+        if item.kind == .text, core.settings.snippetsEnabled {
+            items.append(
+                PopoverMenuItem(
+                    title: "Save as Snippet", systemImage: "text.quote", shortcut: "⌘S"
+                ) {
+                    ClipboardActionsMenu.saveAsSnippet(item, core: core)
+                })
+        }
         if item.offersTextExtraction {
             items.append(
                 PopoverMenuItem(

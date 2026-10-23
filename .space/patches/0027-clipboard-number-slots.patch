@@ -1,0 +1,98 @@
+diff --git a/Tests/clipboard-test.swift b/Tests/clipboard-test.swift
+index 0cff0278605ce93edc5f541e58b10aff19e8cc00..138f304e8ac845f63c02580ceeb3287681cdebed 100644
+--- a/Tests/clipboard-test.swift
++++ b/Tests/clipboard-test.swift
+@@ -283,6 +283,25 @@ struct ClipboardTests {
+             expect(
+                 store.pinnedItem(at: 0, in: "", filter: .link) == nil,
+                 "filter applies before pinned slot mapping")
++
++            expect(
++                (0..<3).allSatisfy {
++                    store.numberedItem(at: $0, in: "", filter: .all)?.id
++                        == store.pinnedItem(at: $0, in: "", filter: .all)?.id
++                },
++                "pinned slots keep their meaning")
++            expect(
++                store.numberedItem(at: 3, in: "", filter: .all)?.text == "plain text",
++                "the first unpinned row carries the numbering on after the pins")
++            expect(
++                store.numberedItem(at: 4, in: "", filter: .all) == nil, "no row, no slot")
++            expect(
++                store.numberedItem(at: 0, in: "plain", filter: .all)?.text == "plain text",
++                "a query numbers the rows it shows")
++            expect(
++                !ClipboardStore.isNumbered(row: 9, pinned: false)
++                    && ClipboardStore.isNumbered(row: 9, pinned: true),
++                "unpinned rows stop at nine; a tenth pin keeps its ⌘0")
+         }
+     }
+ 
+diff --git a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
+index 501b5f4f8af12a7afef76bc3e4e24bef11132e97..50c1778f7385b6939c47a84643b87bfa84c7d840 100644
+--- a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
++++ b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
+@@ -600,6 +600,23 @@ final class ClipboardStore {
+         return search(query, filter: filter).prefix(while: \.isPinned).dropFirst(index).first
+     }
+ 
++    /// tinycast-space: ⌘1–⌘9 reach this many rows whether pinned or not; ⌘0 stays for a tenth pin.
++    static let numberedRowLimit = 9
++
++    /// Whether the visible row at `index` answers a ⌘-digit. The Pinned section always leads the
++    /// list, so a pinned slot is its row's index and the rows after it carry on the count.
++    static func isNumbered(row index: Int, pinned: Bool) -> Bool {
++        index >= 0 && (pinned || index < numberedRowLimit)
++    }
++
++    /// The row ⌘ plus slot `index` opens: pinned slots as `pinnedItem`, then unpinned rows in order.
++    func numberedItem(at index: Int, in query: String, filter: ClipboardFilter) -> ClipboardItem? {
++        let rows = search(query, filter: filter)
++        guard rows.indices.contains(index), Self.isNumbered(row: index, pinned: rows[index].isPinned)
++        else { return nil }
++        return rows[index]
++    }
++
+     /// Where a reset lands: past the pins to the newest clip, or on the first match once typed.
+     func landingIndex(in query: String, filter: ClipboardFilter) -> Int {
+         guard query.trimmingCharacters(in: .whitespaces).isEmpty else { return 0 }
+diff --git a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
+index b03c2d67af57c1a72a644a8b7b27030a47e19aa0..7cdca906d32c573fda8b31462695c56a509be69d 100644
+--- a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
++++ b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
+@@ -70,7 +70,7 @@ struct ClipboardScreen: PaletteScreen {
+     }
+ 
+     private func activatePinned(at index: Int) -> Bool {
+-        guard let item = store.pinnedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
++        guard let item = store.numberedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
+             return false
+         }
+         core.clipboardCoordinator.activate(item)
+diff --git a/Tinycast/Features/Clipboard/UI/ClipboardView.swift b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
+index 05ff0dd8fce3859c38e9f11239f6ec2e1c390a2f..173ea9dd243975901f1422388ec8d0ff092f91d3 100644
+--- a/Tinycast/Features/Clipboard/UI/ClipboardView.swift
++++ b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
+@@ -36,17 +36,18 @@ struct ClipboardList: View {
+     private var rows: [Row] {
+         var rows: [Row] = []
+         var currentTitle: String?
+-        var pinnedSlot = 0
+         let buckets = DateBucket.Boundaries()
+-        for item in results {
++        for (index, item) in results.enumerated() {
+             let title =
+                 item.isPinned ? String(localized: "Pinned") : buckets.bucket(for: item.createdAt).title
+             if title != currentTitle {
+                 rows.append(.header(title))
+                 currentTitle = title
+             }
+-            let slot = item.isPinned ? FavoriteSlots.digit(at: pinnedSlot) : nil
+-            if item.isPinned { pinnedSlot += 1 }
++            // tinycast-space: the pins lead, so the unpinned rows below carry the numbering on.
++            let slot =
++                ClipboardStore.isNumbered(row: index, pinned: item.isPinned)
++                ? FavoriteSlots.digit(at: index) : nil
+             rows.append(.item(item, slot: slot))
+         }
+         return rows

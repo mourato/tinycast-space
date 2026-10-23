@@ -19,9 +19,14 @@ final class DictionaryCoordinator {
         Paster.copyPlainText(entry.text)
     }
 
+    func copyWord(_ word: String) {
+        paletteCoordinator.hidePalette(restoreFocus: false)
+        Paster.copyPlainText(word)
+    }
+
     /// Dictionary.app shows the full entry, with every dictionary the reader has enabled.
-    func openInDictionary(_ entry: DictionaryEntry) {
-        guard let term = entry.term.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed),
+    func openInDictionary(_ word: String) {
+        guard let term = word.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed),
             let url = URL(string: "dict://" + term)
         else { return }
         paletteCoordinator.hidePalette(restoreFocus: false)

@@ -1,0 +1,237 @@
+diff --git a/Tests/settings-history-test.swift b/Tests/settings-history-test.swift
+index a402bded38110cc764964ee7df8246bfec8cac0f..dd854989a5b35ccabdc5246688f13354f71ea091 100644
+--- a/Tests/settings-history-test.swift
++++ b/Tests/settings-history-test.swift
+@@ -30,6 +30,8 @@ struct SettingsHistoryTests {
+         catalogFindsKnownRows()
+         catalogRanksTitlesFirst()
+         catalogAnchorsMatchTheirPane()
++        scopeBareQueryBrowsesPanes()
++        scopeSearchFindsRows()
+         revealingRecordsANewRequestEachTime()
+         flashOutlivesThePaneThatLitIt()
+ 
+@@ -182,6 +184,28 @@ struct SettingsHistoryTests {
+             "and an unmatched query returns nothing")
+     }
+ 
++    /// A bare `?` browses every pane once, so the scope is useful before typing.
++    static func scopeBareQueryBrowsesPanes() {
++        let panes = SettingsSearchCatalog.scopeResults(for: "")
++        expect(
++            panes.count == SettingsTab.allCases.count
++                && Set(panes.map(\.tab)) == Set(SettingsTab.allCases),
++            "a bare scope lists every pane exactly once")
++        expect(panes.allSatisfy { $0.target == nil }, "and every row opens its pane")
++        expect(
++            SettingsSearchCatalog.scopeResults(for: "   ").count == panes.count,
++            "and whitespace alone still browses")
++    }
++
++    /// `?text` searches rows and panes through the same ranking as Settings search.
++    static func scopeSearchFindsRows() {
++        let found = SettingsSearchCatalog.scopeResults(for: "extensions")
++        expect(found.first?.tab == .extensions, "a scoped search lands on the pane")
++        expect(
++            SettingsSearchCatalog.scopeResults(for: "nothing here matches at all").isEmpty,
++            "and an unmatched scope returns nothing")
++    }
++
+     // MARK: - Revealing a section
+ 
+     /// Picking the same result twice has to scroll and pulse again, not compare equal and do nothing.
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+index 7da296327fcee8dd2f8b46695b9cc21cde0e1231..4588fab05ea20ad7354513ea63a0a0c16a7f4511 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+@@ -51,7 +51,9 @@ final class FileSearchCoordinator {
+ 
+     /// Borrows the screen's session, so Search Files then opens on the request already answered.
+     func searchFromLauncher(_ query: String) {
+-        guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query) else {
++        guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query),
++            SettingsSearchScreen.scope(of: query) == nil  // tinycast-space
++        else {
+             session.cancel()
+             return
+         }
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index d2820037aaaa32199b101c7e4d14c16c0b351693..2346fbbdfc46c6ea5077e9b4062922484d0d59a8 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -58,6 +58,14 @@ enum SettingsSearchCatalog {
+         var isEmpty: Bool { terms.isEmpty }
+     }
+ 
++    /// Launcher `?` scope: a bare `?` browses every pane, `?text` searches rows and panes.
++    static func scopeResults(for scoped: String, limit: Int = 50) -> [SettingsSearchEntry] {
++        guard !scoped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return entries.filter { $0.target == nil }
++        }
++        return results(for: scoped, limit: limit)
++    }
++
+     static func results(for raw: String, limit: Int = 50) -> [SettingsSearchEntry] {
+         let query = Query(raw)
+         guard !query.isEmpty else { return [] }
+diff --git a/Tinycast/Features/Settings/SettingsSearchScreen.swift b/Tinycast/Features/Settings/SettingsSearchScreen.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7d778129b0bfd80821be48590e0fd22caba4486
+--- /dev/null
++++ b/Tinycast/Features/Settings/SettingsSearchScreen.swift
+@@ -0,0 +1,140 @@
++import SwiftUI
++
++// tinycast-space: the launcher's `?` scope searches Tinycast's own Settings.
++/// A leading `?` turns root search into a search over Settings; the mode stays launcher, so Esc,
++/// history and the footer keep working.
++struct SettingsSearchScreen: PaletteScreen {
++    let core: AppCore
++    let vm: PaletteState
++    let openActions: () -> Void
++
++    /// What follows a leading `?`, or nil when the query is not scoped to settings.
++    static func scope(of query: String) -> String? {
++        guard query.first == "?" else { return nil }
++        return String(query.dropFirst())
++    }
++
++    var rows: [SettingsSearchEntry] {
++        SettingsSearchCatalog.scopeResults(for: Self.scope(of: vm.query) ?? "")
++    }
++
++    var primaryActionTitle: String { String(localized: "Open in Settings") }
++
++    private func entry(at selection: Int) -> SettingsSearchEntry? {
++        let rows = rows
++        return rows.indices.contains(selection) ? rows[selection] : nil
++    }
++
++    func hasActions(at selection: Int) -> Bool { false }
++
++    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
++        guard case .favoriteSlot(let index) = shortcut else { return false }
++        let rows = rows
++        guard index < LauncherList.numberedResultLimit, rows.indices.contains(index) else {
++            return false
++        }
++        open(rows[index])
++        return true
++    }
++
++    func activate(at selection: Int) {
++        guard let entry = entry(at: selection) else { return }
++        open(entry)
++    }
++
++    /// One row opens one place.
++    func secondary(at selection: Int) -> Bool { false }
++
++    private func open(_ entry: SettingsSearchEntry) {
++        core.paletteCoordinator.hidePalette(restoreFocus: false)
++        core.settingsCoordinator.showSettings(tab: entry.tab, revealing: entry.target)
++    }
++
++    func body(selection: Int, scroll: ScrollIntent) -> AnyView {
++        let rows = rows
++        guard !rows.isEmpty else {
++            return AnyView(EmptyResults(text: String(localized: "No results")))
++        }
++        let selectedID = rows.indices.contains(selection) ? rows[selection].id : nil
++        return AnyView(
++            ScrollViewReader { proxy in
++                ScrollView {
++                    LazyVStack(spacing: 0) {
++                        ForEach(Array(rows.enumerated()), id: \.element.id) { offset, entry in
++                            SettingsSearchScreenRow(
++                                entry: entry, selected: entry.id == selectedID,
++                                slot: offset < LauncherList.numberedResultLimit
++                                    ? FavoriteSlots.digit(at: offset) : nil
++                            )
++                            .selectionFrame(entry.id == selectedID)
++                            .contentShape(Rectangle())
++                            .onRowClick(
++                                select: { vm.selection = offset },
++                                activate: { open(entry) })
++                        }
++                    }
++                    .padding(.horizontal, metrics.spacing.md)
++                    .padding(.top, metrics.spacing.xs)
++                    .padding(.bottom, metrics.spacing.md)
++                    .hideNativeScrollers()
++                    .scrollOriginAnchor()
++                }
++                .edgeDissolve()
++                .thinScrollbar()
++                .scrollFollowsSelection(
++                    scroll, row: selectedID, atOrigin: selection == 0, proxy: proxy)
++            }
++        )
++    }
++
++    private var metrics: InterfaceMetrics { core.settings.interfaceSize.metrics }
++}
++
++private struct SettingsSearchScreenRow: View {
++    @Environment(\.metrics) private var metrics
++    let entry: SettingsSearchEntry
++    let selected: Bool
++    /// This row's ⌘-digit, or nil past the ninth.
++    let slot: Character?
++    @Environment(PaletteState.self) private var palette
++    @State private var hovered = false
++
++    private var fill: Color {
++        if selected { return Theme.Colors.selection }
++        if hovered { return Theme.Colors.rowHover }
++        return .clear
++    }
++
++    var body: some View {
++        HStack(spacing: metrics.spacing.lg) {
++            SettingsTabIcon(
++                systemImage: entry.tab.systemImage, tint: .accentColor,
++                size: metrics.size.resultRowIcon)
++            VStack(alignment: .leading, spacing: metrics.spacing.xxs) {
++                Text(entry.title)
++                    .font(metrics.typography.rowTitle)
++                    .lineLimit(1)
++                    .truncationMode(.tail)
++                Text(entry.breadcrumb)
++                    .font(metrics.typography.rowTrailing)
++                    .foregroundStyle(.secondary)
++                    .lineLimit(1)
++                    .truncationMode(.middle)
++            }
++            Spacer(minLength: 0)
++            if let slot, palette.commandHeld {
++                HStack(spacing: metrics.spacing.xxs) {
++                    KeyCapChip(text: "⌘", style: .outline)
++                    KeyCapChip(text: String(slot), style: .outline)
++                }
++            }
++        }
++        .padding(.horizontal, metrics.spacing.md)
++        .padding(.vertical, metrics.spacing.sm)
++        .background(
++            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
++                .fill(fill)
++        )
++        .armedHover($hovered)
++    }
++}
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 7d4e26df79277ab4dfaa33fa5b4bc1d6c2f1ee65..996ad2e6316111e4fcd6e7fcdf0ccbd257ad119f 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -49,6 +49,10 @@ struct RootPaletteView: View {
+     private var screen: any PaletteScreen {
+         switch vm.mode {
+         case .launcher:
++            // tinycast-space: a leading `?` scopes root search to Tinycast's settings.
++            if SettingsSearchScreen.scope(of: vm.query) != nil {
++                return SettingsSearchScreen(core: core, vm: vm, openActions: openActions)
++            }
+             return LauncherScreen(
+                 appIndex: appIndex, favorites: favorites, visibility: visibility,
+                 currencyRates: currencyRates, core: core, vm: vm, running: selectionIsRunning,
