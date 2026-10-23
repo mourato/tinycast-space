@@ -1037,11 +1037,6 @@ final class AppSettings {
             defaults.object(forKey: Key.supportReminders.rawValue) == nil
             || defaults.bool(forKey: Key.supportReminders.rawValue)
         settingsFileEnabled = defaults.bool(forKey: Key.settingsFileEnabled.rawValue)
-        loginItemRead = Task { [weak self] in
-            let enabled = await LaunchAtLogin.isEnabled()
-            guard !Task.isCancelled else { return }
-            self?.loginItemEnabled = enabled
-        }
         contextAppEnabled = defaults.bool(forKey: Key.contextAppEnabled.rawValue)
         contextBrowserEnabled = defaults.bool(forKey: Key.contextBrowserEnabled.rawValue)
         contextAutoAttachApp = defaults.bool(forKey: Key.contextAutoAttachApp.rawValue)
@@ -1083,6 +1078,11 @@ final class AppSettings {
             defaults, key: Key.contextPriorityIntegrations, source: .integrations)
         contextPriorityTools = Self.contextPriority(
             defaults, key: Key.contextPriorityTools, source: .tools)
+        loginItemRead = Task { [weak self] in
+            let enabled = await LaunchAtLogin.isEnabled()
+            guard !Task.isCancelled else { return }
+            self?.loginItemEnabled = enabled
+        }
     }
 
     /// A stored priority survives only inside the unit interval; anything else is the default.
