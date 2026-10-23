@@ -848,29 +848,32 @@ node fixtures.mjs
 node test.mjs ~/.config/raycast/extensions/<uuid> [command]
 
 # 3. the real Swift engine, against JavaScriptCore
-Scripts/run-tests.sh ext-test
-"${TMPDIR:-/tmp}"/tinycast-harness/ext-test ~/Library/Application\ Support/com.tinycast.app.dev/extensions/<name> [command]
+TINYCAST_TEST_KEEP_RUN_DIR=1 ./Scripts/run-tests.sh ext-test
+# run the printed binary against an installed extension:
+"<run-directory>/ext-test" ~/Library/Application\ Support/com.tinycast.app.dev/extensions/<name> [command]
 ```
 
 `ext-test` compiles the real engine sources — there is no copy to keep in sync. `EXT_TEST_VERBOSE=1`
 prints the extension's own console output; `EXT_TEST_SETTLE_MS=8000` gives a slow command longer;
 `EXT_TEST_PREFS='{"version":"v8"}'` stands in for preferences the user set in Settings, which is the
-only way to reach a code path an extension gates on a preference with no manifest default. Both
-harnesses read the same three variables.
+only way to reach a code path an extension gates on a preference with no manifest default. The runner
+removes its private directory by default; `TINYCAST_TEST_KEEP_RUN_DIR=1` keeps it for the manual
+invocation above and prints the exact directory to remove when finished.
 
 For OpenCodex Usage, the native harness also exercises the actual menu renderer, three Refresh
 round-trips and the Provider Usage action, with live fetches but a recorded `launchCommand`. Harness
 status items stay hidden so a test run cannot interfere with the running app's menus:
 
 ```sh
-EXT_TEST_MENU_BAR=1 "${TMPDIR:-/tmp}/tinycast-harness/ext-test" \
+EXT_TEST_MENU_BAR=1 "<run-directory>/ext-test" \
   "$HOME/Library/Application Support/com.tinycast.app.dev/extensions/opencodex-usage" usage-menu-bar
 ```
 
 ### Debugging a failing extension
 
-1. Run it through `node test.mjs <dir>` for a full render-tree dump, then through `/tmp/ext-test <dir>`
-   to confirm the same behaviour under JavaScriptCore.
+1. Run it through `node test.mjs <dir>` for a full render-tree dump, then through
+   `<run-directory>/ext-test <dir>` to confirm the same behaviour under JavaScriptCore. Keep the
+   runner directory with `TINYCAST_TEST_KEEP_RUN_DIR=1` when you need this manual step.
 2. `EXT_TEST_VERBOSE=1` surfaces the extension's `console.error`, which is usually where an extension
    explains itself.
 3. Build the runtime with `--dev` to get unminified React errors instead of `Minified React error #130`.

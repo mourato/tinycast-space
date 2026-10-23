@@ -50,7 +50,16 @@ fi
 # Each run owns its directory, so concurrent runs keep logs, binaries and the compile DB apart.
 BIN="$(mktemp -d "${TMPDIR:-/tmp}/tinycast-harness.XXXXXX")" || exit 1
 export TINYCAST_TEST_RUN_DIR="$BIN"
-trap 'rm -rf "$BIN"' EXIT
+cleanup_run_dir() {
+    local status=$?
+    if [ "${TINYCAST_TEST_KEEP_RUN_DIR:-0}" = 1 ]; then
+        printf '\n[run-tests] kept run directory: %s\n' "$BIN" >&2
+    else
+        rm -rf "$BIN"
+    fi
+    exit "$status"
+}
+trap cleanup_run_dir EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
