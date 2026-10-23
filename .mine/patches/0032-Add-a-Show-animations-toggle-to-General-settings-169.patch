@@ -1,0 +1,990 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 05:05:56 +0600
+Subject: [PATCH] Add a Show animations toggle to General settings (#1692)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A Show animations toggle in General › Appearance, on by default. Off,
+every Tinycast surface opens, closes and changes at once: SwiftUI
+transitions, the palette and panel window animations, HUD and preview
+fades, and the Notes move. On, nothing changes, and Reduce Motion still
+trims movement where it did. Activity indicators keep running.
+
+AppCore projects the setting into Motion.isEnabled. Every hosting root
+applies motionScope(), which strips the animation from each transaction
+beneath it, so no animation site checks the setting itself. Panels that
+open with the document-window animation adopt AnimatedPanel, and
+AppKit animation groups take their duration from Motion.duration(_:).
+---
+ Scripts/run-tests.sh                          |  3 ++
+ Tinycast.xcodeproj/project.pbxproj            |  8 +++
+ Tinycast/App/AppCore.swift                    | 10 ++++
+ .../Interaction/AnimatedPanel.swift           | 11 ++++
+ .../DesignSystem/Interaction/Motion.swift     | 24 +++++++++
+ .../Interaction/PanelTransition.swift         |  8 +--
+ .../AI/UI/AIChatSplitViewController.swift     |  5 +-
+ .../Backup/Model/SettingsBackup.swift         |  6 +++
+ .../Backup/Model/SettingsBackupCoverage.swift |  1 +
+ .../Calendar/UI/CameraPreviewController.swift |  2 +-
+ .../Camera/UI/CameraCoordinator.swift         |  2 +-
+ Tinycast/Features/Camera/UI/CameraPanel.swift |  4 +-
+ .../Dictation/UI/DictationPanel.swift         |  8 +--
+ .../Extensions/UI/ExtensionListPanel.swift    |  3 +-
+ .../Settings/LauncherItemsTable.swift         |  1 +
+ .../UI/NoteHeadingMenuWindowController.swift  |  3 +-
+ .../UI/NoteSwitcherWindowController.swift     |  1 +
+ Tinycast/Features/Notes/UI/NotesPanel.swift   |  4 +-
+ .../Notes/UI/NotesWindowController.swift      |  4 +-
+ .../QuickActions/UI/QuickActionPanel.swift    |  4 +-
+ .../UI/QuickActionPanelController.swift       |  2 +-
+ Tinycast/Features/Settings/AppSettings.swift  |  8 +++
+ .../Features/Settings/AppSettingsKey.swift    |  1 +
+ .../Settings/Model/SettingsFileKey.swift      |  1 +
+ .../Settings/Panes/GeneralSettingsView.swift  |  3 ++
+ .../Settings/SettingsEditorPresenter.swift    |  8 +--
+ .../Settings/SettingsFileSchema.swift         |  1 +
+ .../Settings/SettingsSearchCatalog.swift      |  3 ++
+ .../UI/RoomPreviewController.swift            |  3 +-
+ Tinycast/Palette/MenuPanel.swift              |  4 +-
+ .../Palette/PaletteDropGuideController.swift  |  4 +-
+ Tinycast/Palette/PaletteDropGuideView.swift   |  2 +
+ Tinycast/Palette/PaletteEnvironment.swift     |  1 +
+ Tinycast/Palette/PalettePanel.swift           |  4 +-
+ Tinycast/Resources/Localizable.xcstrings      | 52 +++++++++++++++++++
+ Tinycast/Windows/AppWindowController.swift    |  2 +-
+ .../Windows/Dialog/DialogController.swift     |  3 +-
+ Tinycast/Windows/Dialog/DialogPanel.swift     |  4 +-
+ Tinycast/Windows/HUD/HUDPresenter.swift       |  2 +-
+ docs/architecture.md                          |  4 +-
+ docs/features/palette.md                      |  6 +--
+ docs/ui.md                                    | 18 +++++--
+ 42 files changed, 203 insertions(+), 45 deletions(-)
+ create mode 100644 Tinycast/DesignSystem/Interaction/AnimatedPanel.swift
+ create mode 100644 Tinycast/DesignSystem/Interaction/Motion.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index bdea68f9..36073717 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -262,6 +262,7 @@ run language-test          Tinycast/Features/Settings/AppLanguage.swift
+ run localized-resource-test Tinycast/Platform/LocalizedResource.swift
+ run exclusive onboarding-test Tinycast/Features/Onboarding/OnboardingCoordinator.swift \
+                            Tinycast/Windows/AppWindowController.swift \
++                           Tinycast/DesignSystem/Interaction/Motion.swift \
+                            Tinycast/Windows/WindowChrome.swift Tinycast/Platform/ActivationPolicy.swift
+ run relaunch-test          Tinycast/App/AppDelegate.swift Tinycast/Platform/RelaunchRunner.swift
+ run interface-size-test    Tinycast/Platform/Appearance.swift \
+@@ -279,6 +280,8 @@ run palette-menu-click-test Tinycast/Platform/Appearance.swift \
+                            Tinycast/Platform/WindowLevel.swift \
+                            Tinycast/Platform/NotificationToken.swift \
+                            Tinycast/DesignSystem/Interaction/KeyboardFocus.swift \
++                           Tinycast/DesignSystem/Interaction/Motion.swift \
++                           Tinycast/DesignSystem/Interaction/AnimatedPanel.swift \
+                            Tinycast/Palette/PalettePanel.swift
+ run form-input-test        Tinycast/Platform/Appearance.swift \
+                            Tinycast/DesignSystem/Theme.swift \
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index 45196f90..00764ab9 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -410,6 +410,7 @@
+ 		767032852F22044D23FA031A /* DictationWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4119AD87C7E31C9138FA0ADB /* DictationWorker.swift */; };
+ 		76738C4DCFFD40E68037245D /* AXWindowAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FDB7BD7AB45EAD1A11FFFC4 /* AXWindowAccess.swift */; };
+ 		76BBF21D03A4989B08BC865E /* SecureInputMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BD0F1989B00B2B3BFF5BFCC /* SecureInputMonitor.swift */; };
++		76D39035109BC58859D2BB62 /* AnimatedPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B359DA439BB1202F7E48B6F3 /* AnimatedPanel.swift */; };
+ 		77A82B4F0CC09E7248DC5706 /* MeetingLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B117F11E9B15D1B1919B7FB1 /* MeetingLink.swift */; };
+ 		7825EA5D79B1C6F6B166E828 /* HyperKeyConflictScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BF8A60B3C0F4CF45B84F315 /* HyperKeyConflictScanner.swift */; };
+ 		7833FD6E0A6036954FE285CE /* FrequentEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D35CA0655717E1798AFDA7B /* FrequentEmojiStore.swift */; };
+@@ -587,6 +588,7 @@
+ 		AD98F015439106F0E9D32015 /* RightClick.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7EFE2C8A212D6979C43E9F7 /* RightClick.swift */; };
+ 		ADB8D83A32A5F1CEF11E2DE6 /* BuiltInQuickAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E1C14C150F3EC6EC5D610B /* BuiltInQuickAction.swift */; };
+ 		ADC43E68C1B617D098C71D6E /* AIInstructions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6420FE45699DC3E53907CAE3 /* AIInstructions.swift */; };
++		ADD7C0A10467500111A27420 /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 540F98596F09D20BA7160883 /* Motion.swift */; };
+ 		ADE29D44A9504AC24FC17E72 /* CalcDateTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38A97022BE0F95B5D19F0C26 /* CalcDateTime.swift */; };
+ 		AE16EC9C7B4C75871A67187D /* MarkdownTableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D14B02D3FE262EADFD3404 /* MarkdownTableView.swift */; };
+ 		AE2C029C93F7A7F6F41CA574 /* CustomWindowSizeCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E73A01A5FEA2B4CA68AE6A6 /* CustomWindowSizeCoordinator.swift */; };
+@@ -1184,6 +1186,7 @@
+ 		53D7E98E448F05816493DB37 /* PaletteEscapeAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaletteEscapeAction.swift; sourceTree = "<group>"; };
+ 		53DBA322BA1F117530075F51 /* QuickActionFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActionFailure.swift; sourceTree = "<group>"; };
+ 		53E2A503ABA6A28E229C6FD6 /* DictionarySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionarySession.swift; sourceTree = "<group>"; };
++		540F98596F09D20BA7160883 /* Motion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Motion.swift; sourceTree = "<group>"; };
+ 		548C83C4086CD9FB8E85B222 /* ClipboardScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardScreen.swift; sourceTree = "<group>"; };
+ 		5515DEDA5C7485F4A9C218B5 /* NoteFormattingBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteFormattingBar.swift; sourceTree = "<group>"; };
+ 		552EF9B38ABA9443D4FDE5E4 /* AIToolRounds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIToolRounds.swift; sourceTree = "<group>"; };
+@@ -1492,6 +1495,7 @@
+ 		B2F10908DDD321EF695BA31B /* NoteBlockLayoutFragment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteBlockLayoutFragment.swift; sourceTree = "<group>"; };
+ 		B2F8B8787A7197579A6F6ECC /* MCPServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerManager.swift; sourceTree = "<group>"; };
+ 		B3085C57A94FFF35FF74EC86 /* BundleLocalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleLocalization.swift; sourceTree = "<group>"; };
++		B359DA439BB1202F7E48B6F3 /* AnimatedPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimatedPanel.swift; sourceTree = "<group>"; };
+ 		B35ED5C4019986E638EE5C28 /* DictationModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationModelStore.swift; sourceTree = "<group>"; };
+ 		B36FACE26406FD2205FEF03E /* NOTICE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = NOTICE.md; sourceTree = "<group>"; };
+ 		B387D22D9C920FA6443EB193 /* ChatAttachmentReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAttachmentReader.swift; sourceTree = "<group>"; };
+@@ -2601,8 +2605,10 @@
+ 		6F218021C90FC685A2DF21CE /* Interaction */ = {
+ 			isa = PBXGroup;
+ 			children = (
++				B359DA439BB1202F7E48B6F3 /* AnimatedPanel.swift */,
+ 				EA9A0079D05A5D9B21A1CFCE /* FocusRelease.swift */,
+ 				9905A21DC8D37323B614F60C /* KeyboardFocus.swift */,
++				540F98596F09D20BA7160883 /* Motion.swift */,
+ 				73E25B87C692D5FEE1FBF994 /* PanelTransition.swift */,
+ 				F7EFE2C8A212D6979C43E9F7 /* RightClick.swift */,
+ 				14A81E0E724686ACB0955DE4 /* RowClick.swift */,
+@@ -4033,6 +4039,7 @@
+ 				3FD96768E81105B8EC348499 /* ActionMenuSearchQuery.swift in Sources */,
+ 				16F81066F7B59AD44CE09261 /* ActivationPolicy.swift in Sources */,
+ 				D68E7585496722BEC72E788C /* AliasStore.swift in Sources */,
++				76D39035109BC58859D2BB62 /* AnimatedPanel.swift in Sources */,
+ 				EA89498DA03BDFA3858144BF /* AppActionsMenu.swift in Sources */,
+ 				5E7ABF41CE97983E05653D69 /* AppAppearance.swift in Sources */,
+ 				E8CB7624CCA5905AF1A4FAD9 /* AppCore.swift in Sources */,
+@@ -4492,6 +4499,7 @@
+ 				5628F6136EE7CF71AD0B87C0 /* ModifierKey.swift in Sources */,
+ 				7553B38E8B1C40EF4945EDF1 /* ModifierKeyDetector.swift in Sources */,
+ 				DF45F095F4BE5E5BAF0A3DF8 /* ModifierTapMonitor.swift in Sources */,
++				ADD7C0A10467500111A27420 /* Motion.swift in Sources */,
+ 				F5FF00BF593ED5D1514F7BB9 /* NavigationSettingsView.swift in Sources */,
+ 				425EFB24DF9C320864624E73 /* NoteBlockDecoration.swift in Sources */,
+ 				99DE042F9012822660B94FB0 /* NoteBlockLayoutFragment.swift in Sources */,
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index e41cc53d..97e52bbe 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -285,6 +285,7 @@ final class AppCore {
+             NSApp.setActivationPolicy(.accessory)
+             dictationAudioDucker.recover()
+             applyAppearance()
++            applyMotion()
+             observeEffectiveAppearance()
+             pinnedEmoji.onPersistenceFailure = { [weak self] in
+                 self?.showMessage(String(localized: "Couldn't save Emoji & Symbols pins"), tone: .danger)
+@@ -750,6 +751,7 @@ final class AppCore {
+             { _ = $0.snippetsShowInLauncher },
+             reproject: { $0.snippetCoordinator.applySnippetsLauncherPresence() })
+         track({ _ = $0.appearance }, reproject: { $0.applyAppearance() })
++        track({ _ = $0.animationsEnabled }, reproject: { $0.applyMotion() })
+         track({ _ = $0.language }, reproject: { $0.offerLanguageRelaunch() })
+         track({ _ = $0.interfaceSize }, reproject: { $0.windowController.applyInterfaceSize() })
+         // Settings panes did these on change; settings.json can change them with no pane open.
+@@ -771,6 +773,14 @@ final class AppCore {
+         NSApp.appearance = settings.appearance.nsAppearance
+     }
+ 
++    /// A built panel keeps the behaviour it was made with, so the live ones are re-pointed.
++    private func applyMotion() {
++        Motion.isEnabled = settings.animationsEnabled
++        for case let panel as any AnimatedPanel in NSApp.windows {
++            panel.followMotion()
++        }
++    }
++
+     private var isLanguagePending: Bool { settings.language.rawValue != launchLocalization }
+ 
+     private func offerLanguageRelaunch() {
+diff --git a/Tinycast/DesignSystem/Interaction/AnimatedPanel.swift b/Tinycast/DesignSystem/Interaction/AnimatedPanel.swift
+new file mode 100644
+index 00000000..0e27f122
+--- /dev/null
++++ b/Tinycast/DesignSystem/Interaction/AnimatedPanel.swift
+@@ -0,0 +1,11 @@
++import AppKit
++
++/// A panel that opens and closes with AppKit's document-window animation while Tinycast animates.
++@MainActor
++protocol AnimatedPanel: NSPanel {}
++
++extension AnimatedPanel {
++    func followMotion() {
++        animationBehavior = Motion.isEnabled ? .documentWindow : .none
++    }
++}
+diff --git a/Tinycast/DesignSystem/Interaction/Motion.swift b/Tinycast/DesignSystem/Interaction/Motion.swift
+new file mode 100644
+index 00000000..28f3e96a
+--- /dev/null
++++ b/Tinycast/DesignSystem/Interaction/Motion.swift
+@@ -0,0 +1,24 @@
++import SwiftUI
++
++/// `AppCore` projects `AppSettings.animationsEnabled` here; global, so no surface can miss it.
++@MainActor
++enum Motion {
++    static var isEnabled = true
++
++    /// Zero while animations are off, so an AppKit animation group lands at once.
++    static func duration(_ duration: TimeInterval) -> TimeInterval {
++        isEnabled ? duration : 0
++    }
++}
++
++extension View {
++    /// Every hosting root applies this; the flag is read per transaction, so a toggle lands live.
++    func motionScope() -> some View {
++        transaction { transaction in
++            guard !Motion.isEnabled else { return }
++            transaction.animation = nil
++            // Without it, a descendant's `.animation(_:value:)` would insert its own again.
++            transaction.disablesAnimations = true
++        }
++    }
++}
+diff --git a/Tinycast/DesignSystem/Interaction/PanelTransition.swift b/Tinycast/DesignSystem/Interaction/PanelTransition.swift
+index c40af783..3b68c25a 100644
+--- a/Tinycast/DesignSystem/Interaction/PanelTransition.swift
++++ b/Tinycast/DesignSystem/Interaction/PanelTransition.swift
+@@ -9,7 +9,7 @@ extension NSWindow {
+         alphaValue = 0
+         order()
+         NSAnimationContext.runAnimationGroup { context in
+-            context.duration = duration
++            context.duration = Motion.duration(duration)
+             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+             animator().alphaValue = 1
+         } completionHandler: { [weak self] in
+@@ -24,7 +24,7 @@ extension NSWindow {
+     /// Safe to interrupt — the handler checks opacity — and `done` runs once it is off screen.
+     func fadeOut(duration: TimeInterval, done: (@MainActor () -> Void)? = nil) {
+         NSAnimationContext.runAnimationGroup { context in
+-            context.duration = duration
++            context.duration = Motion.duration(duration)
+             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+             animator().alphaValue = 0
+         } completionHandler: { [weak self] in
+@@ -45,9 +45,9 @@ extension NSWindow {
+ 
+     /// AppKit's close animation keeps drawing the window after `orderOut`; `done` runs once it ends.
+     func orderOutAnimated(then done: @escaping @MainActor () -> Void) {
+-        let onScreen = occlusionState.contains(.visible)
++        let animates = animationBehavior != .none && occlusionState.contains(.visible)
+         orderOut(nil)
+-        guard onScreen else {
++        guard animates else {
+             done()
+             return
+         }
+diff --git a/Tinycast/Features/AI/UI/AIChatSplitViewController.swift b/Tinycast/Features/AI/UI/AIChatSplitViewController.swift
+index e76d4971..f81377f0 100644
+--- a/Tinycast/Features/AI/UI/AIChatSplitViewController.swift
++++ b/Tinycast/Features/AI/UI/AIChatSplitViewController.swift
+@@ -9,12 +9,13 @@ final class AIChatSplitViewController: NSSplitViewController {
+         super.init(nibName: nil, bundle: nil)
+ 
+         let sidebarItem = NSSplitViewItem(
+-            sidebarWithViewController: NSHostingController(rootView: sidebar))
++            sidebarWithViewController: NSHostingController(rootView: sidebar.motionScope()))
+         sidebarItem.minimumThickness = Theme.Size.aiChatSidebarMinimum
+         sidebarItem.maximumThickness = Theme.Size.aiChatSidebarMaximum
+         sidebarItem.canCollapse = true
+ 
+-        let detailItem = NSSplitViewItem(viewController: NSHostingController(rootView: detail))
++        let detailItem = NSSplitViewItem(
++            viewController: NSHostingController(rootView: detail.motionScope()))
+         detailItem.minimumThickness = Theme.Size.aiChatDetailMinimum
+ 
+         addSplitViewItem(sidebarItem)
+diff --git a/Tinycast/Features/Backup/Model/SettingsBackup.swift b/Tinycast/Features/Backup/Model/SettingsBackup.swift
+index abbaf3ac..6f73e82a 100644
+--- a/Tinycast/Features/Backup/Model/SettingsBackup.swift
++++ b/Tinycast/Features/Backup/Model/SettingsBackup.swift
+@@ -47,6 +47,7 @@ struct SettingsBackup: Codable {
+         var openOnCursorScreen: Bool?
+         // Safe to carry: it grants no permission class, just repositions the window.
+         var paletteDraggable: Bool?
++        var animationsEnabled: Bool?
+         var fileSearchEnabled: Bool?
+         var fileSearchScopes: [String]?
+         var fileSearchIgnorePatterns: [String]?
+@@ -160,6 +161,7 @@ extension SettingsBackup {
+             rootSearchSensitivity: s.rootSearchSensitivity.rawValue,
+             openOnCursorScreen: s.openOnCursorScreen,
+             paletteDraggable: s.paletteDraggable,
++            animationsEnabled: s.animationsEnabled,
+             fileSearchEnabled: s.fileSearchEnabled,
+             fileSearchScopes: s.fileSearchScopes,
+             fileSearchIgnorePatterns: s.fileSearchIgnorePatterns,
+@@ -411,6 +413,10 @@ extension SettingsBackup {
+             settings.paletteDraggable = flag
+             count += 1
+         }
++        if let flag = s.animationsEnabled {
++            settings.animationsEnabled = flag
++            count += 1
++        }
+         // Writing through AppSettings is enough; AppCore's sinks re-project the rest.
+         if let flag = s.fileSearchEnabled {
+             settings.fileSearchEnabled = flag
+diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
+index 62b895c8..49b336f1 100644
+--- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
++++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
+@@ -28,6 +28,7 @@ enum SettingsBackupCoverage {
+         "rootSearchSensitivity": .rootSearchSensitivity,
+         "openOnCursorScreen": .openOnCursorScreen,
+         "paletteDraggable": .paletteDraggable,
++        "animationsEnabled": .animationsEnabled,
+         "fileSearchEnabled": .fileSearchEnabled,
+         "fileSearchScopes": .fileSearchScopes,
+         "fileSearchIgnorePatterns": .fileSearchIgnorePatterns,
+diff --git a/Tinycast/Features/Calendar/UI/CameraPreviewController.swift b/Tinycast/Features/Calendar/UI/CameraPreviewController.swift
+index e8a2695c..05182ad5 100644
+--- a/Tinycast/Features/Calendar/UI/CameraPreviewController.swift
++++ b/Tinycast/Features/Calendar/UI/CameraPreviewController.swift
+@@ -27,7 +27,7 @@ final class CameraPreviewController {
+             meeting: meeting, now: now, feed: feed,
+             onJoin: { [weak self] in self?.finish(true) },
+             onCancel: { [weak self] in self?.finish(false) })
+-        let hosting = NSHostingView(rootView: view)
++        let hosting = NSHostingView(rootView: view.motionScope())
+         hosting.setFrameSize(hosting.fittingSize)
+         let panel = CameraPanel(content: hosting)
+         panel.onAction = { [weak self] action in self?.finish(action == .primary) }
+diff --git a/Tinycast/Features/Camera/UI/CameraCoordinator.swift b/Tinycast/Features/Camera/UI/CameraCoordinator.swift
+index 229043d7..cc15d2b9 100644
+--- a/Tinycast/Features/Camera/UI/CameraCoordinator.swift
++++ b/Tinycast/Features/Camera/UI/CameraCoordinator.swift
+@@ -69,7 +69,7 @@ final class CameraCoordinator {
+     }
+ 
+     private func present() {
+-        let hosting = NSHostingView(rootView: CameraView(coordinator: self))
++        let hosting = NSHostingView(rootView: CameraView(coordinator: self).motionScope())
+         hosting.setFrameSize(hosting.fittingSize)
+         let panel = CameraPanel(content: hosting)
+         panel.onAction = { [weak self] action in
+diff --git a/Tinycast/Features/Camera/UI/CameraPanel.swift b/Tinycast/Features/Camera/UI/CameraPanel.swift
+index a66aec83..aef0f92e 100644
+--- a/Tinycast/Features/Camera/UI/CameraPanel.swift
++++ b/Tinycast/Features/Camera/UI/CameraPanel.swift
+@@ -2,7 +2,7 @@ import AppKit
+ import Carbon.HIToolbox
+ 
+ /// A camera surface's panel; keys go through `sendEvent`, so ↵ and Esc need no focused subview.
+-final class CameraPanel: NSPanel {
++final class CameraPanel: NSPanel, AnimatedPanel {
+     enum Action {
+         case primary
+         case cancel
+@@ -28,7 +28,7 @@ final class CameraPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .documentWindow
++        followMotion()
+         isReleasedWhenClosed = false
+         isRestorable = false
+         contentView = content
+diff --git a/Tinycast/Features/Dictation/UI/DictationPanel.swift b/Tinycast/Features/Dictation/UI/DictationPanel.swift
+index 66b4ef74..25a4ca2b 100644
+--- a/Tinycast/Features/Dictation/UI/DictationPanel.swift
++++ b/Tinycast/Features/Dictation/UI/DictationPanel.swift
+@@ -74,7 +74,7 @@ private struct DictationPanelView: View {
+     }
+ }
+ 
+-private final class DictationPanel: NSPanel {
++private final class DictationPanel: NSPanel, AnimatedPanel {
+     var onAccept: (() -> Void)?
+     var onCancel: (() -> Void)?
+ 
+@@ -90,7 +90,7 @@ private final class DictationPanel: NSPanel {
+         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+         hidesOnDeactivate = false
+         isReleasedWhenClosed = false
+-        animationBehavior = .documentWindow
++        followMotion()
+     }
+ 
+     override var canBecomeKey: Bool { true }
+@@ -119,7 +119,9 @@ final class DictationPanelController {
+         let screen = NSScreen.main ?? NSScreen.screens.first
+         guard let frame = screen?.visibleFrame else { return }
+         let panel =
+-            panel ?? DictationPanel(content: NSHostingView(rootView: DictationPanelView(state: state)))
++            panel
++            ?? DictationPanel(
++                content: NSHostingView(rootView: DictationPanelView(state: state).motionScope()))
+         panel.onAccept = onAccept
+         panel.onCancel = onCancel
+         self.panel = panel
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionListPanel.swift b/Tinycast/Features/Extensions/UI/ExtensionListPanel.swift
+index f398c524..d2dd686a 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionListPanel.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionListPanel.swift
+@@ -177,7 +177,8 @@ private struct ExtensionListPanelModifier<List: View, Revision: Equatable>: View
+         }
+         if flipped != placement.flipped { flipped = placement.flipped }
+         // Forwarded, not re-derived: a child window must never disagree with its parent.
+-        let root = AnyView(list().environment(palette).environment(\.metrics, metrics))
++        let root = AnyView(
++            list().environment(palette).environment(\.metrics, metrics).motionScope())
+         controller.present(root, frame: placement.frame, parent: host, palette: palette)
+     }
+ }
+diff --git a/Tinycast/Features/Launcher/Settings/LauncherItemsTable.swift b/Tinycast/Features/Launcher/Settings/LauncherItemsTable.swift
+index ae12b9fc..8d152f5d 100644
+--- a/Tinycast/Features/Launcher/Settings/LauncherItemsTable.swift
++++ b/Tinycast/Features/Launcher/Settings/LauncherItemsTable.swift
+@@ -255,5 +255,6 @@ private struct LauncherItemCell: View {
+         .environment(visibility)
+         .environment(aliases)
+         .environment(hotKeys)
++        .motionScope()
+     }
+ }
+diff --git a/Tinycast/Features/Notes/UI/NoteHeadingMenuWindowController.swift b/Tinycast/Features/Notes/UI/NoteHeadingMenuWindowController.swift
+index aa8379d5..244dd8c6 100644
+--- a/Tinycast/Features/Notes/UI/NoteHeadingMenuWindowController.swift
++++ b/Tinycast/Features/Notes/UI/NoteHeadingMenuWindowController.swift
+@@ -30,7 +30,8 @@ final class NoteHeadingMenuWindowController {
+ 
+     private func ensurePanel() -> NotesPanel {
+         if let panel { return panel }
+-        let hosting = NSHostingView(rootView: NoteHeadingMenuView().environment(coordinator))
++        let hosting = NSHostingView(
++            rootView: NoteHeadingMenuView().environment(coordinator).motionScope())
+         hosting.sizingOptions = []
+         let panel = NotesPanel(
+             content: hosting,
+diff --git a/Tinycast/Features/Notes/UI/NoteSwitcherWindowController.swift b/Tinycast/Features/Notes/UI/NoteSwitcherWindowController.swift
+index a3737c33..cf36d353 100644
+--- a/Tinycast/Features/Notes/UI/NoteSwitcherWindowController.swift
++++ b/Tinycast/Features/Notes/UI/NoteSwitcherWindowController.swift
+@@ -43,6 +43,7 @@ final class NoteSwitcherWindowController: NSObject, NSWindowDelegate {
+         if let panel { return panel }
+         let root = NoteSwitcherView { [weak self] in self?.resize(toContentHeight: $0) }
+             .environment(coordinator)
++            .motionScope()
+         let hosting = NSHostingView(rootView: root)
+         hosting.sizingOptions = []
+         let panel = NotesPanel(
+diff --git a/Tinycast/Features/Notes/UI/NotesPanel.swift b/Tinycast/Features/Notes/UI/NotesPanel.swift
+index 1c98c1f2..cfcf9f4f 100644
+--- a/Tinycast/Features/Notes/UI/NotesPanel.swift
++++ b/Tinycast/Features/Notes/UI/NotesPanel.swift
+@@ -2,7 +2,7 @@ import AppKit
+ import Carbon.HIToolbox
+ 
+ /// Editor and switcher differ only in style mask and chords, so one panel serves both.
+-final class NotesPanel: NSPanel {
++final class NotesPanel: NSPanel, AnimatedPanel {
+     var onEscape: (() -> Void)?
+     /// ⌘⌫ is keyed separately: only its key code survives every keyboard layout.
+     var onDeleteChord: (() -> Bool)?
+@@ -32,7 +32,7 @@ final class NotesPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .documentWindow
++        followMotion()
+         isReleasedWhenClosed = false
+         isRestorable = false
+         contentView = content
+diff --git a/Tinycast/Features/Notes/UI/NotesWindowController.swift b/Tinycast/Features/Notes/UI/NotesWindowController.swift
+index ad79b670..62b7a76a 100644
+--- a/Tinycast/Features/Notes/UI/NotesWindowController.swift
++++ b/Tinycast/Features/Notes/UI/NotesWindowController.swift
+@@ -62,7 +62,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
+         let inset: CGFloat = 40
+         let destination = NoteWindowPlacement.topRight(panel.frame, in: visible, inset: inset)
+         NSAnimationContext.runAnimationGroup { context in
+-            context.duration = Theme.Duration.enter
++            context.duration = Motion.duration(Theme.Duration.enter)
+             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+             panel.animator().setFrame(destination, display: false)
+         }
+@@ -169,7 +169,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
+ 
+     private func ensurePanel() -> NotesPanel {
+         if let panel { return panel }
+-        let root = NotesView().environment(coordinator)
++        let root = NotesView().environment(coordinator).motionScope()
+         let hosting = NSHostingView(rootView: root)
+         hosting.sizingOptions = []
+         let panel = NotesPanel(
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift b/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
+index 5be9c738..a6272c30 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
+@@ -2,7 +2,7 @@ import AppKit
+ import Carbon.HIToolbox
+ 
+ /// Keys go through `sendEvent`, so ↵, ⌘C and Esc need no focused subview to reach the panel.
+-final class QuickActionPanel: NSPanel {
++final class QuickActionPanel: NSPanel, AnimatedPanel {
+     enum Key {
+         case replace
+         case copy
+@@ -28,7 +28,7 @@ final class QuickActionPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .documentWindow
++        followMotion()
+         isReleasedWhenClosed = false
+         isRestorable = false
+         contentView = content
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift b/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
+index 3109cafc..0f5e6738 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
+@@ -36,7 +36,7 @@ final class QuickActionPanelController: NSObject, NSWindowDelegate {
+                 onRetranslate: { [weak self] in self?.onRetranslate?($0) },
+                 onOpenLanguageSettings: { [weak self] in self?.openLanguageSettings() },
+                 onHeight: { [weak self] in self?.resize(toHeight: $0) }
+-            ).environment(\.metrics, metrics))
++            ).environment(\.metrics, metrics).motionScope())
+         // The controller owns the frame; without this the top edge drifts as the reply grows.
+         hosting.sizingOptions = []
+         // Its tallest, so the first frame is never short; the view reports the real height at once.
+diff --git a/Tinycast/Features/Settings/AppSettings.swift b/Tinycast/Features/Settings/AppSettings.swift
+index d4b49bfe..1f32d6c0 100644
+--- a/Tinycast/Features/Settings/AppSettings.swift
++++ b/Tinycast/Features/Settings/AppSettings.swift
+@@ -277,6 +277,11 @@ final class AppSettings {
+         didSet { defaults.set(paletteDraggable, forKey: Key.paletteDraggable.rawValue) }
+     }
+ 
++    /// Off, every surface changes at once; on, Reduce Motion still trims movement where it did.
++    var animationsEnabled: Bool {
++        didSet { defaults.set(animationsEnabled, forKey: Key.animationsEnabled.rawValue) }
++    }
++
+     /// Where a drag left the panel's top-left, per display and relative to it.
+     var palettePositions: [String: [Double]] {
+         didSet { defaults.set(palettePositions, forKey: Key.palettePosition.rawValue) }
+@@ -747,6 +752,9 @@ final class AppSettings {
+             || defaults.bool(forKey: Key.openOnCursorScreen.rawValue)
+         autoSwitchInputSourceID = defaults.string(forKey: Key.autoSwitchInputSource.rawValue)
+         paletteDraggable = defaults.bool(forKey: Key.paletteDraggable.rawValue)
++        animationsEnabled =
++            defaults.object(forKey: Key.animationsEnabled.rawValue) == nil
++            || defaults.bool(forKey: Key.animationsEnabled.rawValue)
+         palettePositions =
+             defaults.dictionary(forKey: Key.palettePosition.rawValue)
+             as? [String: [Double]] ?? [:]
+diff --git a/Tinycast/Features/Settings/AppSettingsKey.swift b/Tinycast/Features/Settings/AppSettingsKey.swift
+index 04ad2b39..bcde07a9 100644
+--- a/Tinycast/Features/Settings/AppSettingsKey.swift
++++ b/Tinycast/Features/Settings/AppSettingsKey.swift
+@@ -30,6 +30,7 @@ enum AppSettingsKey: String, CaseIterable {
+     case openOnCursorScreen = "openOnCursorScreen"
+     case autoSwitchInputSource = "autoSwitchInputSource"
+     case paletteDraggable = "paletteDraggable"
++    case animationsEnabled = "animationsEnabled"
+     case palettePosition = "palettePosition"
+     case paletteExpandedCenterDisplays = "paletteExpandedCenterDisplays"
+     case fileSearchEnabled = "fileSearchEnabled"
+diff --git a/Tinycast/Features/Settings/Model/SettingsFileKey.swift b/Tinycast/Features/Settings/Model/SettingsFileKey.swift
+index 612e3394..151b2c51 100644
+--- a/Tinycast/Features/Settings/Model/SettingsFileKey.swift
++++ b/Tinycast/Features/Settings/Model/SettingsFileKey.swift
+@@ -12,6 +12,7 @@ enum SettingsFileKey: String, CaseIterable, Sendable {
+     case supportReminders = "general.supportReminders"
+     case language = "general.language"
+     case appearance = "appearance.theme"
++    case animationsEnabled = "appearance.animations"
+     case interfaceSize = "appearance.interfaceSize"
+     case compactMode = "appearance.compactMode"
+     case showFavoritesInCompactMode = "appearance.showFavoritesInCompactMode"
+diff --git a/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift b/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift
+index 45afddb8..d201c492 100644
+--- a/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift
++++ b/Tinycast/Features/Settings/Panes/GeneralSettingsView.swift
+@@ -77,6 +77,9 @@ struct GeneralSettingsView: View {
+                 } label: {
+                     SettingsRowTitle(.generalAppearance, "Appearance")
+                 }
++                Toggle(isOn: $settings.animationsEnabled) {
++                    SettingsRowTitle(.generalAppearance, "Show animations")
++                }
+                 InterfaceSizeRow()
+                 WindowModeRow()
+                 Toggle(isOn: $settings.showFavoritesInCompactMode) {
+diff --git a/Tinycast/Features/Settings/SettingsEditorPresenter.swift b/Tinycast/Features/Settings/SettingsEditorPresenter.swift
+index 035fdfd5..6fb0be91 100644
+--- a/Tinycast/Features/Settings/SettingsEditorPresenter.swift
++++ b/Tinycast/Features/Settings/SettingsEditorPresenter.swift
+@@ -101,7 +101,7 @@ final class SettingsEditorPresenter: NSObject {
+         }
+     }
+ 
+-    private final class Panel: NSPanel {
++    private final class Panel: NSPanel, AnimatedPanel {
+         var cancelHandler: (() -> Void)?
+ 
+         init(content: NSView, cornerRadius: CGFloat) {
+@@ -116,7 +116,7 @@ final class SettingsEditorPresenter: NSObject {
+             isOpaque = false
+             backgroundColor = .clear
+             hasShadow = true
+-            animationBehavior = .documentWindow
++            followMotion()
+             isMovableByWindowBackground = false
+             isReleasedWhenClosed = false
+             content.wantsLayer = true
+@@ -161,7 +161,8 @@ final class SettingsEditorPresenter: NSObject {
+             contentView = NSHostingView(
+                 rootView: Theme.Colors.dialogDimming
+                     .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+-                    .ignoresSafeArea())
++                    .ignoresSafeArea()
++                    .motionScope())
+         }
+ 
+         override var canBecomeKey: Bool { false }
+@@ -395,5 +396,6 @@ extension View {
+             .environment(core.chatGPTSubscription)
+             .environment(core.installedAI)
+             .scrollContentBackground(.hidden)
++            .motionScope()
+     }
+ }
+diff --git a/Tinycast/Features/Settings/SettingsFileSchema.swift b/Tinycast/Features/Settings/SettingsFileSchema.swift
+index 7a94bcc3..e9134c0e 100644
+--- a/Tinycast/Features/Settings/SettingsFileSchema.swift
++++ b/Tinycast/Features/Settings/SettingsFileSchema.swift
+@@ -39,6 +39,7 @@ enum SettingsFileSchema {
+         case .supportReminders: return bind(settings, \.supportRemindersEnabled)
+         case .language: return bind(settings, \.language)
+         case .appearance: return bind(settings, \.appearance)
++        case .animationsEnabled: return bind(settings, \.animationsEnabled)
+         case .interfaceSize: return bind(settings, \.interfaceSize)
+         case .compactMode: return bind(settings, \.compactMode)
+         case .showFavoritesInCompactMode: return bind(settings, \.showFavoritesInCompactMode)
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 0cef9011..ac1377dd 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -140,6 +140,9 @@ enum SettingsSearchCatalog {
+         .init(
+             .generalAppearance, "Appearance",
+             keywords: ["dark", "light", "mode", "theme"]),
++        .init(
++            .generalAppearance, "Show animations",
++            keywords: ["motion", "transitions", "reduce motion", "effects", "instant"]),
+         .init(
+             .generalAppearance, "Interface size",
+             keywords: ["text size", "font size", "scale", "zoom", "bigger", "larger", "legible"]),
+diff --git a/Tinycast/Features/WindowManagement/UI/RoomPreviewController.swift b/Tinycast/Features/WindowManagement/UI/RoomPreviewController.swift
+index d93083b8..e7290103 100644
+--- a/Tinycast/Features/WindowManagement/UI/RoomPreviewController.swift
++++ b/Tinycast/Features/WindowManagement/UI/RoomPreviewController.swift
+@@ -66,7 +66,8 @@ final class RoomPreviewController {
+         panels = NSScreen.screens.map { screen in
+             let frame = geometry.flip(screen.frame)
+             let host = NSHostingView(
+-                rootView: RoomPreviewView(model: model, origin: frame.origin, size: frame.size))
++                rootView: RoomPreviewView(model: model, origin: frame.origin, size: frame.size)
++                    .motionScope())
+             // The controller owns the frame; without this the hosting view would size the window.
+             host.sizingOptions = []
+             let panel = RoomPreviewPanel()
+diff --git a/Tinycast/Palette/MenuPanel.swift b/Tinycast/Palette/MenuPanel.swift
+index 9ff91292..c02a2e46 100644
+--- a/Tinycast/Palette/MenuPanel.swift
++++ b/Tinycast/Palette/MenuPanel.swift
+@@ -2,7 +2,7 @@ import AppKit
+ import SwiftUI
+ 
+ /// The ⌘K menu's own window, so glass renders against the desktop and nothing clips it.
+-final class MenuPanel: NSPanel {
++final class MenuPanel: NSPanel, AnimatedPanel {
+     weak var paletteState: PaletteState?
+     var onKeyDown: ((NSEvent) -> Bool)?
+     var onResignKey: ((_ stayedInPalette: Bool) -> Void)?
+@@ -14,7 +14,7 @@ final class MenuPanel: NSPanel {
+             contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+             backing: .buffered, defer: false)
+         isFloatingPanel = true
+-        animationBehavior = .documentWindow
++        followMotion()
+         backgroundColor = .clear
+         isOpaque = false
+         hasShadow = true
+diff --git a/Tinycast/Palette/PaletteDropGuideController.swift b/Tinycast/Palette/PaletteDropGuideController.swift
+index 3285992c..5edb585e 100644
+--- a/Tinycast/Palette/PaletteDropGuideController.swift
++++ b/Tinycast/Palette/PaletteDropGuideController.swift
+@@ -33,7 +33,7 @@ final class PaletteDropGuideController {
+             panel.orderFrontRegardless()
+         }
+         NSAnimationContext.runAnimationGroup { context in
+-            context.duration = Theme.Duration.dropGuide
++            context.duration = Motion.duration(Theme.Duration.dropGuide)
+             panel.animator().alphaValue = 1
+         }
+     }
+@@ -74,7 +74,7 @@ final class PaletteDropGuideController {
+         guard let panel, panel.isVisible else { return }
+         hideTask?.cancel()
+         NSAnimationContext.runAnimationGroup { context in
+-            context.duration = Theme.Duration.dropGuide
++            context.duration = Motion.duration(Theme.Duration.dropGuide)
+             panel.animator().alphaValue = 0
+         }
+         hideTask = Task { [weak self] in
+diff --git a/Tinycast/Palette/PaletteDropGuideView.swift b/Tinycast/Palette/PaletteDropGuideView.swift
+index ade8cb24..33ed7144 100644
+--- a/Tinycast/Palette/PaletteDropGuideView.swift
++++ b/Tinycast/Palette/PaletteDropGuideView.swift
+@@ -26,6 +26,8 @@ struct PaletteDropGuideView: View {
+                 .opacity(min(opacity(at: horizontalDistance), opacity(at: verticalDistance)))
+                 .animation(.easeInOut(duration: Theme.Duration.dropGuide), value: horizontalFlash)
+         }
++        // Its host is typed to this view, so the root's scope is applied from inside.
++        .motionScope()
+     }
+ 
+     private var outerCorner: CGPoint {
+diff --git a/Tinycast/Palette/PaletteEnvironment.swift b/Tinycast/Palette/PaletteEnvironment.swift
+index 77da55f7..f02bbca2 100644
+--- a/Tinycast/Palette/PaletteEnvironment.swift
++++ b/Tinycast/Palette/PaletteEnvironment.swift
+@@ -39,5 +39,6 @@ extension View {
+             .environment(core.extensions)
+             .environment(core.calendarStore)
+             .environment(core.meetingClock)
++            .motionScope()
+     }
+ }
+diff --git a/Tinycast/Palette/PalettePanel.swift b/Tinycast/Palette/PalettePanel.swift
+index de939914..c74220f5 100644
+--- a/Tinycast/Palette/PalettePanel.swift
++++ b/Tinycast/Palette/PalettePanel.swift
+@@ -2,7 +2,7 @@ import AppKit
+ import Carbon.HIToolbox
+ import SwiftUI
+ 
+-final class PalettePanel: NSPanel {
++final class PalettePanel: NSPanel, AnimatedPanel {
+     enum HeaderFieldBoundary {
+         case leading
+         case trailing
+@@ -271,7 +271,7 @@ final class PalettePanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .documentWindow
++        followMotion()
+         isReleasedWhenClosed = false
+ 
+         let hosting = NSHostingView(rootView: rootView)
+diff --git a/Tinycast/Resources/Localizable.xcstrings b/Tinycast/Resources/Localizable.xcstrings
+index c4803fc3..a96a74aa 100644
+--- a/Tinycast/Resources/Localizable.xcstrings
++++ b/Tinycast/Resources/Localizable.xcstrings
+@@ -106534,6 +106534,58 @@
+         }
+       }
+     },
++    "Show animations" : {
++      "localizations" : {
++        "de" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Animationen anzeigen"
++          }
++        },
++        "es" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Mostrar animaciones"
++          }
++        },
++        "fr" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Afficher les animations"
++          }
++        },
++        "ja" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "アニメーションを表示"
++          }
++        },
++        "ko" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "애니메이션 표시"
++          }
++        },
++        "pt" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Mostrar animações"
++          }
++        },
++        "ru" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Показывать анимации"
++          }
++        },
++        "zh-Hans" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "显示动画"
++          }
++        }
++      }
++    },
+     "Show confirmation" : {
+       "localizations" : {
+         "de" : {
+diff --git a/Tinycast/Windows/AppWindowController.swift b/Tinycast/Windows/AppWindowController.swift
+index ad3610e1..d48b1cff 100644
+--- a/Tinycast/Windows/AppWindowController.swift
++++ b/Tinycast/Windows/AppWindowController.swift
+@@ -44,7 +44,7 @@ final class AppWindowController: NSObject, NSWindowDelegate {
+     ) -> Bool {
+         let root = content()
+         return show(chrome: chrome) {
+-            let hosting = NSHostingController(rootView: root)
++            let hosting = NSHostingController(rootView: root.motionScope())
+             // Keep the window's size authoritative: an unconstrained fill would drive the frame.
+             hosting.sizingOptions = []
+             return hosting
+diff --git a/Tinycast/Windows/Dialog/DialogController.swift b/Tinycast/Windows/Dialog/DialogController.swift
+index 27699c90..50bd969b 100644
+--- a/Tinycast/Windows/Dialog/DialogController.swift
++++ b/Tinycast/Windows/Dialog/DialogController.swift
+@@ -164,7 +164,8 @@ final class DialogController: NSObject, NSWindowDelegate {
+     private var metrics: InterfaceMetrics { settings.interfaceSize.metrics }
+ 
+     private func hostingView(_ view: some View, width: CGFloat, minHeight: CGFloat) -> NSView {
+-        let hosting = NSHostingView(rootView: AnyView(view.environment(\.metrics, metrics)))
++        let hosting = NSHostingView(
++            rootView: AnyView(view.environment(\.metrics, metrics).motionScope()))
+         // Measure at the fixed width first: the message wraps, so height follows width.
+         hosting.setFrameSize(NSSize(width: width, height: minHeight))
+         let fitted = hosting.fittingSize
+diff --git a/Tinycast/Windows/Dialog/DialogPanel.swift b/Tinycast/Windows/Dialog/DialogPanel.swift
+index 06432df4..cf082379 100644
+--- a/Tinycast/Windows/Dialog/DialogPanel.swift
++++ b/Tinycast/Windows/Dialog/DialogPanel.swift
+@@ -2,7 +2,7 @@ import AppKit
+ import Carbon.HIToolbox
+ 
+ /// One dialog's panel; keys go through `sendEvent`, so Esc/↵ need no focused subview.
+-final class DialogPanel: NSPanel {
++final class DialogPanel: NSPanel, AnimatedPanel {
+     /// What the panel saw, not what it means: how far a step moves is the caller's business.
+     enum Key {
+         case cancel
+@@ -32,7 +32,7 @@ final class DialogPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .documentWindow
++        followMotion()
+         isReleasedWhenClosed = false
+         content.wantsLayer = true
+         content.layer?.cornerRadius = cornerRadius
+diff --git a/Tinycast/Windows/HUD/HUDPresenter.swift b/Tinycast/Windows/HUD/HUDPresenter.swift
+index 27e4bda9..92c54b88 100644
+--- a/Tinycast/Windows/HUD/HUDPresenter.swift
++++ b/Tinycast/Windows/HUD/HUDPresenter.swift
+@@ -25,7 +25,7 @@ final class HUDPresenter {
+     func show(_ view: some View, size: CGSize? = nil, dwells: Bool = true, interactive: Bool = false) {
+         let panel = panel ?? make(acceptsMouseEvents: interactive)
+         panel.ignoresMouseEvents = !interactive
+-        let host = NSHostingView(rootView: view)
++        let host = NSHostingView(rootView: view.motionScope())
+         // Never size from `host.frame` after attaching: AppKit resets it to the content rect.
+         let content = size ?? host.fittingSize
+         host.setFrameSize(content)
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 19ca4185..dc9e0a12 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -178,7 +178,9 @@ driven imperatively from AppKit. Extension menu extras are dynamic `NSStatusItem
+ 
+ `NSAlert` is never used, and that is load-bearing. Appearance is a setting: `AppCore.applyAppearance()`
+ assigns `NSApp.appearance` from `AppSettings.appearance`, and `.system` assigns `nil` so AppKit follows
+-macOS by itself. Nothing else in the app sets an appearance.
++macOS by itself. Nothing else in the app sets an appearance. Animations take the same shape:
++`AppCore.applyMotion()` projects `AppSettings.animationsEnabled` into `Motion.isEnabled` and re-points
++every live `AnimatedPanel` (see [ui.md](ui.md#non-negotiable-invariants)).
+ 
+ ## Observation
+ 
+diff --git a/docs/features/palette.md b/docs/features/palette.md
+index 12cb66d9..a69a8d80 100644
+--- a/docs/features/palette.md
++++ b/docs/features/palette.md
+@@ -500,9 +500,9 @@ The panel is a second SwiftUI hierarchy, so it observes nothing of `RootPaletteV
+ `paletteEnvironment` injects the same stores into both hierarchies so they cannot drift.
+ `WindowReader` reports the palette's `NSWindow`, which the menu's frame is placed against.
+ 
+-`PaletteMenuContent` may supply its own host-layer clip path. `MenuPanel` uses
+-`animationBehavior = .documentWindow`, so every menu opens and closes with AppKit's native window
+-animation and has no motion of its own. The close animation keeps drawing the panel after
++`PaletteMenuContent` may supply its own host-layer clip path. `MenuPanel` is an `AnimatedPanel` on
++`.documentWindow`, so every menu opens and closes with AppKit's native window animation — none while
++**Show animations** is off — and has no motion of its own. The close animation keeps drawing the panel after
+ `orderOut`, so the controller releases the hosted tree from `orderOutAnimated`, once it is off screen. AppKit refreshes the shadow after layout and display. Each extension menu supplies its
+ own clip path; the controller applies it as an opaque value and never reconstructs extension
+ geometry.
+diff --git a/docs/ui.md b/docs/ui.md
+index 3bb43e03..b2200fed 100644
+--- a/docs/ui.md
++++ b/docs/ui.md
+@@ -45,6 +45,16 @@ These are the things that quietly break the look if changed. Preserve them unles
+ - **Don't use the native scroll edge effect.** Inside a transparent panel it renders a hard-bounded rectangle. Use `edgeDissolve()`, or a gradient `mask` where a surface owns its own fade — `scrollEdgeEffectStyle` draws a *material* where a scroll view meets a safe area, so over a panel that already has `panelScrim` + `GlassEffectView` it composites to nothing. Tried and rejected on `QuickActionResultView`, with and without `safeAreaBar`. This is a rule about the borderless panels; the Settings window is a titled `NSWindow` whose system titlebar draws the band itself (see "Settings").
+ - **Test over a light desktop.** Transparency and corner masking bugs only show over bright wallpaper. Dark wallpaper hides them.
+ - **No `NSAlert` or system popovers.** Every confirmation, failure report, value prompt and transient readout is Tinycast's own SwiftUI surface (see "Dialogs & HUD"). An Aqua alert on an alpha-over-vibrancy app reads as a different product, and its `runModal` run loop keeps Carbon hotkeys firing underneath.
++- **Animations follow one switch.** General → Appearance → **Show animations**
++  (`AppSettings.animationsEnabled`, on by default) reaches `Motion.isEnabled` through
++  `AppCore.applyMotion()`. It is global for the reason `IconCache` is: a missed injection would animate
++  silently. Every `NSHostingView` and `NSHostingController` root applies `motionScope()`, which strips
++  the animation from every transaction beneath it; a typed host applies it at the end of its view's
++  `body`. A `.documentWindow` panel is an `AnimatedPanel` and sets its behaviour with `followMotion()`,
++  and an `NSAnimationContext` group takes its duration from `Motion.duration(_:)`. So no animation
++  site checks the setting itself, and Reduce Motion keeps trimming movement where it did while
++  animations are on. Activity indicators — spinners, `symbolEffect` loaders, the dictation pulse —
++  keep running, because they report work rather than move between states.
+ - **A dialog has three independent axes; never let one infer another.** The **icon** (`DialogRequest.symbol`, required) is always the *subject's* own glyph — a command being confirmed uses its `SystemAction.sfSymbol`, so the Restart dialog shows the same icon as the Restart row. Tone never picks an icon. The **tone** (`DialogTone`: `.neutral` / `.success` / `.danger`) tints only that glyph. The **button** takes its color from `DialogAction.Role` (`.standard` white / `.destructive` red / `.cancel` secondary), so a red-glyph security warning can still carry a plain white button — as "Import executable commands?" does.
+ - **Resolve every glyph through `SymbolImage`, not `Image(systemName:)`.** Some catalog symbols are bundled assets in `Assets.xcassets` (`toggleBluetooth`), and `Image(systemName:)` silently renders nothing for those.
+ - **↵ runs the primary action, Escape cancels, and Cancel always renders leading** (the left button), matching macOS convention. A button never prints its key cap; a deliberate hover reveals its outlined `KeyCapChip` in a `Tooltip`.
+@@ -255,7 +265,7 @@ An extension's own surfaces live in `ExtensionColors` (`Features/Extensions/UI/`
+ 
+ Source: `Palette/PalettePanel.swift`, `Palette/RootPaletteView.swift`.
+ 
+-- **`PalettePanel`** is a borderless `NSPanel`: `isOpaque = false`, `backgroundColor = .clear`, `.palette` level (one above `.modalPanel`, so other apps' open panels never cover it), `hasShadow`, `animationBehavior = .documentWindow`. It hosts SwiftUI via `NSHostingView`. `PaletteWindowController` centers it slightly above screen center (`+8%`) and dismisses it on `windowDidResignKey`.
++- **`PalettePanel`** is a borderless `NSPanel`: `isOpaque = false`, `backgroundColor = .clear`, `.palette` level (one above `.modalPanel`, so other apps' open panels never cover it), `hasShadow`, and an `AnimatedPanel`, so it opens with `.documentWindow`. It hosts SwiftUI via `NSHostingView`. `PaletteWindowController` centers it slightly above screen center (`+8%`) and dismisses it on `windowDidResignKey`.
+ - **The results layer fills the whole panel.** The header and bottom bar attach via `.safeAreaInset(edge: .top/.bottom)` as transparent overlays that float _over_ the list. The list underlaps them and dissolves at the edges.
+ - **Header** (`headerHeight 44`): a back-chevron _or_ mode glyph, then the plain `TextField` (no border/background). Sub-screens (Clipboard, Calculator History) show the back chevron; the launcher shows a magnifying glass. The search icon aligns horizontally with row content, and the query with the row titles.
+ - **Compact keyboard entry:** pressing `↓` in the collapsed launcher expands the results and selects the first row without replacing or defocusing the shared search field.
+@@ -458,7 +468,7 @@ Glass is normally for floating controls. The dialog root is the one modal-surfac
+ - **A menu's `width` is fixed, never intrinsic**, so it can't jitter as its rows change. Every header menu states its own at its `RootPaletteView.menuContent` case — `menuWidth 276`, or a token of its own where that reads too wide (`clipboardFilterMenuWidth`, `fileSearchFilterMenuWidth`, `emojiCategoryMenuWidth`) — so retuning one never moves another. Native footer menus add 30pt without changing those header widths; extension Actions owns its nearby 310pt width inside the feature.
+ - **`PopoverMenu`** uses `glassEffect(.regular)` with `menuPanel 16` corners and **no hand-tuned shadow** — Tahoe glass carries its own elevation; adding a drop shadow reads heavy and non-native. A footer menu raises only its attached bottom corner to the controls' 18-point radius, so the two silhouettes meet exactly.
+ - Its native search field is a row-height sibling of the scroller, above header menus or below footer menus. It uses an 18pt horizontal inset to align with the visible row glyphs. The top field stays vertically symmetric; the bottom field keeps its 1pt optical lift. Menus omit the adjacent edge dissolve and centre **No Results** in one row when their filtered rows are empty. The 8pt resting list inset belongs to the scroll content, so rows can reach the surface edges without shifting their initial position; hover fills keep the dedicated `menuRow 10` corner.
+-- `PopoverMenuRow`: leading glyph, label, trailing shortcut glyph and `menuHover` fill on hover. Menus open and close with AppKit's native `.documentWindow` animation.
++- `PopoverMenuRow`: leading glyph, label, trailing shortcut glyph and `menuHover` fill on hover. Menus open and close with AppKit's native `.documentWindow` animation, through `AnimatedPanel`.
+ - The glyph is a `PopoverMenuIcon`: `.symbol` (SF Symbol, `monochrome`, `menuSymbol` — or **red** when `isDestructive`) `.file` (a real app icon via `IconCache`, used by the paste rows to show the paste target) or `.thumbnail` (a picture's own preview, cropped to the slot, used by the chat's staged-file rows). `PopoverMenuItem` keeps a `systemImage:` convenience init, so symbol rows read exactly as before.
+ - **Every glyph kind shares one square `menuIcon` (20) slot**, which pins one row height. A native SF Symbol uses the dedicated 14pt Medium `menuSymbol` font; file and brand icons keep their own artwork sizing inside the same slot, and a thumbnail fills it.
+ - Menu rows use the `md` icon→label gap; the fixed slot adds the remaining optical slack.
+@@ -535,7 +545,7 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
+ - **Async, not modal.** Presentation is `async` (`withCheckedContinuation`), so there is no nested run
+   loop. A held hotkey can't stack dialogs: while one is up, a second request resolves immediately as a
+   dismissal — which is why the old `isConfirmingCommand` re-entrancy flag is gone.
+-- **Entrance and exit.** `DialogPanel` uses `animationBehavior = .documentWindow`, so a dialog opens
++- **Entrance and exit.** `DialogPanel` is an `AnimatedPanel` on `.documentWindow`, so a dialog opens
+   and closes with the same native bounce as Settings and the launcher. AppKit scales the whole window,
+   shadow included; a SwiftUI scale of the content inside the full-size shadow produced a transient rim.
+   The continuation resumes **before** `orderOut`, so confirming Restart is never held up by animation.
+@@ -636,7 +646,7 @@ grows to `roomCardIconLarge` on a card larger than 320 pt both ways, hides on on
+ and moves out from under the palette.
+ 
+ Motion is `Theme.RoomMotion.glide` for a card that changes place, a fade for one that arrives or
+-leaves, and `fadeIn`/`fadeOut` for the panels; Reduce Motion removes all of it. See
++leaves, and `fadeIn`/`fadeOut` for the panels; Reduce Motion, or **Show animations** off, removes all of it. See
+ [features/window-rooms.md](features/window-rooms.md#the-preview).
+ 
+ ## The camera preview panel
+-- 
+2.56.0
+

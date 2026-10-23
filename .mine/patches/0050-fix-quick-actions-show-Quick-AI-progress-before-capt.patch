@@ -14,10 +14,10 @@ Subject: [PATCH] fix(quick-actions): show Quick AI progress before capture,
  create mode 100644 Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index c8d300d6..99ed141b 100755
+index feee23f7..52a2de24 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -765,6 +765,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
+@@ -814,6 +814,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/QuickActions/Model/CustomQuickAction.swift \
                             Tinycast/Features/QuickActions/Model/CustomQuickActionStore.swift \
                             Tinycast/Features/QuickActions/Model/QuickAction.swift \
@@ -260,10 +260,10 @@ index 00000000..2716423a
 +    }
 +}
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index ef889980..167f6607 100644
+index 31631d21..3fa04203 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-@@ -209,6 +209,7 @@ final class QuickActionCoordinator {
+@@ -212,6 +212,7 @@ final class QuickActionCoordinator {
          generation += 1
          running?.cancel()
          running = nil
@@ -271,7 +271,7 @@ index ef889980..167f6607 100644
      }
  
      /// The generation stops a superseded task from clearing the newer handle as it finishes.
-@@ -224,40 +225,131 @@ final class QuickActionCoordinator {
+@@ -227,40 +228,131 @@ final class QuickActionCoordinator {
      }
  
      private func begin(_ action: QuickAction, target: Target) async {
@@ -425,7 +425,7 @@ index ef889980..167f6607 100644
          if action.usesTranslationFramework {
              await translate(
                  selection, sourceName: sourceName, action: action, target: target,
-@@ -269,6 +361,37 @@ final class QuickActionCoordinator {
+@@ -272,6 +364,37 @@ final class QuickActionCoordinator {
          }
      }
  
@@ -463,7 +463,7 @@ index ef889980..167f6607 100644
      private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
          switch failure {
          case .noSelection, .unreadableApp: return true
-@@ -335,17 +458,29 @@ final class QuickActionCoordinator {
+@@ -340,17 +463,29 @@ final class QuickActionCoordinator {
      /// Replace only keeps the window shut: progress in the pill, and any failure in a HUD.
      private func answer(
          _ action: QuickAction, selection: String, sourceName: String, target: Target,
@@ -497,7 +497,7 @@ index ef889980..167f6607 100644
              return
          }
          let chatID = chat.session.id
-@@ -355,10 +490,12 @@ final class QuickActionCoordinator {
+@@ -360,10 +495,12 @@ final class QuickActionCoordinator {
                      reply, chatID: chatID, action: action, target: target, silently: silently)
              }
          }
@@ -514,7 +514,7 @@ index ef889980..167f6607 100644
          }
          let instructions = QuickActionPrompt.instructions(
              for: action, override: store.settings.instructionOverride(for: action))
-@@ -366,7 +503,9 @@ final class QuickActionCoordinator {
+@@ -371,7 +508,9 @@ final class QuickActionCoordinator {
              prompt: action.title, instructions: instructions, in: chat)
          if !sent {
              chat.onNextReplyEnded = nil
@@ -525,7 +525,7 @@ index ef889980..167f6607 100644
                  core.hideProgress()
                  core.showMessage(chat.notice ?? "\(action.title) didn't start", tone: .danger)
              }
-@@ -376,19 +515,29 @@ final class QuickActionCoordinator {
+@@ -381,19 +520,29 @@ final class QuickActionCoordinator {
      /// Apple's translator does not stream, so its reply is recorded whole as a finished turn.
      private func translate(
          _ selection: String, sourceName: String, action: QuickAction, target: Target,
@@ -561,7 +561,7 @@ index ef889980..167f6607 100644
                  data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)
              let messageID = chat.record(
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
-index 184eeed9..e17ec783 100644
+index a359593b..4c4a8440 100644
 --- a/docs/features/quick-actions.md
 +++ b/docs/features/quick-actions.md
 @@ -32,7 +32,9 @@ nothing and says so with a HUD.
@@ -607,7 +607,7 @@ index 184eeed9..e17ec783 100644
  - **Replace only is a per-action choice, and it needs a write-back target.** `QuickActionSettings`
    keeps the built-in choice, and a custom action keeps its own on its record, so
    `replacesOnly(_:)` answers for both. A page result has no selection to write into, so it opens Quick
-@@ -192,7 +202,8 @@ failed run from writing into a later reply.
+@@ -198,7 +208,8 @@ failed run from writing into a later reply.
  A failed reply keeps the chat's usual `failed` state and no button. Cancelling it through Quick AI
  behaves as cancelling any reply does.
  
@@ -617,7 +617,7 @@ index 184eeed9..e17ec783 100644
  
  ## Reading the selection
  
-@@ -262,8 +273,13 @@ failure handler, so automatic expansion stays silent as before.
+@@ -268,8 +279,13 @@ failure handler, so automatic expansion stays silent as before.
    in AI mode, and Replace targets the displaced app's selection, not Tinycast's own field.
  - Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
    text untouched.
@@ -633,7 +633,7 @@ index 184eeed9..e17ec783 100644
  - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
  - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
  - Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.
-@@ -286,4 +302,5 @@ failure handler, so automatic expansion stays silent as before.
+@@ -292,4 +308,5 @@ failure handler, so automatic expansion stays silent as before.
  - Press one in a password field: refused.
  - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
  - Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action

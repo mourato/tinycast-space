@@ -1,0 +1,565 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 07:47:08 +0600
+Subject: [PATCH] Keep Command-Escape input handling off the main run loop
+ (#1646)
+
+---
+ Scripts/run-tests.sh                          |   1 +
+ Tests/command-escape-tap-test.swift           | 237 ++++++++++++++++++
+ Tinycast/Palette/CommandEscapeTap.swift       | 159 +++++++-----
+ .../Palette/PaletteWindowController.swift     |   7 +-
+ docs/features/palette.md                      |  11 +-
+ docs/testing.md                               |   4 +-
+ 6 files changed, 350 insertions(+), 69 deletions(-)
+ create mode 100644 Tests/command-escape-tap-test.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 133853b2..1cbf6249 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -279,6 +279,7 @@ run form-input-test        Tinycast/Platform/Appearance.swift \
+ run scroll-reveal-test     Tinycast/DesignSystem/Scrolling/SelectionReveal.swift
+ run redaction-test         Tinycast/DesignSystem/RedactedPlaceholder.swift
+ run keyboard-focus-test    Tinycast/DesignSystem/Interaction/KeyboardFocus.swift
++run command-escape-tap-test Tinycast/Palette/CommandEscapeTap.swift
+ run palette-escape-test    Tinycast/Palette/PaletteMode.swift \
+                            Tinycast/Palette/PaletteEscapeAction.swift \
+                            Tinycast/Palette/CommandEscapeTap.swift \
+diff --git a/Tests/command-escape-tap-test.swift b/Tests/command-escape-tap-test.swift
+new file mode 100644
+index 00000000..093577f0
+--- /dev/null
++++ b/Tests/command-escape-tap-test.swift
+@@ -0,0 +1,237 @@
++import AppKit
++import Carbon.HIToolbox
++import Synchronization
++
++private struct InstallationGate: Sendable {
++    let entered = DispatchSemaphore(value: 0)
++    let resume = DispatchSemaphore(value: 0)
++}
++
++// The immutable callback handles are invoked only on their recorded worker run loop.
++private struct TapRecord: @unchecked Sendable {
++    let port: CFMachPort
++    let runLoop: CFRunLoop
++    let callback: CGEventTapCallBack
++    let userInfo: UnsafeMutableRawPointer?
++    var enables = 0
++}
++
++private struct TapFixture {
++    var records: [TapRecord] = []
++    var attempts = 0
++    var failNext = false
++    var gate: InstallationGate?
++    var wrongConfiguration = false
++    var touchedMainThread = false
++}
++
++private let fixture = Mutex(TapFixture())
++
++// Module-local overloads exercise the shipped worker without installing a global input filter.
++extension CGEvent {
++    static func tapCreate(
++        tap: CGEventTapLocation, place: CGEventTapPlacement, options: CGEventTapOptions,
++        eventsOfInterest: CGEventMask, callback: CGEventTapCallBack,
++        userInfo: UnsafeMutableRawPointer?
++    ) -> CFMachPort? {
++        let (fail, gate) = fixture.withLock { fixture in
++            fixture.attempts += 1
++            fixture.touchedMainThread = fixture.touchedMainThread || Thread.isMainThread
++            fixture.wrongConfiguration = fixture.wrongConfiguration
++                || tap != .cghidEventTap || place != .headInsertEventTap
++                || options != .defaultTap || eventsOfInterest != 1 << CGEventType.keyDown.rawValue
++            let fail = fixture.failNext
++            fixture.failNext = false
++            let gate = fixture.gate
++            fixture.gate = nil
++            return (fail, gate)
++        }
++        guard !fail else { return nil }
++        var context = CFMachPortContext()
++        guard let port = CFMachPortCreate(kCFAllocatorDefault, { _, _, _, _ in }, &context, nil)
++        else { return nil }
++        fixture.withLock {
++            $0.records.append(TapRecord(
++                port: port, runLoop: CFRunLoopGetCurrent(), callback: callback, userInfo: userInfo))
++        }
++        if let gate {
++            gate.entered.signal()
++            _ = gate.resume.wait(timeout: .now() + 5)
++        }
++        return port
++    }
++
++    static func tapEnable(tap: CFMachPort, enable: Bool) {
++        fixture.withLock { fixture in
++            fixture.touchedMainThread = fixture.touchedMainThread || Thread.isMainThread
++            if enable, let index = fixture.records.firstIndex(where: { $0.port === tap }) {
++                fixture.records[index].enables += 1
++            }
++        }
++    }
++}
++
++@main
++@MainActor
++struct CommandEscapeTapTests {
++    static var passes = 0
++    static var failures = 0
++
++    static func expect(_ condition: Bool, _ message: String) {
++        if condition {
++            passes += 1
++        } else {
++            failures += 1
++            print("FAIL: \(message)")
++        }
++    }
++
++    static func waitFor(_ message: String, _ condition: () -> Bool) async {
++        let deadline = ContinuousClock.now + .seconds(3)
++        while !condition(), ContinuousClock.now < deadline {
++            try? await Task.sleep(for: .milliseconds(1))
++        }
++        expect(condition(), message)
++    }
++
++    private nonisolated static func schedule(
++        _ index: Int, _ body: @escaping @Sendable (TapRecord) -> Void
++    ) {
++        fixture.withLock { fixture in
++            let record = fixture.records[index]
++            CFRunLoopPerformBlock(record.runLoop, CFRunLoopMode.defaultMode.rawValue) {
++                body(record)
++            }
++            CFRunLoopWakeUp(record.runLoop)
++        }
++    }
++
++    private nonisolated static func invoke(
++        _ record: TapRecord, type: CGEventType = .keyDown,
++        keyCode: Int = kVK_Escape, flags: CGEventFlags = .maskCommand
++    ) -> Bool {
++        let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: true)!
++        event.setIntegerValueField(.keyboardEventKeycode, value: Int64(keyCode))
++        event.flags = flags
++        let proxy = OpaquePointer(Unmanaged.passUnretained(record.port).toOpaque())
++        return record.callback(proxy, type, event, record.userInfo) == nil
++    }
++
++    static func deliver(
++        _ index: Int, type: CGEventType = .keyDown,
++        keyCode: Int = kVK_Escape, flags: CGEventFlags = .maskCommand
++    ) -> Bool? {
++        let result = Mutex<Bool?>(nil)
++        let completed = DispatchSemaphore(value: 0)
++        schedule(index) { record in
++            let claimed = invoke(record, type: type, keyCode: keyCode, flags: flags)
++            result.withLock { $0 = claimed }
++            completed.signal()
++        }
++        expect(completed.wait(timeout: .now() + 2) == .success,
++            "the worker returns while the main thread is blocked")
++        return result.withLock { $0 }
++    }
++
++    static func expectSignal(_ semaphore: DispatchSemaphore, _ message: String) {
++        expect(semaphore.wait(timeout: .now() + 2) == .success, message)
++    }
++
++    static func isClosed(_ index: Int) -> Bool {
++        fixture.withLock { !CFMachPortIsValid($0.records[index].port) }
++    }
++
++    static func enables(_ index: Int) -> Int {
++        fixture.withLock { $0.records[index].enables }
++    }
++
++    static func main() async {
++        var fires = 0
++        let tap = CommandEscapeTap { fires += 1 }
++        tap.enable()
++        await waitFor("the tap installs", { fixture.withLock { $0.records.count == 1 } })
++        tap.enable()
++        expect(fixture.withLock { $0.attempts == 1 }, "repeated enable does not create another worker")
++        expect(deliver(0, keyCode: kVK_ANSI_A, flags: []) == false, "ordinary typing passes through")
++        expect(deliver(0, flags: [.maskCommand, .maskAlternate]) == false, "Force Quit passes through")
++        expect(deliver(0) == true, "the worker swallows Command-Escape without waiting for main")
++        expect(fires == 0, "the UI action is queued while main is blocked")
++        await waitFor("the UI action arrives on main", { fires == 1 })
++        expect(deliver(0, type: .tapDisabledByTimeout) == false, "timeout notification passes through")
++        expect(enables(0) == 1, "an active tap recovers from timeout")
++        expect(deliver(0, type: .tapDisabledByUserInput) == false, "disable notification passes through")
++        expect(enables(0) == 2, "an active tap recovers from user-input disable")
++
++        expect(deliver(0) == true, "a second chord is queued")
++        tap.disable()
++        tap.enable()
++        await waitFor("a new session installs", { fixture.withLock { $0.records.count == 2 } })
++        expect(fires == 1, "a queued action cannot affect a reopened palette")
++        await waitFor("the previous session tears down", { isClosed(0) })
++        expect(deliver(1) == true, "the new session accepts its own chord")
++        await waitFor("the new session's action arrives", { fires == 2 })
++
++        let gate = InstallationGate()
++        let completed = DispatchSemaphore(value: 0)
++        let claimedAfterClose = Mutex<Bool?>(nil)
++        let beforeClose = enables(1)
++        schedule(1) { record in
++            gate.entered.signal()
++            _ = gate.resume.wait(timeout: .now() + 5)
++            _ = invoke(record, type: .tapDisabledByTimeout)
++            _ = invoke(record, type: .tapDisabledByUserInput)
++            let claimed = invoke(record)
++            claimedAfterClose.withLock { $0 = claimed }
++            completed.signal()
++        }
++        expectSignal(gate.entered, "the late notification is pending")
++        tap.disable()
++        gate.resume.signal()
++        expectSignal(completed, "the late callbacks complete")
++        expect(enables(1) == beforeClose, "late notifications cannot resurrect a closed session")
++        expect(claimedAfterClose.withLock { $0 } == false, "a closing session stops swallowing chords")
++        await waitFor("the stopped run loop exits", { isClosed(1) })
++
++        let installing = InstallationGate()
++        fixture.withLock { $0.gate = installing }
++        tap.enable()
++        expectSignal(installing.entered, "installation is pending")
++        tap.disable()
++        installing.resume.signal()
++        await waitFor("closing during installation cleans up the port", { isClosed(2) })
++
++        fixture.withLock { $0.failNext = true }
++        let attempts = fixture.withLock { $0.attempts }
++        tap.enable()
++        await waitFor("a refused tap can retry on the next enable", {
++            tap.enable()
++            return fixture.withLock { $0.attempts >= attempts + 2 && $0.records.count == 4 }
++        })
++        expect(deliver(3) == true, "a retried installation handles the chord")
++        await waitFor("the retry dispatches normally", { fires == 3 })
++        tap.disable()
++        await waitFor("the retried tap tears down", { isClosed(3) })
++
++        var disposable: CommandEscapeTap? = CommandEscapeTap {}
++        let isReleased = { [weak disposable] in disposable == nil }
++        disposable?.enable()
++        await waitFor("the disposable tap installs", { fixture.withLock { $0.records.count == 5 } })
++        _ = deliver(4, keyCode: kVK_ANSI_A)
++        disposable = nil
++        expect(isReleased(), "the worker does not retain its owner")
++        await waitFor("owner deinit stops the worker", { isClosed(4) })
++
++        for _ in 0..<100 {
++            tap.enable()
++            tap.disable()
++        }
++        await waitFor("rapid show and hide leaves no valid ports", {
++            fixture.withLock { $0.records.allSatisfy { !CFMachPortIsValid($0.port) } }
++        })
++        expect(fixture.withLock { !$0.wrongConfiguration }, "the tap keeps the required HID signature")
++        expect(fixture.withLock { !$0.touchedMainThread }, "tap installation and control stay off main")
++        expect(fires == 3, "closed sessions never deliver an action")
++        print("\(passes) passed, \(failures) failed")
++        if failures > 0 { exit(1) }
++    }
++}
+diff --git a/Tinycast/Palette/CommandEscapeTap.swift b/Tinycast/Palette/CommandEscapeTap.swift
+index 3281086e..dbf23012 100644
+--- a/Tinycast/Palette/CommandEscapeTap.swift
++++ b/Tinycast/Palette/CommandEscapeTap.swift
+@@ -1,103 +1,142 @@
+ import AppKit
+ import Carbon.HIToolbox
++import Synchronization
+ 
+-/// C entry point: the decision is a key-code compare, so it is made here rather than crossing out.
+ private func commandEscapeTapCallback(
+     proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
+     userInfo: UnsafeMutableRawPointer?
+ ) -> Unmanaged<CGEvent>? {
+     guard let userInfo else { return Unmanaged.passUnretained(event) }
+-    let tap = Unmanaged<CommandEscapeTap>.fromOpaque(userInfo).takeUnretainedValue()
+-
++    let session = Unmanaged<CommandEscapeTap.Session>.fromOpaque(userInfo).takeUnretainedValue()
+     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+-        MainActor.assumeIsolated { tap.reenable() }
++        session.reenable()
+         return Unmanaged.passUnretained(event)
+     }
+-    guard
++    guard type == .keyDown,
+         CommandEscapeTap.isChord(
+-            keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags)
++            keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags),
++        session.claimChord()
+     else { return Unmanaged.passUnretained(event) }
+-
+-    let claimed = MainActor.assumeIsolated { tap.fire() }
+-    return claimed ? nil : Unmanaged.passUnretained(event)
++    return nil
+ }
+ 
+-/// ⌘esc is claimed upstream of every app, so the palette takes it where it enters the system.
+-///
+-/// The window server binds the chord itself, so it never reaches `onCommandShortcut` the way ⌘.
+-/// and ⌘w do: no keystroke is left by the time the responder chain runs, and a head-inserted HID
+-/// tap is the one place earlier than that. See docs/features/palette.md.
+ @MainActor
+ final class CommandEscapeTap {
+-    /// Claims the chord and returns true, or declines it so the rest of the system still gets it.
+-    private let onChord: () -> Bool
++    private let onChord: @MainActor @Sendable () -> Void
++    private var session: Session?
+ 
+-    private var tapPort: CFMachPort?
+-    private var runLoopSource: CFRunLoopSource?
+-
+-    init(onChord: @escaping () -> Bool) {
++    init(onChord: @escaping @MainActor @Sendable () -> Void) {
+         self.onChord = onChord
+     }
+ 
+     isolated deinit {
+-        tearDown()
++        session?.stop()
+     }
+ 
+-    /// True only for a bare ⌘esc: any further modifier spells somebody else's chord.
+     nonisolated static func isChord(keyCode: Int64, flags: CGEventFlags) -> Bool {
+         keyCode == Int64(kVK_Escape)
+             && flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
+                 == .maskCommand
+     }
+ 
+-    /// Called on every show: a tap refused for want of Accessibility is retried the next time.
+     func enable() {
+-        guard let port = installIfNeeded() else { return }
+-        CGEvent.tapEnable(tap: port, enable: true)
++        guard session?.isActive != true else { return }
++        let session = Session(onChord: onChord)
++        self.session = session
++        let thread = Thread { session.run() }
++        thread.name = "com.tinycast.command-escape"
++        thread.qualityOfService = .userInteractive
++        thread.start()
+     }
+ 
+     func disable() {
+-        guard let tapPort else { return }
+-        CGEvent.tapEnable(tap: tapPort, enable: false)
++        session?.stop()
++        session = nil
+     }
+ 
+-    private func installIfNeeded() -> CFMachPort? {
+-        if let tapPort { return tapPort }
+-        // Head of the HID stream: anywhere later and the system hotkey has already eaten the chord.
+-        guard
+-            let port = CGEvent.tapCreate(
+-                tap: .cghidEventTap,
+-                place: .headInsertEventTap,
+-                options: .defaultTap,
+-                eventsOfInterest: 1 << CGEventType.keyDown.rawValue,
+-                callback: commandEscapeTapCallback,
+-                userInfo: Unmanaged.passUnretained(self).toOpaque()),
+-            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0)
+-        else { return nil }
+-        tapPort = port
+-        runLoopSource = source
+-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+-        return port
+-    }
++    fileprivate final class Session: Sendable {
++        // Core Foundation allows cross-thread run-loop control; only the worker uses the port.
++        private struct Installation: @unchecked Sendable {
++            let port: CFMachPort
++            let runLoop: CFRunLoop
++        }
+ 
+-    private func tearDown() {
+-        if let runLoopSource {
+-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+-            self.runLoopSource = nil
++        private struct State {
++            var isActive = true
++            var installation: Installation?
+         }
+-        if let tapPort {
+-            CGEvent.tapEnable(tap: tapPort, enable: false)
+-            CFMachPortInvalidate(tapPort)
+-            self.tapPort = nil
++
++        private let state = Mutex(State())
++        private let onChord: @MainActor @Sendable () -> Void
++
++        init(onChord: @escaping @MainActor @Sendable () -> Void) {
++            self.onChord = onChord
+         }
+-    }
+ 
+-    fileprivate func fire() -> Bool {
+-        onChord()
+-    }
++        var isActive: Bool { state.withLock { $0.isActive } }
++
++        func stop() {
++            state.withLock { state in
++                state.isActive = false
++                guard let runLoop = state.installation?.runLoop else { return }
++                // A queued stop also covers closing before the worker enters its run loop.
++                CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue) {
++                    CFRunLoopStop(CFRunLoopGetCurrent())
++                }
++                CFRunLoopWakeUp(runLoop)
++            }
++        }
++
++        func run() {
++            autoreleasepool {
++                defer {
++                    state.withLock {
++                        $0.isActive = false
++                        $0.installation = nil
++                    }
++                }
++                guard isActive,
++                    let port = CGEvent.tapCreate(
++                        tap: .cghidEventTap,
++                        place: .headInsertEventTap,
++                        options: .defaultTap,
++                        eventsOfInterest: 1 << CGEventType.keyDown.rawValue,
++                        callback: commandEscapeTapCallback,
++                        userInfo: Unmanaged.passUnretained(self).toOpaque())
++                else { return }
++                defer {
++                    CGEvent.tapEnable(tap: port, enable: false)
++                    CFMachPortInvalidate(port)
++                }
++                guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0),
++                    let runLoop = CFRunLoopGetCurrent()
++                else { return }
++                CFRunLoopAddSource(runLoop, source, .defaultMode)
++                defer { CFRunLoopRemoveSource(runLoop, source, .defaultMode) }
++                let shouldRun = state.withLock { state in
++                    guard state.isActive else { return false }
++                    state.installation = Installation(port: port, runLoop: runLoop)
++                    return true
++                }
++                guard shouldRun else { return }
++                CFRunLoopRun()
++            }
++        }
++
++        func reenable() {
++            state.withLock { state in
++                guard state.isActive, let port = state.installation?.port else { return }
++                CGEvent.tapEnable(tap: port, enable: true)
++            }
++        }
+ 
+-    /// The system disables a tap it thinks is too slow; ours only ever compares two integers.
+-    fileprivate func reenable() {
+-        if let tapPort { CGEvent.tapEnable(tap: tapPort, enable: true) }
++        func claimChord() -> Bool {
++            guard isActive else { return false }
++            Task { @MainActor [weak self] in
++                guard let self, isActive else { return }
++                onChord()
++            }
++            return true
++        }
+     }
+ }
+diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
+index 5a5b584d..81862540 100644
+--- a/Tinycast/Palette/PaletteWindowController.swift
++++ b/Tinycast/Palette/PaletteWindowController.swift
+@@ -23,9 +23,8 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+     private var pasteMonitor: Any?
+     /// ⌘esc: the window server claims it, so no keystroke is left for the responder chain to see.
+     private lazy var commandEscapeTap = CommandEscapeTap { [weak self] in
+-        guard let self, self.panel?.isKeyWindow == true else { return false }
++        guard let self, self.panel?.isKeyWindow == true else { return }
+         self.core.palette.prepare(mode: .launcher)
+-        return true
+     }
+ 
+     private struct DragSession {
+@@ -88,8 +87,6 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+             core.calendarCoordinator.paletteDidShow()
+             core.palette.noteVisible(true)
+             core.clipboardStore.setTextSearchActive(true)
+-            // Only while we are on screen: a system-wide tap has no business outliving the window.
+-            commandEscapeTap.enable()
+             // Non-activating, so summoning never raises our own aux windows behind it.
+             panel.makeKeyAndOrderFront(nil)
+             panel.orderFrontRegardless()
+@@ -232,6 +229,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+ 
+     /// Not for a dialog or a modal: hiding tears down a running command.
+     func windowDidResignKey(_ notification: Notification) {
++        commandEscapeTap.disable()
+         guard isVisible, !core.isShowingDialog else { return }
+         if core.palette.menuOpen { return }
+         // A file panel sets its own level under ours, so sink rather than dismiss.
+@@ -243,6 +241,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+     }
+ 
+     func windowDidBecomeKey(_ notification: Notification) {
++        commandEscapeTap.enable()
+         panel?.level = .palette
+         DispatchQueue.main.async { [weak self] in
+             guard let self else { return }
+diff --git a/docs/features/palette.md b/docs/features/palette.md
+index de47fdb5..eaaa6eaf 100644
+--- a/docs/features/palette.md
++++ b/docs/features/palette.md
+@@ -565,10 +565,13 @@ handled in `PalettePanel.sendEvent` before `super` hands the event to the respon
+   in the responder chain compiles, runs never, and looks like a palette bug. `CommandEscapeTap`
+   takes it at the head of the HID stream instead, the one place earlier than the system's own
+   binding, and `prepare(mode: .launcher)`s: one chord back to the root search from any depth, window
+-  still open. The tap is enabled only while the palette is on screen, watches `keyDown` alone, and
+-  declines the chord whenever the panel is not key, so nothing else on the system loses ⌘esc to it.
+-  It is a modifying tap, so it needs Accessibility — without that grant the chord is simply
+-  unavailable, which is the only path this codebase has to it.
++  still open. Each key-focus session owns a modifying `keyDown` tap on a dedicated thread and run
++  loop, so an occupied main thread never holds up ordinary input. Losing key focus ends the session
++  immediately and wakes its worker to remove the source and invalidate the port. Timeout recovery
++  cannot re-enable an ended session. The worker swallows only bare ⌘esc and queues the root-search
++  action on the main actor; a closed session discards that action, including across a reopen. The
++  action also checks that the panel is still key. The tap needs Accessibility — without that grant
++  the chord is unavailable, and a later key-focus session retries installation.
+ 
+ Adding a chord that "does nothing" is almost always one of these — check `sendEvent`, and then
+ whether macOS has claimed the chord, before assuming the handler is wrong.
+diff --git a/docs/testing.md b/docs/testing.md
+index e0d5f0d9..21e97354 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -121,6 +121,7 @@ If a change touches anything in the right column, the harness on the left is man
+ | `pasteboard-test` | `Clipboard/Service/ClipboardManager.swift` capture and `Paster.write` — what a Finder copy reads as, and what a file or image entry writes back |
+ | `emoji-test` | `Emoji/Model/EmojiCatalog.swift`, `EmojiGridGeometry.swift`, the generated data and keyword packs |
+ | `emoji-search-test` | `Emoji/Service/EmojiIndex.swift`, `FrequentEmojiStore.swift`, `Scripts/gen-emoji.js`'s keyword format, multilingual search |
++| `command-escape-tap-test` | `Palette/CommandEscapeTap.swift` — dedicated run-loop dispatch while main is blocked, timeout recovery, stale actions, installation cancellation and teardown; private ports and unposted events only |
+ | `palette-navigation-test` | `Palette/PaletteState.swift`'s screen motions — `prepare`, `replace`, `push`, `pop` — and hover arming, pointer drift, scroll disarming and highlight tokens |
+ | `palette-selection-test` | `Features/PaletteRowIndex.swift` |
+ | `interface-size-test` | `DesignSystem/InterfaceMetrics.swift`, `Features/Settings/InterfaceSize.swift`, `Extensions/Model/ExtensionFormMetrics.swift` |
+@@ -415,7 +416,8 @@ caches, TCC grants and login item, so this cannot disturb an installed copy.
+ - ⌘esc from any depth lands on an empty root search with the window still open — **must be checked
+   on a real keyboard**: macOS claims the chord, so `CommandEscapeTap` is the only thing that
+   delivers it and it needs Accessibility granted to the running build. With the palette closed, ⌘esc
+-  still does whatever macOS does with it
++  still does whatever macOS does with it. Open a menu or dialog over the palette and verify ⌘esc
++  passes through while the palette is not key; after dismissing it, the palette chord works again
+ - A bare ⌫ in an empty field walks the same path Escape does
+ - General ▸ Escape Key Behavior set to `Close window and pop to root`: Escape on any screen closes
+   the window, and reopening lands on the root search whatever Pop to Root Search says
+-- 
+2.56.0
+

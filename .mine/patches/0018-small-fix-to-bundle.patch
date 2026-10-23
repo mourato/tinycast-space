@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: abue-ammar <iabueammar@gmail.com>
+Date: Tue, 20 Oct 2026 17:22:01 +0600
+Subject: [PATCH] small fix to bundle
+
+---
+ Tinycast/Features/Updates/Service/BundleSignature.swift | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Tinycast/Features/Updates/Service/BundleSignature.swift b/Tinycast/Features/Updates/Service/BundleSignature.swift
+index 0c441907..5bc657ce 100644
+--- a/Tinycast/Features/Updates/Service/BundleSignature.swift
++++ b/Tinycast/Features/Updates/Service/BundleSignature.swift
+@@ -6,7 +6,7 @@ enum BundleSignature {
+     /// The team, not the certificate — a leaf is reissued on renewal and on a rename.
+     static let developerID = """
+         anchor apple generic \
+-        and certificate leaf[subject.OU] = "SPBUD83MLU" \
++        and certificate leaf[subject.OU] = "J656U8XZ93" \
+         and certificate 1[field.1.2.840.113635.100.6.2.6] exists \
+         and certificate leaf[field.1.2.840.113635.100.6.1.13] exists
+         """
+-- 
+2.56.0
+

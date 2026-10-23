@@ -76,7 +76,7 @@ index 4055f4a8..529c86ce 100644
  
      static func customActionsKeepTheBoundary() {
 diff --git a/Tinycast/Features/AI/UI/AIChatState.swift b/Tinycast/Features/AI/UI/AIChatState.swift
-index 443d5aa0..36bd5442 100644
+index c678f360..e033729e 100644
 --- a/Tinycast/Features/AI/UI/AIChatState.swift
 +++ b/Tinycast/Features/AI/UI/AIChatState.swift
 @@ -28,8 +28,8 @@ final class AIChatState {
@@ -90,7 +90,7 @@ index 443d5aa0..36bd5442 100644
      @ObservationIgnored private var flushTask: Task<Void, Never>?
      @ObservationIgnored private var lastFlush = ContinuousClock().now
  
-@@ -347,7 +347,7 @@ final class AIChatState {
+@@ -348,7 +348,7 @@ final class AIChatState {
          replyTask = nil
          let ended = onNextReplyEnded
          onNextReplyEnded = nil
@@ -100,10 +100,10 @@ index 443d5aa0..36bd5442 100644
      }
  
 diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-index 03ab4ff9..a63ac115 100644
+index 31c3e532..87d4fbab 100644
 --- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
 +++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-@@ -176,6 +176,9 @@ enum SettingsBackupCoverage {
+@@ -181,6 +181,9 @@ enum SettingsBackupCoverage {
          AppSettingsKey.quickActionsEnabled.rawValue:
              "Grants keystroke delivery into other apps through the Accessibility permission, and a "
              + "flag that grants a capability is never carried by a backup.",
@@ -114,10 +114,10 @@ index 03ab4ff9..a63ac115 100644
              "Custom model instructions change transformed results and must not move unseen.",
          AppSettingsKey.quickActionLanguage.rawValue:
 diff --git a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
-index 1c088d02..b89f3d7c 100644
+index f4ff4aef..56e2ee9f 100644
 --- a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
 +++ b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
-@@ -26,6 +26,15 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
+@@ -29,6 +29,15 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
          }
      }
  
@@ -288,10 +288,10 @@ index 2b3737da..fbea2c1f 100644
          Binding(
              get: { action.previewsResult },
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index f93f4186..ef889980 100644
+index 54f527db..31631d21 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-@@ -255,15 +255,17 @@ final class QuickActionCoordinator {
+@@ -258,15 +258,17 @@ final class QuickActionCoordinator {
          guard !Task.isCancelled else { return }
          // A page has no selection to write back into, so its result is only ever read.
          let writesBack = !fromPage && action.replacesSelection
@@ -311,7 +311,7 @@ index f93f4186..ef889980 100644
          }
      }
  
-@@ -330,9 +332,10 @@ final class QuickActionCoordinator {
+@@ -335,9 +337,10 @@ final class QuickActionCoordinator {
      }
  
      /// A new conversation whose text rides as a staged document, answered by the chat's own route.
@@ -323,7 +323,7 @@ index f93f4186..ef889980 100644
      ) {
          let chat = core.aiChatCoordinator.chats.quickAI
          chat.startNewChat()
-@@ -347,34 +350,41 @@ final class QuickActionCoordinator {
+@@ -352,34 +355,41 @@ final class QuickActionCoordinator {
          }
          let chatID = chat.session.id
          if writesBack {
@@ -375,7 +375,7 @@ index f93f4186..ef889980 100644
          defer { core.hideProgress() }
          do {
              let text = try await TextTranslator.translate(selection, to: language)
-@@ -383,7 +393,10 @@ final class QuickActionCoordinator {
+@@ -388,7 +398,10 @@ final class QuickActionCoordinator {
                  data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)
              let messageID = chat.record(
                  prompt: "\(action.title) to \(languageName)", documents: [document], reply: text)
@@ -387,7 +387,7 @@ index f93f4186..ef889980 100644
                  pendingReply = PendingReply(
                      chatID: chat.session.id, messageID: messageID, action: action, target: target)
              }
-@@ -398,25 +411,52 @@ final class QuickActionCoordinator {
+@@ -403,25 +416,52 @@ final class QuickActionCoordinator {
              else { return }
              AppLauncher.openSettingsPane(bundleID: Self.languageSettingsPane)
          } catch {
@@ -448,10 +448,10 @@ index f93f4186..ef889980 100644
      func canReplaceReply(in chat: AIChatState) -> Bool {
          guard let pending = pendingReply, pending.chatID == chat.session.id, !chat.isStreaming
 diff --git a/Tinycast/Features/Settings/AppSettingsKey.swift b/Tinycast/Features/Settings/AppSettingsKey.swift
-index 908fbef7..1c46d93b 100644
+index 8ce96e4f..c84a9d4b 100644
 --- a/Tinycast/Features/Settings/AppSettingsKey.swift
 +++ b/Tinycast/Features/Settings/AppSettingsKey.swift
-@@ -97,6 +97,7 @@ enum AppSettingsKey: String, CaseIterable {
+@@ -100,6 +100,7 @@ enum AppSettingsKey: String, CaseIterable {
      case mcpServers = "mcpServers"
      case quickActionsEnabled = "quickActionsEnabled"
      case quickActionInstructions = "quickActionInstructions"
@@ -460,7 +460,7 @@ index 908fbef7..1c46d93b 100644
      case dictationEnabled = "dictationEnabled"
      case dictationMode = "dictationMode"
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
-index ecb6363f..184eeed9 100644
+index d904a07f..a359593b 100644
 --- a/docs/features/quick-actions.md
 +++ b/docs/features/quick-actions.md
 @@ -10,6 +10,10 @@ Grammar, Rewrite, Translate and custom actions write their reply back over the s
@@ -557,7 +557,7 @@ index ecb6363f..184eeed9 100644
  
  **`AppEntry.Kind.quickAction` is one section for both halves**, ungated in
  `VisibilityStore.allowsHotKey` because `quickActionsEnabled` is the master switch. The four keep their
-@@ -252,8 +266,14 @@ failure handler, so automatic expansion stays silent as before.
+@@ -258,8 +272,14 @@ failure handler, so automatic expansion stays silent as before.
    page.
  - Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
  - Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
@@ -575,10 +575,10 @@ index ecb6363f..184eeed9 100644
    button opens Language & Region. Nothing is written.
  - Translate into a downloaded language: the reply appears as a finished turn, and Replace writes it.
 diff --git a/docs/ui.md b/docs/ui.md
-index a193b557..4563b371 100644
+index 57811c9c..d7b61ea3 100644
 --- a/docs/ui.md
 +++ b/docs/ui.md
-@@ -582,8 +582,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
+@@ -589,8 +589,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
    `Duration.messageHUD` (2.4s) — longer than the volume box, since a sentence needs reading time and a
    level only needs a glance — and a repeat call replaces rather than stacks.
  - **The same pill reports work still running**, through `showProgress(message:onCancel:)`: Translate

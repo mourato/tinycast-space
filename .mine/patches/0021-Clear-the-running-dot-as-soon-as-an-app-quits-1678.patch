@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 05:54:28 +0600
+Subject: [PATCH] Clear the running dot as soon as an app quits (#1678)
+
+RunningAppsMonitor re-read NSWorkspace.runningApplications on
+didTerminateApplicationNotification, but that notification arrives while
+the list still holds the quitting app. The refresh saw no change, so the
+dot and the running-only actions stayed until some later launch or quit.
+
+Observe runningApplications with KVO instead. It fires in the same pass,
+once the list has changed; .initial replaces the startup refresh, and the
+observation invalidates itself on deinit.
+---
+ .../Launcher/Service/RunningAppsMonitor.swift    | 16 +++++-----------
+ docs/features/launcher.md                        |  6 ++++--
+ 2 files changed, 9 insertions(+), 13 deletions(-)
+
+diff --git a/Tinycast/Features/Launcher/Service/RunningAppsMonitor.swift b/Tinycast/Features/Launcher/Service/RunningAppsMonitor.swift
+index b249a53a..d615245a 100644
+--- a/Tinycast/Features/Launcher/Service/RunningAppsMonitor.swift
++++ b/Tinycast/Features/Launcher/Service/RunningAppsMonitor.swift
+@@ -5,19 +5,13 @@ import AppKit
+ final class RunningAppsMonitor {
+     private(set) var runningBundleIDs: Set<String> = []
+     private var runningAppPaths: Set<String> = []
+-    @ObservationIgnored private var observers: [NotificationToken] = []
++    @ObservationIgnored private var observation: NSKeyValueObservation?
+ 
+     init() {
+-        refresh()
+-        let center = NSWorkspace.shared.notificationCenter
+-        for name in [
+-            NSWorkspace.didLaunchApplicationNotification,
+-            NSWorkspace.didTerminateApplicationNotification
+-        ] {
+-            let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+-                MainActor.assumeIsolated { self?.refresh() }
+-            }
+-            observers.append(NotificationToken(token, center: center))
++        observation = NSWorkspace.shared.observe(
++            \.runningApplications, options: .initial
++        ) { [weak self] _, _ in
++            MainActor.assumeIsolated { self?.refresh() }
+         }
+     }
+ 
+diff --git a/docs/features/launcher.md b/docs/features/launcher.md
+index 234a3b10..b808bfac 100644
+--- a/docs/features/launcher.md
++++ b/docs/features/launcher.md
+@@ -825,8 +825,10 @@ not drag.
+ 
+ ## Quitting and restarting apps
+ 
+-`RunningAppsMonitor` (live from `NSWorkspace` launch/terminate notifications) drives both the row's
+-running dot and the availability of the running-only actions:
++`RunningAppsMonitor` (live from a KVO observation of `NSWorkspace.runningApplications`) drives both the
++row's running dot and the availability of the running-only actions. It observes the list rather than
++`didTerminateApplicationNotification`, which arrives while the list still holds the quitting app, so
++reading the list there left the dot on until some later launch or quit:
+ 
+ - **Quit Application** — a row of an app's ⌘K Actions menu, shown only while that app is
+   running, also bound to **⌃⇧Q** on the selected row. The chord guard mirrors the menu row's
+-- 
+2.56.0
+

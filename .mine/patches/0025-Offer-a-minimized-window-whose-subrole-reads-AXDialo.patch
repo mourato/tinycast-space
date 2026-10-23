@@ -1,0 +1,214 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jiajia Zhang <isaaronzhang@icloud.com>
+Date: Thu, 22 Oct 2026 03:16:59 +0200
+Subject: [PATCH] Offer a minimized window whose subrole reads AXDialog (#1670)
+
+* Offer a minimized window whose subrole reads AXDialog
+
+Finder and Transmission report a minimized window as AXDialog instead of
+AXStandardWindow, and back to standard once restored, so a standard-subrole
+test dropped exactly the rows a switcher exists for.
+
+WindowSwitchPolicy now takes a standard window, or a minimized one that still
+reports a minimize button. A sheet cannot minimize, so the button keeps real
+dialogs out, and the autoclosure skips the read for a standard window.
+
+* Keep the switch policy comment under the 100-column cap
+
+---------
+
+Co-authored-by: abue-ammar <iabueammar@gmail.com>
+---
+ Tests/window-switch-test.swift                | 24 +++++++++++++++++++
+ Tinycast.xcodeproj/project.pbxproj            |  4 ++++
+ .../Model/WindowSwitchPolicy.swift            | 11 +++++++++
+ .../Service/WindowSwitchSweep.swift           | 14 +++++++----
+ docs/features/navigation.md                   | 17 +++++++++----
+ 5 files changed, 61 insertions(+), 9 deletions(-)
+ create mode 100644 Tinycast/Features/WindowSwitcher/Model/WindowSwitchPolicy.swift
+
+diff --git a/Tests/window-switch-test.swift b/Tests/window-switch-test.swift
+index e1463089..058782e7 100644
+--- a/Tests/window-switch-test.swift
++++ b/Tests/window-switch-test.swift
+@@ -27,6 +27,7 @@ struct WindowSwitchTests {
+         searchMapping()
+         ordering()
+         orderingIsTotal()
++        switchable()
+         ranking()
+         rankingLimit()
+ 
+@@ -89,6 +90,29 @@ struct WindowSwitchTests {
+             "minimized windows form one run at the end, never interleaved")
+     }
+ 
++    static func switchable() {
++        expect(
++            WindowSwitchPolicy.isSwitchable(
++                isStandardWindow: true, isMinimized: false, canMinimize: true),
++            "a standard window is offered")
++        expect(
++            WindowSwitchPolicy.isSwitchable(
++                isStandardWindow: true, isMinimized: true, canMinimize: true),
++            "a minimized window that still reports its subrole is offered")
++        expect(
++            WindowSwitchPolicy.isSwitchable(
++                isStandardWindow: false, isMinimized: true, canMinimize: true),
++            "a minimized window reading AXDialog is offered, which is Finder and Transmission")
++        expect(
++            !WindowSwitchPolicy.isSwitchable(
++                isStandardWindow: false, isMinimized: false, canMinimize: true),
++            "a sheet is no window to switch to")
++        expect(
++            !WindowSwitchPolicy.isSwitchable(
++                isStandardWindow: false, isMinimized: true, canMinimize: false),
++            "a dialog cannot minimize, so it is never read as a minimized window")
++    }
++
+     static func ranking() {
+         let entries = [
+             entry(0, app: "Mail", title: "Drafts"),
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index df335e0f..cd0092b6 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -416,6 +416,7 @@
+ 		78A06F98F84C3B491E9F30A1 /* RoomWindowMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 123F780230818E83DEEB6988 /* RoomWindowMatcher.swift */; };
+ 		78BA4410EAA35ED76D7CFBE8 /* QuickActionSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C29DA5656628B41C17D42A /* QuickActionSettingsStore.swift */; };
+ 		791AC049B6CA16C7D86EEBEF /* MeetingLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C117C966BC2990F19E00AB /* MeetingLauncher.swift */; };
++		7A3401FAB95C7E16B62760CA /* WindowSwitchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E250BCD1D425BC3C309FF397 /* WindowSwitchPolicy.swift */; };
+ 		7A7D20DFBEB49D7C7D9DDEB5 /* RoomPreviewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 676760D8D30526B99A1F97B7 /* RoomPreviewController.swift */; };
+ 		7AF6E4F92BBF4D41B9B1E700 /* BackupBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 780B32AF98BA3A51D2F0E8B4 /* BackupBundle.swift */; };
+ 		7B25CD1684D24C164346AA68 /* SnippetEditorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F590D5052075C9E121306FEE /* SnippetEditorScreen.swift */; };
+@@ -1644,6 +1645,7 @@
+ 		E1FB75182A60F65BA1FB9BA8 /* NotificationToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationToken.swift; sourceTree = "<group>"; };
+ 		E20A7C8EADDB7F89A73796CC /* BackupComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupComposer.swift; sourceTree = "<group>"; };
+ 		E20E0F8056B3097D536BB679 /* SnippetArgumentFields.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetArgumentFields.swift; sourceTree = "<group>"; };
++		E250BCD1D425BC3C309FF397 /* WindowSwitchPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSwitchPolicy.swift; sourceTree = "<group>"; };
+ 		E27FB790A72ACD75DFCDFDDF /* VolumeSlider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeSlider.swift; sourceTree = "<group>"; };
+ 		E2D1CA733FFAEF665D867A45 /* ASCIIKeyboardLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ASCIIKeyboardLayout.swift; sourceTree = "<group>"; };
+ 		E3EAD167D7B52BCB504D6264 /* DictationTensor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationTensor.swift; sourceTree = "<group>"; };
+@@ -3684,6 +3686,7 @@
+ 			children = (
+ 				479047BCB47CE279EB1D256D /* WindowSwitchEntry.swift */,
+ 				867B0475618A01A765AC0DC5 /* WindowSwitchOrder.swift */,
++				E250BCD1D425BC3C309FF397 /* WindowSwitchPolicy.swift */,
+ 				F42BECB8234FEA49797B68F6 /* WindowSwitchQuery.swift */,
+ 			);
+ 			path = Model;
+@@ -4774,6 +4777,7 @@
+ 				F46DE2571A85FA24BD4E3B3A /* WindowSwitchEntry.swift in Sources */,
+ 				E8FFCAEE49AC44E4889DAF4D /* WindowSwitchList.swift in Sources */,
+ 				2D40FB3C6B78FE746AB0F7EB /* WindowSwitchOrder.swift in Sources */,
++				7A3401FAB95C7E16B62760CA /* WindowSwitchPolicy.swift in Sources */,
+ 				E7A780C7E9B20D898FFD7EB3 /* WindowSwitchQuery.swift in Sources */,
+ 				8BCE48437E9621D7B0220378 /* WindowSwitchScreen.swift in Sources */,
+ 				1321118AD23048FDD90537A2 /* WindowSwitchSession.swift in Sources */,
+diff --git a/Tinycast/Features/WindowSwitcher/Model/WindowSwitchPolicy.swift b/Tinycast/Features/WindowSwitcher/Model/WindowSwitchPolicy.swift
+new file mode 100644
+index 00000000..fc987550
+--- /dev/null
++++ b/Tinycast/Features/WindowSwitcher/Model/WindowSwitchPolicy.swift
+@@ -0,0 +1,11 @@
++import Foundation
++
++/// Which windows a switch offers, pure so the rule is testable without Accessibility.
++enum WindowSwitchPolicy {
++    /// Some apps relabel a minimized window `AXDialog`; the minimize button keeps sheets out.
++    static func isSwitchable(
++        isStandardWindow: Bool, isMinimized: Bool, canMinimize: @autoclosure () -> Bool
++    ) -> Bool {
++        isStandardWindow || (isMinimized && canMinimize())
++    }
++}
+diff --git a/Tinycast/Features/WindowSwitcher/Service/WindowSwitchSweep.swift b/Tinycast/Features/WindowSwitcher/Service/WindowSwitchSweep.swift
+index 7196f985..c9a17939 100644
+--- a/Tinycast/Features/WindowSwitcher/Service/WindowSwitchSweep.swift
++++ b/Tinycast/Features/WindowSwitcher/Service/WindowSwitchSweep.swift
+@@ -32,15 +32,15 @@ enum WindowSwitchSweep {
+             let iconStamp = iconURL.map(FileIconStamp.value(for:)) ?? 0
+             for window in AXWindowAccess.windows(in: application) {
+                 AXUIElementSetMessagingTimeout(window, sweepTimeout)
+-                guard isSwitchable(window) else { continue }
++                let minimized = AXWindowAccess.bool(window, kAXMinimizedAttribute) == true
++                guard isSwitchable(window, minimized: minimized) else { continue }
+                 let handle = entries.count
+                 entries.append(
+                     WindowSwitchEntry(
+                         handle: handle, appName: app.localizedName ?? bundleID,
+                         bundleID: bundleID, iconURL: iconURL, iconStamp: iconStamp,
+                         title: AXWindowAccess.string(window, kAXTitleAttribute) ?? "",
+-                        isMinimized: AXWindowAccess.bool(window, kAXMinimizedAttribute) == true,
+-                        appRank: ranks[pid] ?? .max))
++                        isMinimized: minimized, appRank: ranks[pid] ?? .max))
+                 elements[handle] = Element(app: app, application: application, window: window)
+             }
+         }
+@@ -49,7 +49,11 @@ enum WindowSwitchSweep {
+ 
+     /// Looser than the layout inventory's rule: a minimized window is exactly what a switcher is
+     /// for, and a window on another Space reports no frame until it is raised.
+-    private static func isSwitchable(_ window: AXUIElement) -> Bool {
+-        AXWindowAccess.string(window, kAXSubroleAttribute) == (kAXStandardWindowSubrole as String)
++    private static func isSwitchable(_ window: AXUIElement, minimized: Bool) -> Bool {
++        WindowSwitchPolicy.isSwitchable(
++            isStandardWindow: AXWindowAccess.string(window, kAXSubroleAttribute)
++                == (kAXStandardWindowSubrole as String),
++            isMinimized: minimized,
++            canMinimize: AXWindowAccess.element(window, kAXMinimizeButtonAttribute) != nil)
+     }
+ }
+diff --git a/docs/features/navigation.md b/docs/features/navigation.md
+index d31f2033..df960ca5 100644
+--- a/docs/features/navigation.md
++++ b/docs/features/navigation.md
+@@ -41,6 +41,7 @@ launcher and a still-recorded shortcut for any does nothing.
+ | --- | --- |
+ | `Model/WindowSwitchEntry.swift` | one row: handle, app, title, minimized, rank, search fields |
+ | `Model/WindowSwitchOrder.swift` | the MRU sort, pure and total |
++| `Model/WindowSwitchPolicy.swift` | which windows the sweep offers, pure |
+ | `Model/WindowSwitchQuery.swift` | ranking over `SearchRelevance`, capped at 200 rows |
+ | `Service/WindowZOrder.swift` | the one `CGWindowList` call: per-pid front rank |
+ | `Service/WindowSwitchSweep.swift` | the AX sweep, and the live element table it hands back |
+@@ -71,11 +72,18 @@ rather than after the user has switched apps once.
+ ## The sweep
+ 
+ `WindowSwitchSweep` walks `WindowInventory.candidates()` — regular-policy, non-terminated, not us —
+-and takes every window whose subrole is `AXStandardWindow`. That is looser than
++and takes every window `WindowSwitchPolicy` accepts: a standard-subrole one, or a minimized one that
++still has a minimize button. That is looser than
+ `WindowInventory.eligibleFrame` in two ways that both matter here: a **minimized** window is exactly
+ what a switcher is for, and a window on another Space reports no frame until it is raised, so
+ requiring one would hide it.
+ 
++**A minimized window changes subrole.** Finder and Transmission report their minimized windows as
++`AXDialog`, not `AXStandardWindow`, and back to `AXStandardWindow` when restored, so a subrole test
++alone drops exactly the rows a switcher exists for. A sheet cannot minimize, so the minimize button
++is what still tells a minimized window from a real dialog. The policy is Foundation-only, so the
++harness covers the rule rather than the attribute reads.
++
+ Each element gets a 0.2 s messaging timeout, the same as the layout inventory and the menu walk, so
+ one hung app cannot stall the summon.
+ 
+@@ -161,13 +169,14 @@ window's app quit between the sweep and the ↵.
+ 
+ `Tests/window-switch-test.swift` covers the pure half: the handle-derived id, the untitled-window
+ fallback, the name/owner split in the search fields, the MRU order and its totality under a shuffled
+-sweep, the minimized run at the end, ranking, and the 200-row cap under both an empty and a
+-matching query.
++sweep, the minimized run at the end, which windows the sweep offers, ranking, and the 200-row cap
++under both an empty and a matching query.
+ 
+ `WindowZOrder` and `WindowSwitchSweep` are not compiled into the harness and have no automated
+ coverage — the AX and `CGWindowList` paths need manual verification, particularly:
+ 
+-1. A minimized window is listed last and ↵ un-minimizes it rather than doing nothing.
++1. A minimized window is listed last and ↵ un-minimizes it rather than doing nothing — for Finder
++   and Transmission too, whose minimized windows read `AXDialog`.
+ 2. A window on another Space is listed, and ↵ pulls that Space forward.
+ 3. An app with several windows lists them in its own front-to-back order, under one app rank.
+ 4. An app quit between the summon and the ↵ reports rather than failing silently.
+-- 
+2.56.0
+

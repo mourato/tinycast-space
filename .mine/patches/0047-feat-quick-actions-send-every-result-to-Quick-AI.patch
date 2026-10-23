@@ -21,11 +21,11 @@ Replace button on that reply; Summarize only reads.
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
 ---
  Scripts/run-tests.sh                          |   2 -
- Tests/quick-action-test.swift                 | 201 +-----------
- Tests/text-diff-performance.swift             | 110 -------
- Tests/text-diff-test.swift                    |  73 -----
+ Tests/quick-action-test.swift                 | 201 +----------
+ Tests/text-diff-performance.swift             | 110 ------
+ Tests/text-diff-test.swift                    |  73 ----
  Tinycast.xcodeproj/project.pbxproj            |  24 --
- Tinycast/App/AppCore.swift                    |  20 +-
+ Tinycast/App/AppCore.swift                    |  21 +-
  .../Features/AI/UI/AIChatCoordinator.swift    |  24 ++
  .../Features/AI/UI/AIChatDetailView.swift     |   2 +
  Tinycast/Features/AI/UI/AIChatState.swift     |  17 +
@@ -44,18 +44,18 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
  .../Settings/QuickActionsSettingsView.swift   | 136 ++------
  .../UI/QuickActionCoordinator.swift           | 230 +++++++------
  .../QuickActions/UI/QuickActionPanel.swift    |  63 ----
- .../UI/QuickActionPanelController.swift       | 133 --------
+ .../UI/QuickActionPanelController.swift       | 131 --------
  .../UI/QuickActionPanelState.swift            |  64 ----
- .../UI/QuickActionResultView.swift            | 210 ------------
+ .../UI/QuickActionResultView.swift            | 209 ------------
  .../Features/Settings/AppSettingsKey.swift    |   3 -
  .../Features/Settings/SettingsAnchor.swift    |   1 -
  .../Settings/SettingsSearchCatalog.swift      |   3 -
  docs/features/ai.md                           |  30 +-
  docs/features/launcher.md                     |   4 +-
- docs/features/quick-actions.md                | 308 ++++++++----------
+ docs/features/quick-actions.md                | 312 ++++++++----------
  docs/testing.md                               |   5 -
  docs/ui.md                                    |  10 +-
- 35 files changed, 412 insertions(+), 1673 deletions(-)
+ 35 files changed, 412 insertions(+), 1675 deletions(-)
  delete mode 100644 Tests/text-diff-performance.swift
  delete mode 100644 Tests/text-diff-test.swift
  delete mode 100644 Tinycast/Features/QuickActions/Model/TextDiffEngine.swift
@@ -66,10 +66,10 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
  delete mode 100644 Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index 24dcde68..c8d300d6 100755
+index 045f5aea..feee23f7 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -756,8 +756,6 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
+@@ -805,8 +805,6 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/AI/Model/JSONValue.swift \
                             Tinycast/Features/MCP/Model/*.swift \
                             Tinycast/Features/MCP/Settings/MCPSettingsStore.swift
@@ -558,7 +558,7 @@ index d4ed487a..00000000
 -    }
 -}
 diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
-index 02b44f5f..5c9dd5d9 100644
+index 33bd87a0..c4192a79 100644
 --- a/Tinycast.xcodeproj/project.pbxproj
 +++ b/Tinycast.xcodeproj/project.pbxproj
 @@ -93,8 +93,6 @@
@@ -570,7 +570,7 @@ index 02b44f5f..5c9dd5d9 100644
  		1B22A7E45ADF2FEA95957698 /* ExtensionFieldChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C8025ED5F2833127E20C05 /* ExtensionFieldChrome.swift */; };
  		1B9BC6B00770D1F002E62E0D /* ExtensionBootConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED5AAA98FFF7A4D34D7B490D /* ExtensionBootConfig.swift */; };
  		1BC16048EE05A1FD25739CB4 /* PaletteState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 188A6D3C5B6BC67716F15F83 /* PaletteState.swift */; };
-@@ -483,7 +481,6 @@
+@@ -494,7 +492,6 @@
  		8CC7A4A5D4205843219A81C8 /* CustomCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF0880635E294D9DF55BAADA /* CustomCommand.swift */; };
  		8CFF2D2BF36F60659C8570A3 /* SettingsPaneScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F7C8CBD0AA75D016DBFC06 /* SettingsPaneScanner.swift */; };
  		8D20CD7B6918873960F84291 /* NoteDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B10DA3A9B1CBD9A03F3DE5 /* NoteDocument.swift */; };
@@ -578,7 +578,7 @@ index 02b44f5f..5c9dd5d9 100644
  		8D529C8F3AB579941067FE98 /* MessageHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 976A1F05AD82DB8A04B3C3F9 /* MessageHUDView.swift */; };
  		8DB8C82F0683007053A5E564 /* NoteTextViewEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 261AA09F2C6FE579667B9F97 /* NoteTextViewEditing.swift */; };
  		8DCF330D30E59FFEE8C8E8CF /* PaletteDropGuideController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A8B82DCB1B7D131BF0908A /* PaletteDropGuideController.swift */; };
-@@ -579,7 +576,6 @@
+@@ -591,7 +588,6 @@
  		AAFD2C9276D38719E85B675F /* Memo.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB76FDBFE1E306C2A5B1A29B /* Memo.swift */; };
  		AB500AC3DEBFF6EB1CE42812 /* DialogController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94507F8F095D3EBD1A9B3007 /* DialogController.swift */; };
  		AB778D7CE5D7B6B91A4B996F /* DictionaryEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65BCE97EB19D934F786DFAA0 /* DictionaryEntryView.swift */; };
@@ -586,7 +586,7 @@ index 02b44f5f..5c9dd5d9 100644
  		ABF71DB1EB6741F10CD834DF /* MenuSnapshotPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A39D6A1B28175B4E394ED7A /* MenuSnapshotPolicy.swift */; };
  		ABFC92E6F22D8D6715081D9F /* CalendarAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F82845FDA307DF71676352 /* CalendarAccess.swift */; };
  		AC417E6C0EC58EE665F27F80 /* LauncherMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C7717F4851345ED38592B1C /* LauncherMatch.swift */; };
-@@ -626,7 +622,6 @@
+@@ -639,7 +635,6 @@
  		BA81E5DE22F944417665D90D /* FeatureCommandsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F082FD6A3AC234F43735715D /* FeatureCommandsSection.swift */; };
  		BA835EDCB6D17DE6BFE2D39E /* DialogTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97F7A18CE243DB037673EB63 /* DialogTextField.swift */; };
  		BAD4BEF8041665ACCF1CE460 /* ScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F64FC06CB10BDF8CD044D64 /* ScheduleView.swift */; };
@@ -594,7 +594,7 @@ index 02b44f5f..5c9dd5d9 100644
  		BB4ED6E8BDDE27DE7815A226 /* ChatComposerTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C343C0FEA2652D8E82E04B /* ChatComposerTextView.swift */; };
  		BB62D7609D890578345C5BB5 /* NoteMarkdownRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E816B806F2103D0EF184E5 /* NoteMarkdownRenderer.swift */; };
  		BBAB44C0E70AABE70A048889 /* QuicklinkArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = F616D2EE62AEC6782E77364D /* QuicklinkArchive.swift */; };
-@@ -759,7 +754,6 @@
+@@ -772,7 +767,6 @@
  		E457BC709D195B8F5D0C2A79 /* UninstallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B6DAC3B9FF387367C3FAB4 /* UninstallSession.swift */; };
  		E49FB7938D8D22AB09AE1D23 /* ExtensionMenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8AB48A3C8B78B04CBFF36B /* ExtensionMenuBarController.swift */; };
  		E4B18EBFFD009B2CAFF4BA9B /* PanelTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73E25B87C692D5FEE1FBF994 /* PanelTransition.swift */; };
@@ -602,7 +602,7 @@ index 02b44f5f..5c9dd5d9 100644
  		E4C6F315EA0F0544D9E4BB08 /* FileIconStamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC39721B6964B279FB5D5DC3 /* FileIconStamp.swift */; };
  		E4E1403AA9A8ACE4A3D3581C /* MeetingEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B330ABFC83721904159DDF2 /* MeetingEvent.swift */; };
  		E573655220F45E598575FC68 /* MenuTreeNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1B528506E4B62440B4863A /* MenuTreeNode.swift */; };
-@@ -1074,7 +1068,6 @@
+@@ -1091,7 +1085,6 @@
  		316A544BF6628C0465DE28D8 /* EmojiIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiIndex.swift; sourceTree = "<group>"; };
  		31757FAE5F3E9E06D9B77DCA /* ReleaseNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotes.swift; sourceTree = "<group>"; };
  		31BAD6EE1BA3036C4B5A3D19 /* HUDPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDPresenter.swift; sourceTree = "<group>"; };
@@ -610,7 +610,7 @@ index 02b44f5f..5c9dd5d9 100644
  		322CDA010EDCE32555CD4212 /* PlainTextSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainTextSurface.swift; sourceTree = "<group>"; };
  		3265CBD6C91FC67E3996AF8E /* MCPOAuthChallenge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthChallenge.swift; sourceTree = "<group>"; };
  		32733B27AE0BD75742D1394F /* DialogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DialogView.swift; sourceTree = "<group>"; };
-@@ -1334,7 +1327,6 @@
+@@ -1356,7 +1349,6 @@
  		7FAB190A19D214F4B64B9BAB /* SettingsFileFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFileFormat.swift; sourceTree = "<group>"; };
  		7FDB7BD7AB45EAD1A11FFFC4 /* AXWindowAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXWindowAccess.swift; sourceTree = "<group>"; };
  		802BD2F4CC057228F2528217 /* PalettePlacement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PalettePlacement.swift; sourceTree = "<group>"; };
@@ -618,7 +618,7 @@ index 02b44f5f..5c9dd5d9 100644
  		81C6D5C5A9A1D66BF3A77A8E /* MCPSecretStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSecretStore.swift; sourceTree = "<group>"; };
  		81E2A3F7C4FCA7120A3F6EF5 /* ArmedHover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmedHover.swift; sourceTree = "<group>"; };
  		823F8F6B9EAAD17DD1062137 /* SyntaxStructuredLexers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyntaxStructuredLexers.swift; sourceTree = "<group>"; };
-@@ -1542,7 +1534,6 @@
+@@ -1569,7 +1561,6 @@
  		BDB241B179A08518424F7C1B /* DialogPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DialogPanel.swift; sourceTree = "<group>"; };
  		BE3331A5E8F892CC257AD31B /* SnippetMarkdownSerializer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetMarkdownSerializer.swift; sourceTree = "<group>"; };
  		BE33C0D70D728B12E9A8D4A6 /* WindowCommandCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCommandCoordinator.swift; sourceTree = "<group>"; };
@@ -626,7 +626,7 @@ index 02b44f5f..5c9dd5d9 100644
  		BE6972F177922B1EB8831735 /* OnboardingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingCard.swift; sourceTree = "<group>"; };
  		BE7D64F656A9DD6EE1CCC93A /* DictationPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationPanel.swift; sourceTree = "<group>"; };
  		BEBE95E04A3E8B4BCF973A04 /* MathBox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathBox.swift; sourceTree = "<group>"; };
-@@ -1602,7 +1593,6 @@
+@@ -1630,7 +1621,6 @@
  		CD8BC47B03C5DFDC3FAE752D /* ChatComposerChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposerChips.swift; sourceTree = "<group>"; };
  		CE8C8077B002AFD9A9C496EF /* ChatTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTitle.swift; sourceTree = "<group>"; };
  		CEE5FA2E56073002C2DA6D6A /* ClipboardTextHelper */ = {isa = PBXFileReference; includeInIndex = 0; path = ClipboardTextHelper; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -634,7 +634,7 @@ index 02b44f5f..5c9dd5d9 100644
  		CF2A1ECA5667B8FD1B1F9FD8 /* UpdateCheckStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheckStore.swift; sourceTree = "<group>"; };
  		CF64F5FCB3872996AE57FDBB /* FileSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSearchCoordinator.swift; sourceTree = "<group>"; };
  		CFBF31AF26A4786B234ABB64 /* ExtensionAnimatedImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionAnimatedImage.swift; sourceTree = "<group>"; };
-@@ -1627,7 +1617,6 @@
+@@ -1655,7 +1645,6 @@
  		D43F1080FB443A1D0616790E /* FavoritesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStore.swift; sourceTree = "<group>"; };
  		D4462AB0E866F02397B57EC6 /* MeetingDetails.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetails.swift; sourceTree = "<group>"; };
  		D558FDBE73563E4292E388DD /* DictationVolumeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationVolumeSnapshot.swift; sourceTree = "<group>"; };
@@ -642,7 +642,7 @@ index 02b44f5f..5c9dd5d9 100644
  		D65D1C9A117E443C6DA2BD9E /* WindowLayoutAnchor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowLayoutAnchor.swift; sourceTree = "<group>"; };
  		D68722D56122F3EFDA707782 /* RoomsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomsScreen.swift; sourceTree = "<group>"; };
  		D6CC42C482CC8B87188F55F4 /* ReleaseNotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotesView.swift; sourceTree = "<group>"; };
-@@ -1686,7 +1675,6 @@
+@@ -1715,7 +1704,6 @@
  		E7CBCC47A7A061C01F592BA6 /* ContextPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextPolicy.swift; sourceTree = "<group>"; };
  		E7D5244DA7C7D17A80F33442 /* ExtensionMenuBarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionMenuBarManager.swift; sourceTree = "<group>"; };
  		E8A4DEF28F120FE354EB5599 /* QuickAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAction.swift; sourceTree = "<group>"; };
@@ -650,7 +650,7 @@ index 02b44f5f..5c9dd5d9 100644
  		E9AEDF156B61DD90C5ADA8FA /* FallbackActionsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FallbackActionsMenu.swift; sourceTree = "<group>"; };
  		E9CC89B6C271E28F2373B50B /* FileIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexer.swift; sourceTree = "<group>"; };
  		E9D41B9E6F2C617D28C83AFF /* ShortcutRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRecorder.swift; sourceTree = "<group>"; };
-@@ -2300,10 +2288,6 @@
+@@ -2335,10 +2323,6 @@
  			isa = PBXGroup;
  			children = (
  				56D6EE5144AEF889C95B3758 /* QuickActionCoordinator.swift */,
@@ -661,7 +661,7 @@ index 02b44f5f..5c9dd5d9 100644
  			);
  			path = UI;
  			sourceTree = "<group>";
-@@ -2592,7 +2576,6 @@
+@@ -2627,7 +2611,6 @@
  				53DBA322BA1F117530075F51 /* QuickActionFailure.swift */,
  				F513217C40F0B8199DC57A35 /* QuickActionPrompt.swift */,
  				C3C83D437500107168E12647 /* QuickActionSettings.swift */,
@@ -669,7 +669,7 @@ index 02b44f5f..5c9dd5d9 100644
  			);
  			path = Model;
  			sourceTree = "<group>";
-@@ -3123,7 +3106,6 @@
+@@ -3162,7 +3145,6 @@
  			isa = PBXGroup;
  			children = (
  				C464FF06F4AD0883F035290D /* CustomQuickActionEditorPanel.swift */,
@@ -677,7 +677,7 @@ index 02b44f5f..5c9dd5d9 100644
  				98C29DA5656628B41C17D42A /* QuickActionSettingsStore.swift */,
  				C5941CE8F08FD5986FED12E9 /* QuickActionsSettingsView.swift */,
  			);
-@@ -4583,12 +4565,7 @@
+@@ -4648,12 +4630,7 @@
  				D99DAF62B746E6009E1BFB1F /* QuickAction.swift in Sources */,
  				D4F49C93A33488D226BA8664 /* QuickActionCoordinator.swift in Sources */,
  				BFC17B1BD5D239E0CCD56DDF /* QuickActionFailure.swift in Sources */,
@@ -690,7 +690,7 @@ index 02b44f5f..5c9dd5d9 100644
  				3F3414742ABC6F21D48C2A9E /* QuickActionRunner.swift in Sources */,
  				F9750CE5EC2E7E541F740A15 /* QuickActionSettings.swift in Sources */,
  				78BA4410EAA35ED76D7CFBE8 /* QuickActionSettingsStore.swift in Sources */,
-@@ -4741,7 +4718,6 @@
+@@ -4808,7 +4785,6 @@
  				A41185C975CBF97A8C6EAC19 /* SystemPromptEditor.swift in Sources */,
  				410F1B5FFAA44378AC9EC2DB /* SystemSettingsSettingsView.swift in Sources */,
  				005B39EF22378D1736CE5805 /* TerminalLogView.swift in Sources */,
@@ -699,10 +699,10 @@ index 02b44f5f..5c9dd5d9 100644
  				85FF7D441BD782A29EDD95A8 /* TextTranslator.swift in Sources */,
  				36968DFA1E201E681F0BCD42 /* Theme.swift in Sources */,
 diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
-index df5c5ac5..a977572c 100644
+index bb6ce238..77ec7d26 100644
 --- a/Tinycast/App/AppCore.swift
 +++ b/Tinycast/App/AppCore.swift
-@@ -588,8 +588,7 @@ final class AppCore {
+@@ -615,8 +615,7 @@ final class AppCore {
      private func applyInstalledLaunches() {
          let revisions = aiSettings.launchRevisions
          let enabled =
@@ -712,7 +712,7 @@ index df5c5ac5..a977572c 100644
          for kind in InstalledAIKind.allCases where appliedLaunchRevisions[kind] != revisions[kind] {
              guard enabled.contains(kind) else { continue }
              if kind == .codex {
-@@ -605,8 +604,7 @@ final class AppCore {
+@@ -632,8 +631,7 @@ final class AppCore {
      @discardableResult
      func applyInstalledAILifecycle() -> Task<Void, Never> {
          let enabledKinds =
@@ -722,7 +722,7 @@ index df5c5ac5..a977572c 100644
          var tasks: [Task<Void, Never>] = []
          if enabledKinds.contains(.codex) {
              tasks.append(
-@@ -620,20 +618,6 @@ final class AppCore {
+@@ -647,21 +645,6 @@ final class AppCore {
          return Task { for task in tasks { await task.value } }
      }
  
@@ -732,7 +732,8 @@ index df5c5ac5..a977572c 100644
 -            against: aiSettings.connections, fallback: aiSettings.defaultModel)
 -        guard let selection = quickActionSettings.model(for: action) ?? aiSettings.defaultModel
 -        else {
--            throw AIProviderError.unavailable("Choose a model in Settings \u{2192} Quick Actions.")
+-            throw AIProviderError.unavailable(
+-                String(localized: "Choose a model in Settings \u{2192} Quick Actions."))
 -        }
 -        return try AIProviderFactory.make(
 -            selection: selection, settings: aiSettings, subscription: chatGPTSubscription,
@@ -744,10 +745,10 @@ index df5c5ac5..a977572c 100644
      func paletteContextSnapshot() -> ContextAppReader.Snapshot? {
          ContextAppReader.snapshot(of: windowController.previousApp)
 diff --git a/Tinycast/Features/AI/UI/AIChatCoordinator.swift b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
-index 63e2c308..26d7b235 100644
+index 60146faa..1a44cb49 100644
 --- a/Tinycast/Features/AI/UI/AIChatCoordinator.swift
 +++ b/Tinycast/Features/AI/UI/AIChatCoordinator.swift
-@@ -330,6 +330,30 @@ final class AIChatCoordinator {
+@@ -333,6 +333,30 @@ final class AIChatCoordinator {
          }
      }
  
@@ -779,7 +780,7 @@ index 63e2c308..26d7b235 100644
      func regenerate(in chat: AIChatState) {
          guard settings.aiEnabled else { return }
 diff --git a/Tinycast/Features/AI/UI/AIChatDetailView.swift b/Tinycast/Features/AI/UI/AIChatDetailView.swift
-index 58d611da..0f12418d 100644
+index 76d6e855..d2cd0b54 100644
 --- a/Tinycast/Features/AI/UI/AIChatDetailView.swift
 +++ b/Tinycast/Features/AI/UI/AIChatDetailView.swift
 @@ -85,6 +85,8 @@ struct AIChatDetailView: View {
@@ -792,7 +793,7 @@ index 58d611da..0f12418d 100644
                      ? ChatFindHighlight(
                          query: find.needle, matches: Set(occurrences.map(\.messageID)),
 diff --git a/Tinycast/Features/AI/UI/AIChatState.swift b/Tinycast/Features/AI/UI/AIChatState.swift
-index 1bb2ae15..443d5aa0 100644
+index 129a59e5..c678f360 100644
 --- a/Tinycast/Features/AI/UI/AIChatState.swift
 +++ b/Tinycast/Features/AI/UI/AIChatState.swift
 @@ -28,6 +28,8 @@ final class AIChatState {
@@ -823,7 +824,7 @@ index 1bb2ae15..443d5aa0 100644
      /// The chat's own route from now on; a saved chat records it at once, a new one on first send.
      func setModel(_ model: AIModelSelection) {
          session.model = model
-@@ -331,6 +345,9 @@ final class AIChatState {
+@@ -332,6 +346,9 @@ final class AIChatState {
          isStreaming = false
          isThinking = false
          replyTask = nil
@@ -834,10 +835,10 @@ index 1bb2ae15..443d5aa0 100644
      }
  
 diff --git a/Tinycast/Features/AI/UI/AIScreen.swift b/Tinycast/Features/AI/UI/AIScreen.swift
-index 53aad0ae..cd95c148 100644
+index 6f8d10c9..8f0cf0ee 100644
 --- a/Tinycast/Features/AI/UI/AIScreen.swift
 +++ b/Tinycast/Features/AI/UI/AIScreen.swift
-@@ -176,7 +176,9 @@ struct AIScreen: PaletteScreen {
+@@ -187,7 +187,9 @@ struct AIScreen: PaletteScreen {
                  availability: { chatCoordinator.availability(for: chat) },
                  onConfigure: chatCoordinator.showSettings,
                  onAppear: chatCoordinator.prepareForChat,
@@ -848,7 +849,7 @@ index 53aad0ae..cd95c148 100644
      }
  }
  
-@@ -187,6 +189,7 @@ private struct AIChatView: View {
+@@ -198,6 +200,7 @@ private struct AIChatView: View {
      let onConfigure: () -> Void
      let onAppear: () -> Void
      let onChoose: (String) -> Void
@@ -856,7 +857,7 @@ index 53aad0ae..cd95c148 100644
  
      var body: some View {
          Group {
-@@ -203,7 +206,8 @@ private struct AIChatView: View {
+@@ -214,7 +217,8 @@ private struct AIChatView: View {
                      status: chat.liveStatus,
                      usage: chat.usage,
                      surface: .palette,
@@ -867,7 +868,7 @@ index 53aad0ae..cd95c148 100644
          }
          .onAppear(perform: onAppear)
 diff --git a/Tinycast/Features/AI/UI/ChatTranscriptView.swift b/Tinycast/Features/AI/UI/ChatTranscriptView.swift
-index 21968a8a..56b6e778 100644
+index a43f5de4..2583823a 100644
 --- a/Tinycast/Features/AI/UI/ChatTranscriptView.swift
 +++ b/Tinycast/Features/AI/UI/ChatTranscriptView.swift
 @@ -24,6 +24,8 @@ struct ChatTranscriptView: View {
@@ -939,10 +940,10 @@ index 21968a8a..56b6e778 100644
      @Environment(\.metrics) private var metrics
      let action: () -> Void
 diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-index 93d11f07..03ab4ff9 100644
+index 377b463c..31c3e532 100644
 --- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
 +++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-@@ -176,15 +176,6 @@ enum SettingsBackupCoverage {
+@@ -181,15 +181,6 @@ enum SettingsBackupCoverage {
          AppSettingsKey.quickActionsEnabled.rawValue:
              "Grants keystroke delivery into other apps through the Accessibility permission, and a "
              + "flag that grants a capability is never carried by a backup.",
@@ -959,19 +960,19 @@ index 93d11f07..03ab4ff9 100644
              "Custom model instructions change transformed results and must not move unseen.",
          AppSettingsKey.quickActionLanguage.rawValue:
 diff --git a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
-index 7f830313..1c088d02 100644
+index c65e9e7e..f4ff4aef 100644
 --- a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
 +++ b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
-@@ -26,20 +26,8 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
+@@ -29,20 +29,8 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
          }
      }
  
 -    var progressTitle: String {
 -        switch self {
--        case .fixGrammar: return "Fixing Grammar…"
--        case .rewrite: return "Rewriting…"
--        case .translate: return "Translating…"
--        case .summarize: return "Summarizing…"
+-        case .fixGrammar: return String(localized: "Fixing Grammar…")
+-        case .rewrite: return String(localized: "Rewriting…")
+-        case .translate: return String(localized: "Translating…")
+-        case .summarize: return String(localized: "Summarizing…")
 -        }
 -    }
 -
@@ -1205,7 +1206,7 @@ index ad25060e..00000000
 -    }
 -}
 diff --git a/Tinycast/Features/QuickActions/Service/QuickActionRunner.swift b/Tinycast/Features/QuickActions/Service/QuickActionRunner.swift
-index 22338055..d646c2b9 100644
+index 5e4f6425..52413d64 100644
 --- a/Tinycast/Features/QuickActions/Service/QuickActionRunner.swift
 +++ b/Tinycast/Features/QuickActions/Service/QuickActionRunner.swift
 @@ -1,6 +1,6 @@
@@ -1244,7 +1245,7 @@ index 22338055..d646c2b9 100644
 -        }
 -        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 -        guard !trimmed.isEmpty else {
--            throw AIProviderError.responseFailed("The model returned nothing.")
+-            throw AIProviderError.responseFailed(String(localized: "The model returned nothing."))
 -        }
 -        return trimmed
 -    }
@@ -1259,7 +1260,7 @@ index 22338055..d646c2b9 100644
 -    }
  }
 diff --git a/Tinycast/Features/QuickActions/Settings/CustomQuickActionEditorPanel.swift b/Tinycast/Features/QuickActions/Settings/CustomQuickActionEditorPanel.swift
-index 1d54c6e7..5365ce1b 100644
+index eb6dd309..5a1bd278 100644
 --- a/Tinycast/Features/QuickActions/Settings/CustomQuickActionEditorPanel.swift
 +++ b/Tinycast/Features/QuickActions/Settings/CustomQuickActionEditorPanel.swift
 @@ -13,7 +13,6 @@ struct CustomQuickActionEditorPanel: View {
@@ -1271,8 +1272,8 @@ index 1d54c6e7..5365ce1b 100644
      @State private var showingIconPicker = false
  
 @@ -29,19 +28,18 @@ struct CustomQuickActionEditorPanel: View {
-     private static let placeholder =
-         "Make the text more concise, keeping the writer's voice and meaning."
+     private static let placeholder = String(
+         localized: "Make the text more concise, keeping the writer's voice and meaning.")
  
 -    init(request: CustomQuickActionEditRequest, model: AIModelSelection?) {
 +    init(request: CustomQuickActionEditRequest) {
@@ -1301,7 +1302,7 @@ index 1d54c6e7..5365ce1b 100644
              if let failure {
                  Text(failure)
                      .font(.callout)
-@@ -154,9 +150,9 @@ struct CustomQuickActionEditorPanel: View {
+@@ -156,9 +152,9 @@ struct CustomQuickActionEditorPanel: View {
              createdAt: existing?.createdAt ?? Date())
          do {
              if existing == nil {
@@ -1315,7 +1316,7 @@ index 1d54c6e7..5365ce1b 100644
          } catch {
 diff --git a/Tinycast/Features/QuickActions/Settings/QuickActionModelPicker.swift b/Tinycast/Features/QuickActions/Settings/QuickActionModelPicker.swift
 deleted file mode 100644
-index bd173980..00000000
+index 29ad3b4c..00000000
 --- a/Tinycast/Features/QuickActions/Settings/QuickActionModelPicker.swift
 +++ /dev/null
 @@ -1,22 +0,0 @@
@@ -1332,7 +1333,7 @@ index bd173980..00000000
 -            HStack(spacing: Theme.Spacing.lg) {
 -                AIModelSelectionRows(
 -                    selection: selection,
--                    inheritedTitle: "Same as Quick Actions",
+-                    inheritedTitle: String(localized: "Same as Quick Actions"),
 -                    select: { selection = $0 },
 -                    modelLabel: { Text("Model") },
 -                    effortLabel: { Text("Reasoning effort") })
@@ -1494,7 +1495,7 @@ index aac1476d..37c19777 100644
 -    }
  }
 diff --git a/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift b/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift
-index 00148f20..2b3737da 100644
+index f3e496df..2b3737da 100644
 --- a/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift
 +++ b/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift
 @@ -1,13 +1,12 @@
@@ -1640,7 +1641,7 @@ index 00148f20..2b3737da 100644
  
 -    private func subtitle(for action: QuickAction) -> String? {
 -        let details = [
--            action.alwaysPreviews ? "Always shown in a panel" : nil,
+-            action.alwaysPreviews ? String(localized: "Always shown in a panel") : nil,
 -            store.modelOverride(for: action).map(routeTitle)
 -        ].compactMap(\.self)
 -        return details.isEmpty ? nil : details.joined(separator: " · ")
@@ -1748,7 +1749,7 @@ index 00148f20..2b3737da 100644
                      }
                      .buttonStyle(.modalAction(.primary))
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index 3e778bfc..f93f4186 100644
+index 72e69dbe..54f527db 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 @@ -1,7 +1,7 @@
@@ -1810,7 +1811,7 @@ index 3e778bfc..f93f4186 100644
          loadLanguages()
      }
  
-@@ -108,19 +117,14 @@ final class QuickActionCoordinator {
+@@ -111,19 +120,14 @@ final class QuickActionCoordinator {
  
      // MARK: - The reader's own actions
  
@@ -1835,7 +1836,7 @@ index 3e778bfc..f93f4186 100644
      }
  
      func setPreviewsResult(_ previews: Bool, id: UUID) {
-@@ -160,7 +164,6 @@ final class QuickActionCoordinator {
+@@ -163,7 +167,6 @@ final class QuickActionCoordinator {
          let hotKeyAction = HotKeyAction.quickAction(id: action.id)
          if hotKeys.recordingAction == hotKeyAction { hotKeys.recordingAction = nil }
          hotKeys.setBinding(nil, for: hotKeyAction)
@@ -1843,7 +1844,7 @@ index 3e778bfc..f93f4186 100644
          favorites.remove(keys: [action.entryID])
          visibility.removeItemKeys([action.entryID])
          aliases.removeKeys([action.entryID])
-@@ -174,6 +177,14 @@ final class QuickActionCoordinator {
+@@ -177,6 +180,14 @@ final class QuickActionCoordinator {
  
      func run(_ action: QuickAction) {
          guard settings.quickActionsEnabled, running == nil else { return }
@@ -1858,7 +1859,7 @@ index 3e778bfc..f93f4186 100644
          let source =
              paletteCoordinator.isVisible
              ? InjectionTarget.behindPalette(
-@@ -198,8 +209,6 @@ final class QuickActionCoordinator {
+@@ -201,8 +212,6 @@ final class QuickActionCoordinator {
          generation += 1
          running?.cancel()
          running = nil
@@ -1867,7 +1868,7 @@ index 3e778bfc..f93f4186 100644
      }
  
      /// The generation stops a superseded task from clearing the newer handle as it finishes.
-@@ -244,12 +253,18 @@ final class QuickActionCoordinator {
+@@ -247,12 +256,18 @@ final class QuickActionCoordinator {
              return
          }
          guard !Task.isCancelled else { return }
@@ -1892,7 +1893,7 @@ index 3e778bfc..f93f4186 100644
      }
  
      private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
-@@ -314,58 +329,109 @@ final class QuickActionCoordinator {
+@@ -319,58 +334,109 @@ final class QuickActionCoordinator {
          }
      }
  
@@ -2043,7 +2044,7 @@ index 3e778bfc..f93f4186 100644
      }
  
      /// A replacement that never lands would otherwise lose the reply, so the clipboard keeps it.
-@@ -393,34 +459,6 @@ final class QuickActionCoordinator {
+@@ -398,34 +464,6 @@ final class QuickActionCoordinator {
          }
      }
  
@@ -2080,7 +2081,7 @@ index 3e778bfc..f93f4186 100644
          guard !stored.isEmpty else { return Locale.current.language }
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift b/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
 deleted file mode 100644
-index 7880a57e..00000000
+index a6272c30..00000000
 --- a/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
 +++ /dev/null
 @@ -1,63 +0,0 @@
@@ -2088,7 +2089,7 @@ index 7880a57e..00000000
 -import Carbon.HIToolbox
 -
 -/// Keys go through `sendEvent`, so ↵, ⌘C and Esc need no focused subview to reach the panel.
--final class QuickActionPanel: NSPanel {
+-final class QuickActionPanel: NSPanel, AnimatedPanel {
 -    enum Key {
 -        case replace
 -        case copy
@@ -2114,7 +2115,7 @@ index 7880a57e..00000000
 -        isOpaque = false
 -        backgroundColor = .clear
 -        hasShadow = true
--        animationBehavior = .none
+-        followMotion()
 -        isReleasedWhenClosed = false
 -        isRestorable = false
 -        contentView = content
@@ -2149,10 +2150,10 @@ index 7880a57e..00000000
 -}
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift b/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
 deleted file mode 100644
-index bce18f4a..00000000
+index 0f5e6738..00000000
 --- a/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
 +++ /dev/null
-@@ -1,133 +0,0 @@
+@@ -1,131 +0,0 @@
 -import AppKit
 -import SwiftUI
 -
@@ -2191,7 +2192,7 @@ index bce18f4a..00000000
 -                onRetranslate: { [weak self] in self?.onRetranslate?($0) },
 -                onOpenLanguageSettings: { [weak self] in self?.openLanguageSettings() },
 -                onHeight: { [weak self] in self?.resize(toHeight: $0) }
--            ).environment(\.metrics, metrics))
+-            ).environment(\.metrics, metrics).motionScope())
 -        // The controller owns the frame; without this the top edge drifts as the reply grows.
 -        hosting.sizingOptions = []
 -        // Its tallest, so the first frame is never short; the view reports the real height at once.
@@ -2211,10 +2212,8 @@ index bce18f4a..00000000
 -        self.panel = panel
 -        placeAtCursor(panel)
 -        // Non-activating like the palette: key focus without pulling the reader out of their app.
--        panel.fadeIn(duration: Theme.Duration.enter) {
--            panel.makeKeyAndOrderFront(nil)
--            panel.orderFrontRegardless()
--        }
+-        panel.makeKeyAndOrderFront(nil)
+-        panel.orderFrontRegardless()
 -    }
 -
 -    func dismiss() {
@@ -2225,7 +2224,7 @@ index bce18f4a..00000000
 -        onRetranslate = nil
 -        closing.delegate = nil
 -        closing.onKey = nil
--        closing.fadeOut(duration: Theme.Duration.exit)
+-        closing.orderOut(nil)
 -    }
 -
 -    private func copyOutput() {
@@ -2358,10 +2357,10 @@ index 2df4e195..00000000
 -}
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift b/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
 deleted file mode 100644
-index 8ed4f772..00000000
+index a6bcf86c..00000000
 --- a/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
 +++ /dev/null
-@@ -1,210 +0,0 @@
+@@ -1,209 +0,0 @@
 -import SwiftUI
 -
 -struct QuickActionResultView: View {
@@ -2405,7 +2404,6 @@ index 8ed4f772..00000000
 -        .background(Theme.Colors.panelScrim)
 -        .background(GlassEffectView())
 -        .clipShape(RoundedRectangle(cornerRadius: metrics.radius.dialog, style: .continuous))
--        .panelEntrance()
 -        // Reported, not measured: the frame above is ours, so reading it back would feed itself.
 -        .onChange(of: panelHeight, initial: true) { onHeight(panelHeight) }
 -    }
@@ -2573,10 +2571,10 @@ index 8ed4f772..00000000
 -    }
 -}
 diff --git a/Tinycast/Features/Settings/AppSettingsKey.swift b/Tinycast/Features/Settings/AppSettingsKey.swift
-index 9f034d3e..908fbef7 100644
+index 394fb0a9..8ce96e4f 100644
 --- a/Tinycast/Features/Settings/AppSettingsKey.swift
 +++ b/Tinycast/Features/Settings/AppSettingsKey.swift
-@@ -96,9 +96,6 @@ enum AppSettingsKey: String, CaseIterable {
+@@ -99,9 +99,6 @@ enum AppSettingsKey: String, CaseIterable {
      case mcpEnabled = "mcpEnabled"
      case mcpServers = "mcpServers"
      case quickActionsEnabled = "quickActionsEnabled"
@@ -2587,10 +2585,10 @@ index 9f034d3e..908fbef7 100644
      case quickActionLanguage = "quickActionLanguage"
      case dictationEnabled = "dictationEnabled"
 diff --git a/Tinycast/Features/Settings/SettingsAnchor.swift b/Tinycast/Features/Settings/SettingsAnchor.swift
-index bbf720f1..c30ad985 100644
+index 2e6b37db..d0d306c1 100644
 --- a/Tinycast/Features/Settings/SettingsAnchor.swift
 +++ b/Tinycast/Features/Settings/SettingsAnchor.swift
-@@ -51,7 +51,6 @@ extension SettingsAnchor {
+@@ -60,7 +60,6 @@ extension SettingsAnchor {
  
      static let quickActionsQuickActions = Self(tab: .quickActions, title: "Quick Actions")
      static let quickActionsActions = Self(tab: .quickActions, title: "Actions")
@@ -2599,10 +2597,10 @@ index bbf720f1..c30ad985 100644
  
      static let dictationDictation = Self(tab: .dictation, title: "Dictation")
 diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
-index b3676c7b..5a35c4c7 100644
+index 8f39a382..f46a2c59 100644
 --- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
 +++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
-@@ -385,9 +385,6 @@ enum SettingsSearchCatalog {
+@@ -400,9 +400,6 @@ enum SettingsSearchCatalog {
          .init(
              .quickActionsActions, "Add Quick Action",
              keywords: ["new", "custom", "prompt", "instructions", "alias"]),
@@ -2613,7 +2611,7 @@ index b3676c7b..5a35c4c7 100644
              .quickActionsTranslate, "Translate to",
              keywords: ["language", "locale"])
 diff --git a/docs/features/ai.md b/docs/features/ai.md
-index f67276e7..5d436448 100644
+index 271edeab..03af81dc 100644
 --- a/docs/features/ai.md
 +++ b/docs/features/ai.md
 @@ -4,7 +4,8 @@ Tinycast has one app-wide provider layer for features that need text generation.
@@ -2635,7 +2633,7 @@ index f67276e7..5d436448 100644
    every streaming reply and drops both transcripts, but touches neither the saved conversations in
    `ai-chats.sqlite3` nor a Keychain key. `aiEnabled` is excluded from settings backups like every
    other AI key, so an import can never arm a feature it cannot configure.
-@@ -170,8 +171,8 @@ bottom with the model picker. ⌘J hands a Quick AI conversation to the window.
+@@ -176,8 +177,8 @@ bottom with the model picker. ⌘J hands a Quick AI conversation to the window.
    exactly as it did and `AIChatState` reduces one more pair of events. Codex and the Claude command
    run that loop themselves, so `AIModelSelection.runsItsOwnTools` hands them an
    `AIToolServerSession` instead of a wrapper — same servers, same trust, same rows, and the same
@@ -2646,7 +2644,7 @@ index f67276e7..5d436448 100644
    the loop — what the transcript keeps is a `ChatToolUse` record, pinned at a text offset like a
    search, so `boundedContext` can never separate a stored call from its result.
  - **Every HTTP request uses a private ephemeral `URLSession` with no URL cache.** Provider traffic must
-@@ -389,10 +390,9 @@ messages in the OpenAI message array.
+@@ -402,10 +403,9 @@ messages in the OpenAI message array.
  `AIProviderFactory` resolves the selection, validates an API endpoint, reads an API key at the last
  possible moment and returns `AppleIntelligenceProvider`, `HTTPAIProvider`, `CodexInstalledProvider`
  or `InstalledCLIProvider`. A consumer should hold neither settings nor credentials itself. The
@@ -2659,7 +2657,7 @@ index f67276e7..5d436448 100644
  sections, ordering and model labels therefore cannot drift between the panes. Each route stores its
  own complete `AIModelSelection`, including the selected reasoning effort for installed models and
  OpenRouter models that offer one.
-@@ -403,8 +403,8 @@ resumes rather than being replayed as one blob. Foundation Models reports the wh
+@@ -416,8 +416,8 @@ resumes rather than being replayed as one blob. Foundation Models reports the wh
  every snapshot while every other transport speaks in deltas; `AppleIntelligenceDelta` is the one place
  that difference lives. Guardrails are a construction parameter rather than a constant: chat writes
  fresh prose, where the default filter belongs, and a later text-rewrite feature transforms text the
@@ -2670,7 +2668,7 @@ index f67276e7..5d436448 100644
  a debug description written for a log, so each case maps to a plain sentence instead.
  
  ## Chat surfaces
-@@ -557,8 +557,8 @@ and the Actions menu's own chords, and dies with the window.
+@@ -570,8 +570,8 @@ and the Actions menu's own chords, and dies with the window.
    `DictationCoordinator.toggle(into:)` for this field whatever the shortcut's hold-or-toggle mode or
    the window's focus; a second click or Return finishes, Escape cancels, and the transcript goes in
    at the caret, never to the clipboard. With no model installed the click opens Settings → Dictation.
@@ -2681,7 +2679,7 @@ index f67276e7..5d436448 100644
    Switching chats or closing the window cancels dictation targeting its composer before the editor
    is rebound or torn down; a queued transcript cannot land in another chat or a closed editor.
  
-@@ -644,7 +644,7 @@ window, and every chat action either surface sends — is the nineteenth feature
+@@ -657,7 +657,7 @@ window, and every chat action either surface sends — is the nineteenth feature
  - With it switched off in System Settings, the pane says so and chat says so; neither moves the
    reader onto a configured API connection.
  - Install and sign in to each supported command outside Tinycast, choose one of its discovered models,
@@ -2690,7 +2688,7 @@ index f67276e7..5d436448 100644
  - Sign out of an installed command, press Check Again, and confirm its models leave both pickers while
    the stored selection is repaired according to the normal routing rule.
  - On Codex and on the Claude command, with an MCP server enabled, a question answered with a tool
-@@ -761,8 +761,8 @@ search context for follow-ups. A successful reply allows the next request to con
+@@ -774,8 +774,8 @@ search context for follow-ups. A successful reply allows the next request to con
  only when its prior transcript, model, instructions and web-search permission still match. A
  regenerated, failed or cancelled reply, a trimmed transcript or a changed configuration starts a
  fresh thread and injects the supplied user/assistant history. Turns with attachments are not retained,
@@ -2701,7 +2699,7 @@ index f67276e7..5d436448 100644
  helper clears every retained thread.
  
  It streams agent-message deltas, plus `item/started` for the reasoning and web-search items that feed
-@@ -926,7 +926,7 @@ Settings → AI is a normal grouped `Form` inside Tinycast's existing Settings w
+@@ -939,7 +939,7 @@ Settings → AI is a normal grouped `Form` inside Tinycast's existing Settings w
  section owns the feature switch and the **Providers → Manage…** action, and **Default model** below
  it picks the app-wide route and its reasoning effort. A
  pick in Quick AI's header or the AI Chat composer sets that chat's model and moves this default with
@@ -2711,10 +2709,10 @@ index f67276e7..5d436448 100644
  Provider management opens as an editor panel laid out like Mail's Accounts: every route in a list on
  the left — **On This Mac**, **Installed**, **API Connections** — each with its mark and a one-line
 diff --git a/docs/features/launcher.md b/docs/features/launcher.md
-index 1edc7c51..09d22eec 100644
+index d1f64619..654b6157 100644
 --- a/docs/features/launcher.md
 +++ b/docs/features/launcher.md
-@@ -639,8 +639,8 @@ them. **There is deliberately no `Enable Quick Actions` category toggle** either
+@@ -647,8 +647,8 @@ them. **There is deliberately no `Enable Quick Actions` category toggle** either
  `LauncherItemsSection(kind: .quickAction)` would be a second switch over rows the pane already lists.
  
  Activation hands the action to `QuickActionCoordinator.run(_:)` **without** hiding the palette first:
@@ -2726,7 +2724,7 @@ index 1edc7c51..09d22eec 100644
  ## Notes commands
  
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
-index c8c27219..ecb6363f 100644
+index fd2aebce..d904a07f 100644
 --- a/docs/features/quick-actions.md
 +++ b/docs/features/quick-actions.md
 @@ -1,117 +1,111 @@
@@ -2957,7 +2955,7 @@ index c8c27219..ecb6363f 100644
  ## Translation
  
  `TextTranslator` uses Apple's translator rather than the language model: it runs on device, costs
-@@ -162,62 +147,38 @@ source language, because `TranslationSession(installedSource:target:)` needs a c
+@@ -168,62 +153,38 @@ names is the one with no downloaded asset of its own.
  caught as plain `Error` and reported by what was asked rather than by matching its cases.
  
  **The picker offers Apple's own list, never the reader's preferred languages.** `supportedLanguages`
@@ -3052,7 +3050,7 @@ index c8c27219..ecb6363f 100644
  
  ## Reading the selection
  
-@@ -277,35 +238,32 @@ failure handler, so automatic expansion stays silent as before.
+@@ -283,39 +244,32 @@ failure handler, so automatic expansion stays silent as before.
  ### Manual sweep
  
  - Select text in Safari, Chrome, Brave, Slack, Mail, Notes, VS Code and Terminal, press Fix Grammar,
@@ -3101,6 +3099,10 @@ index c8c27219..ecb6363f 100644
 -  `quickActionModelOverrides`.
 -- Translate into a language that has not been downloaded: the panel names the language, and its
 -  button closes the panel and opens Language & Region.
+-- Download English (UK) alone, with English (US) absent, and translate English text: the panel must
+-  translate rather than call the target language missing.
+-- Translate Korean text with Korean not downloaded and the target language installed: the panel names
+-  Korean, the language that is actually missing.
  - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
 -- Harnesses: `quick-action-test` (action metadata, prompt boundaries, preview choices, routes and
 -  their repair) and
@@ -3108,10 +3110,10 @@ index c8c27219..ecb6363f 100644
 +- Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action
 +  persistence and refusal of unreadable storage).
 diff --git a/docs/testing.md b/docs/testing.md
-index 8ca217c6..e56e59a4 100644
+index e6cf01e1..20ddcafa 100644
 --- a/docs/testing.md
 +++ b/docs/testing.md
-@@ -160,7 +160,6 @@ If a change touches anything in the right column, the harness on the left is man
+@@ -176,7 +176,6 @@ If a change touches anything in the right column, the harness on the left is man
  | `ext-icon-test` | `Extensions/Service/ExtensionIconCache.swift` — artwork sizing and its fallback |
  | `icon-cache-test` | `Platform/Images/IconCache.swift` — row sizing at 1×/2×, warm reuse, stamp and style invalidation, bitmap release, fitted geometry across all 256 alpha values, and that a row icon draws identically to the 96px one |
  | `entry-icon-test` | `EntryIcon` — that each case draws, caches and prints apart from the others, and that a moved `FileIconStamp` retires the bitmap decoded before it |
@@ -3119,7 +3121,7 @@ index 8ca217c6..e56e59a4 100644
  | `settings-backup-test` | `Settings/AppSettingsKey.swift`, `Backup/Model/SettingsBackupCoverage.swift` |
  | `settings-file-test` | `Settings/Model/` and `Settings/Service/` — key paths, value tokens, the printer and parser, and the repository's import, replace, save, reload and symlink handling on a scratch folder |
  | `window-file-test` | `WindowManagement/Model/WindowManagementFileFormat.swift` — command shortcuts, custom sizes, layouts and rooms as settings.json spells them, hand edits and bad records |
-@@ -283,10 +282,6 @@ swiftc -O -swift-version 6 Tinycast/Features/Calculator/Model/*.swift \
+@@ -299,10 +298,6 @@ swiftc -O -swift-version 6 Tinycast/Features/Calculator/Model/*.swift \
  /tmp/calc-performance --cold "10kg to lb"   # first query, including catalog decode
  ```
  
@@ -3131,10 +3133,10 @@ index 8ca217c6..e56e59a4 100644
  fixtures. It reports wall and process CPU time as JSON for modern and legacy formats, including
  32/1,000/10,000 durable files, rejected-input controls and an uncapped-reader control that guards
 diff --git a/docs/ui.md b/docs/ui.md
-index d002662b..a193b557 100644
+index b2200fed..57811c9c 100644
 --- a/docs/ui.md
 +++ b/docs/ui.md
-@@ -66,7 +66,7 @@ Add a token rather than a magic number when introducing a new value.
+@@ -76,7 +76,7 @@ Add a token rather than a magic number when introducing a new value.
  ### Interface Size (`InterfaceMetrics`)
  
  `AppSettings.interfaceSize` scales the palette and the surfaces that float with it — the ⌘K menu, the
@@ -3143,7 +3145,7 @@ index d002662b..a193b557 100644
  Support, Update, About and Notes never scale.
  
  `DesignSystem/InterfaceMetrics.swift` stores **only a scale** and derives every value from the `Theme`
-@@ -581,9 +581,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
+@@ -588,9 +588,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
    outcome lands at a glance before the sentence is read. Auto-dismisses after
    `Duration.messageHUD` (2.4s) — longer than the volume box, since a sentence needs reading time and a
    level only needs a glance — and a repeat call replaces rather than stacks.
@@ -3156,7 +3158,7 @@ index d002662b..a193b557 100644
    than a tone, which is why `MessageHUDView.Accessory` exists — a tone says how something *went*, and
    nothing has gone anywhere yet. When `onCancel` is provided, hovering over the pill lights it up,
    turns the spinner into an `xmark`, and clicking anywhere on the pill cancels the in-flight task.
-@@ -737,7 +737,7 @@ system-drawn and a pane reads exactly as macOS System Settings does.
+@@ -746,7 +746,7 @@ system-drawn and a pane reads exactly as macOS System Settings does.
    **`FeatureSwitchSection`** (a feature's master switch plus its launcher-visibility companion),
    **`SettingsFilterField`** (the filter row above a long list), **`launcherVisibilityHelp()`**, and the
    Settings editor header, fields and surface. `ModalActionButtonStyle.swift` keeps every borderless surface's actions on one

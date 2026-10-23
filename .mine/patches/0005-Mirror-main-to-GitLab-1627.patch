@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 16:33:31 +0600
+Subject: [PATCH] Mirror main to GitLab (#1627)
+
+Pushes main to gitlab.com/abue-ammar/tinycast on every push, using the GITLAB_TOKEN secret. Never force-pushes, so a rewritten main on GitHub cannot overwrite the backup. An expired token fails the run.
+---
+ .github/workflows/gitlab-mirror.yml | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+ create mode 100644 .github/workflows/gitlab-mirror.yml
+
+diff --git a/.github/workflows/gitlab-mirror.yml b/.github/workflows/gitlab-mirror.yml
+new file mode 100644
+index 00000000..2ef51f21
+--- /dev/null
++++ b/.github/workflows/gitlab-mirror.yml
+@@ -0,0 +1,27 @@
++name: GitLab mirror
++
++# GITLAB_TOKEN is a GitLab token with write_repository; when it expires the push fails, so renew it.
++on:
++  push:
++    branches: [main]
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: gitlab-mirror
++  cancel-in-progress: false
++
++jobs:
++  push:
++    if: github.repository == 'abue-ammar/tinycast'
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v7
++        with:
++          fetch-depth: 0
++      - name: Push main to GitLab
++        env:
++          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
++        run: git push "https://oauth2:${GITLAB_TOKEN}@gitlab.com/abue-ammar/tinycast.git" HEAD:refs/heads/main
+-- 
+2.56.0
+

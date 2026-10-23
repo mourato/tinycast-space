@@ -1,0 +1,1182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 06:16:38 +0600
+Subject: [PATCH] Open the launcher, Notes, dialogs, Settings editors and menus
+ with the native window bounce (#1643)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* Open the launcher and Notes with the native window bounce
+
+The palette and the Notes editor set animationBehavior to .none, so they
+appeared instantly while Settings, AI Chat and Onboarding open with
+AppKit's document-window animation. Both now use .documentWindow. The
+note switcher and heading menu stay instant.
+
+* Open dialogs and Settings editors with the native window bounce
+
+DialogPanel and the Settings editor panel now use .documentWindow. This
+replaces their custom 3pt slide and fade, the dialog's fadeOut, and the
+editor's switch to .utilityWindow. Theme.DialogMotion goes with them.
+The dim layers behind both keep their fades.
+
+* Open palette menus with the native window bounce
+
+MenuPanel now uses .documentWindow, so the ⌘K Actions menu, the menu
+circle, header and input menus, and extension menus open and close with
+AppKit's animation. The scale, settle and fade motion is gone, with
+MenuPanelMotion, the extension's restated copy, the motion tokens, the
+canvas geometry and its harness cases. The close animation keeps
+drawing the panel after orderOut, so the hosted tree is released once
+the panel's occlusion state reports it off screen.
+
+* Open Camera, Quick Action, Notes popups and Dictation natively
+
+The camera panels and the Quick Action panel drop their fade and SwiftUI
+scale for .documentWindow. The Notes switcher, heading menu and the
+Dictation pill had no animation and now use it too. A new
+orderOutAnimated(then:) runs its callback once the close animation has
+left the screen, so the camera still stops only after its panel is
+gone; the menu panel's content release moves onto it.
+---
+ Tests/palette-placement-test.swift            |  21 --
+ .../Interaction/PanelTransition.swift         |  52 ++++-
+ Tinycast/DesignSystem/Theme.swift             |  17 --
+ .../Calendar/UI/CameraPreviewController.swift |  12 +-
+ .../Calendar/UI/CameraPreviewView.swift       |   1 -
+ .../Camera/UI/CameraCoordinator.swift         |  12 +-
+ Tinycast/Features/Camera/UI/CameraPanel.swift |   2 +-
+ Tinycast/Features/Camera/UI/CameraView.swift  |   1 -
+ .../Dictation/UI/DictationPanel.swift         |   2 +-
+ .../UI/ExtensionCommandScreen.swift           |  24 +-
+ Tinycast/Features/Notes/UI/NotesPanel.swift   |   2 +-
+ .../QuickActions/UI/QuickActionPanel.swift    |   2 +-
+ .../UI/QuickActionPanelController.swift       |   8 +-
+ .../UI/QuickActionResultView.swift            |   1 -
+ .../Settings/SettingsEditorPresenter.swift    |  46 +---
+ Tinycast/Palette/MenuPanel.swift              | 212 ++----------------
+ Tinycast/Palette/PalettePanel.swift           |   2 +-
+ Tinycast/Palette/PalettePlacement.swift       |  20 --
+ Tinycast/Palette/PaletteScreen.swift          |  33 +--
+ Tinycast/Palette/RootPaletteView.swift        |   6 +-
+ .../Windows/Dialog/DialogController.swift     |  27 +--
+ Tinycast/Windows/Dialog/DialogPanel.swift     |   2 +-
+ docs/features/calendar.md                     |   4 +-
+ docs/features/camera.md                       |   4 +-
+ docs/features/palette.md                      |  15 +-
+ docs/ui.md                                    |  28 +--
+ 26 files changed, 130 insertions(+), 426 deletions(-)
+
+diff --git a/Tests/palette-placement-test.swift b/Tests/palette-placement-test.swift
+index 474a1c36..739a4289 100644
+--- a/Tests/palette-placement-test.swift
++++ b/Tests/palette-placement-test.swift
+@@ -303,27 +303,6 @@ struct PalettePlacementTests {
+             visibleFrame: CGRect(x: 0, y: 0, width: 1000, height: 800),
+             inset: inset, headerExtent: headerExtent)
+         expect(clamped.maxX, 1000 - inset, "a leading menu clears the display's right edge")
+-
+-        let scale = Theme.MenuMotion.maximumScale
+-        let leadingCanvas = MenuPanelCorner.bottomLeading.scaledFrame(leading, by: scale, parentFrame: parent)
+-        let trailingCanvas = MenuPanelCorner.bottomTrailing.scaledFrame(
+-            trailing, by: scale, parentFrame: parent)
+-        let headerCanvas = MenuPanelCorner.belowHeaderTrailing.scaledFrame(
+-            header, by: scale, parentFrame: parent)
+-        let inputCanvas = controlCorner.scaledFrame(input, by: scale, parentFrame: parent)
+-        let inputLeadingCanvas = inputLeadingCorner.scaledFrame(inputLeading, by: scale, parentFrame: parent)
+-        let flippedCanvas = bottomControl.scaledFrame(flipped, by: scale, parentFrame: parent)
+-        expect(leadingCanvas.minX, leading.minX, "left expansion keeps its leading edge fixed")
+-        expect(leadingCanvas.minY, leading.minY, "left expansion keeps its bottom edge fixed")
+-        expect(trailingCanvas.maxX, trailing.maxX, "right expansion keeps its trailing edge fixed")
+-        expect(trailingCanvas.minY, trailing.minY, "right expansion keeps its bottom edge fixed")
+-        expect(headerCanvas.maxX, header.maxX, "header expansion keeps its trailing edge fixed")
+-        expect(headerCanvas.maxY, header.maxY, "header expansion keeps its top edge fixed")
+-        expect(inputCanvas.maxX, input.maxX, "input expansion keeps its trailing edge fixed")
+-        expect(inputCanvas.maxY, input.maxY, "input expansion keeps its top edge fixed")
+-        expect(inputLeadingCanvas.minX, inputLeading.minX, "leading input expansion keeps its left edge")
+-        expect(inputLeadingCanvas.maxY, inputLeading.maxY, "leading input expansion keeps its top edge")
+-        expect(flippedCanvas.minY, flipped.minY, "a flipped input expansion grows away from its field")
+     }
+ 
+     // MARK: - The tokens these rules depend on
+diff --git a/Tinycast/DesignSystem/Interaction/PanelTransition.swift b/Tinycast/DesignSystem/Interaction/PanelTransition.swift
+index a97cdc10..c40af783 100644
+--- a/Tinycast/DesignSystem/Interaction/PanelTransition.swift
++++ b/Tinycast/DesignSystem/Interaction/PanelTransition.swift
+@@ -1,7 +1,7 @@
+ import AppKit
+ import SwiftUI
+ 
+-// How every borderless surface arrives and leaves, so a dialog and a HUD read alike.
++// How a borderless surface arrives and leaves.
+ 
+ extension NSWindow {
+     /// Fades the whole window, shadow included; `order` runs while still invisible.
+@@ -42,6 +42,56 @@ extension NSWindow {
+             animator().alphaValue = 1
+         }
+     }
++
++    /// AppKit's close animation keeps drawing the window after `orderOut`; `done` runs once it ends.
++    func orderOutAnimated(then done: @escaping @MainActor () -> Void) {
++        let onScreen = occlusionState.contains(.visible)
++        orderOut(nil)
++        guard onScreen else {
++            done()
++            return
++        }
++        OrderOutCompletion(done: done).arm(for: self)
++    }
++}
++
++@MainActor
++private final class OrderOutCompletion {
++    /// Longer than any close animation AppKit runs, so a missed notification still finishes.
++    private static let bound = Duration.seconds(1)
++
++    private var done: (@MainActor () -> Void)?
++    private var observer: NotificationToken?
++    private var timeout: Task<Void, Never>?
++
++    init(done: @escaping @MainActor () -> Void) {
++        self.done = done
++    }
++
++    func arm(for window: NSWindow) {
++        let token = NotificationCenter.default.addObserver(
++            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
++        ) { [self, weak window] _ in
++            MainActor.assumeIsolated {
++                guard window?.occlusionState.contains(.visible) != true else { return }
++                finish()
++            }
++        }
++        observer = NotificationToken(token, center: .default)
++        timeout = Task { [self] in
++            try? await Task.sleep(for: Self.bound)
++            finish()
++        }
++    }
++
++    private func finish() {
++        guard let done else { return }
++        self.done = nil
++        observer = nil
++        timeout?.cancel()
++        timeout = nil
++        done()
++    }
+ }
+ 
+ extension View {
+diff --git a/Tinycast/DesignSystem/Theme.swift b/Tinycast/DesignSystem/Theme.swift
+index e7e911fd..aa55a0e0 100644
+--- a/Tinycast/DesignSystem/Theme.swift
++++ b/Tinycast/DesignSystem/Theme.swift
+@@ -1,4 +1,3 @@
+-import QuartzCore
+ import SwiftUI
+ 
+ /// Central design tokens; every dark colour is the literal the forced-dark build shipped.
+@@ -329,23 +328,7 @@ enum Theme {
+         static let glide = Animation.timingCurve(0.2, 0, 0, 1, duration: Theme.Duration.roomGlide)
+     }
+ 
+-    enum DialogMotion {
+-        static let offset: CGFloat = 3
+-        static let initialOpacity: CGFloat = 0.08
+-    }
+-
+-    /// Motion owned by Tinycast's menus; extension-provided panels keep their own behavior.
+-    @MainActor
+     enum MenuMotion {
+-        static let entryScale: CGFloat = 0.94
+-        static let maximumScale: CGFloat = 1.003
+-        static let exitScaleDelta: CGFloat = 0.04
+-        static let expansionDuration: TimeInterval = 0.10
+-        static let settleDuration: TimeInterval = 0.05
+-        static let exitDuration: TimeInterval = 0.18
+-        static let expansionTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.7, 0.2, 1)
+-        static let settleTiming = CAMediaTimingFunction(controlPoints: 0.42, 0, 0.58, 1)
+-        static let exitTiming = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
+         /// Starts promptly and eases gently into the chevron's final direction.
+         static let chevronAnimation = Animation.timingCurve(
+             0.16, 1, 0.3, 1, duration: Theme.Duration.menuChevron)
+diff --git a/Tinycast/Features/Calendar/UI/CameraPreviewController.swift b/Tinycast/Features/Calendar/UI/CameraPreviewController.swift
+index 47b6b0b5..e8a2695c 100644
+--- a/Tinycast/Features/Calendar/UI/CameraPreviewController.swift
++++ b/Tinycast/Features/Calendar/UI/CameraPreviewController.swift
+@@ -34,10 +34,8 @@ final class CameraPreviewController {
+         self.panel = panel
+         panel.centerOnCursorScreen()
+         // Non-activating like the palette: key focus without pulling the user out of their app.
+-        panel.fadeIn(duration: Theme.Duration.enter) {
+-            panel.makeKeyAndOrderFront(nil)
+-            panel.orderFrontRegardless()
+-        }
++        panel.makeKeyAndOrderFront(nil)
++        panel.orderFrontRegardless()
+     }
+ 
+     private func finish(_ taken: Bool) {
+@@ -47,9 +45,9 @@ final class CameraPreviewController {
+         panel = nil
+         closing?.onAction = nil
+         continuation.resume(returning: taken)
+-        // The camera goes with the panel, not before it: tearing it down mid-fade blanks the feed.
+-        closing?.fadeOut(duration: Theme.Duration.exit) { [weak self] in
+-            // Unless a preview raised inside the fade already owns the camera.
++        // The camera goes with the panel, not before it: tearing it down mid-close blanks the feed.
++        closing?.orderOutAnimated { [weak self] in
++            // Unless a preview raised inside the close already owns the camera.
+             guard let self, !presenting else { return }
+             session.stop()
+         }
+diff --git a/Tinycast/Features/Calendar/UI/CameraPreviewView.swift b/Tinycast/Features/Calendar/UI/CameraPreviewView.swift
+index 56e1f781..504d0cc2 100644
+--- a/Tinycast/Features/Calendar/UI/CameraPreviewView.swift
++++ b/Tinycast/Features/Calendar/UI/CameraPreviewView.swift
+@@ -19,7 +19,6 @@ struct CameraPreviewView: View {
+         .background(Theme.Colors.panelScrim)
+         .background(GlassEffectView())
+         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.dialog, style: .continuous))
+-        .panelEntrance()
+     }
+ 
+     private var footer: some View {
+diff --git a/Tinycast/Features/Camera/UI/CameraCoordinator.swift b/Tinycast/Features/Camera/UI/CameraCoordinator.swift
+index b3e7dd9d..229043d7 100644
+--- a/Tinycast/Features/Camera/UI/CameraCoordinator.swift
++++ b/Tinycast/Features/Camera/UI/CameraCoordinator.swift
+@@ -39,9 +39,9 @@ final class CameraCoordinator {
+         guard let closing = panel else { return }
+         panel = nil
+         closing.onAction = nil
+-        // The camera goes with the panel, not before it: tearing it down mid-fade blanks the feed.
+-        closing.fadeOut(duration: Theme.Duration.exit) { [weak self] in
+-            // Unless a panel raised inside the fade already owns the camera.
++        // The camera goes with the panel, not before it: tearing it down mid-close blanks the feed.
++        closing.orderOutAnimated { [weak self] in
++            // Unless a panel raised inside the close already owns the camera.
+             guard let self, !opening else { return }
+             session.stop()
+         }
+@@ -79,9 +79,7 @@ final class CameraCoordinator {
+         self.panel = panel
+         panel.centerOnCursorScreen()
+         // Non-activating like the palette: key focus without pulling the user out of their app.
+-        panel.fadeIn(duration: Theme.Duration.enter) {
+-            panel.makeKeyAndOrderFront(nil)
+-            panel.orderFrontRegardless()
+-        }
++        panel.makeKeyAndOrderFront(nil)
++        panel.orderFrontRegardless()
+     }
+ }
+diff --git a/Tinycast/Features/Camera/UI/CameraPanel.swift b/Tinycast/Features/Camera/UI/CameraPanel.swift
+index 53c571d5..a66aec83 100644
+--- a/Tinycast/Features/Camera/UI/CameraPanel.swift
++++ b/Tinycast/Features/Camera/UI/CameraPanel.swift
+@@ -28,7 +28,7 @@ final class CameraPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+         isReleasedWhenClosed = false
+         isRestorable = false
+         contentView = content
+diff --git a/Tinycast/Features/Camera/UI/CameraView.swift b/Tinycast/Features/Camera/UI/CameraView.swift
+index 3658498f..878b03ba 100644
+--- a/Tinycast/Features/Camera/UI/CameraView.swift
++++ b/Tinycast/Features/Camera/UI/CameraView.swift
+@@ -15,7 +15,6 @@ struct CameraView: View {
+         .background(Theme.Colors.panelScrim)
+         .background(GlassEffectView())
+         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.dialog, style: .continuous))
+-        .panelEntrance()
+     }
+ 
+     private var isLive: Bool {
+diff --git a/Tinycast/Features/Dictation/UI/DictationPanel.swift b/Tinycast/Features/Dictation/UI/DictationPanel.swift
+index 515cc425..66b4ef74 100644
+--- a/Tinycast/Features/Dictation/UI/DictationPanel.swift
++++ b/Tinycast/Features/Dictation/UI/DictationPanel.swift
+@@ -90,7 +90,7 @@ private final class DictationPanel: NSPanel {
+         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+         hidesOnDeactivate = false
+         isReleasedWhenClosed = false
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+     }
+ 
+     override var canBecomeKey: Bool { true }
+diff --git a/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift b/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift
+index 894f3f0b..4b4e4079 100644
+--- a/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift
++++ b/Tinycast/Features/Extensions/UI/ExtensionCommandScreen.swift
+@@ -1,23 +1,5 @@
+-import QuartzCore
+ import SwiftUI
+ 
+-/// Restated here so launcher motion can change without moving an extension surface.
+-@MainActor private enum ExtensionMenuMotion {
+-    private static let entryScale: CGFloat = 0.94
+-    private static let exitScaleDelta: CGFloat = 0.04
+-
+-    static let panel = MenuPanelMotion(
+-        entryScale: entryScale,
+-        maximumScale: 1.003,
+-        exitScaleDelta: exitScaleDelta,
+-        expansionDuration: 0.10,
+-        settleDuration: 0.05,
+-        exitDuration: 0.18,
+-        expansionTiming: CAMediaTimingFunction(controlPoints: 0.2, 0.7, 0.2, 1),
+-        settleTiming: CAMediaTimingFunction(controlPoints: 0.42, 0, 0.58, 1),
+-        exitTiming: CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1))
+-}
+-
+ /// `ExtensionScreen` decides the row order; this maps `selection` 1:1 onto visible rows.
+ struct ExtensionCommandScreen: PaletteScreen {
+     let screen: ExtensionScreen
+@@ -144,8 +126,7 @@ struct ExtensionCommandScreen: PaletteScreen {
+                     topTrailingRadius: metrics.radius.menuPanel,
+                     style: .continuous
+                 ).path(in: bounds).cgPath
+-            },
+-            motion: ExtensionMenuMotion.panel)
++            })
+     }
+ 
+     func activate(at selection: Int) {
+@@ -214,8 +195,7 @@ struct ExtensionCommandScreen: PaletteScreen {
+             clipPath: { bounds, metrics, _ in
+                 RoundedRectangle(cornerRadius: metrics.radius.menuPanel, style: .continuous)
+                     .path(in: bounds).cgPath
+-            },
+-            motion: ExtensionMenuMotion.panel)
++            })
+     }
+ 
+     func body(selection: Int, scroll: ScrollIntent) -> AnyView {
+diff --git a/Tinycast/Features/Notes/UI/NotesPanel.swift b/Tinycast/Features/Notes/UI/NotesPanel.swift
+index 53a4fed0..1c98c1f2 100644
+--- a/Tinycast/Features/Notes/UI/NotesPanel.swift
++++ b/Tinycast/Features/Notes/UI/NotesPanel.swift
+@@ -32,7 +32,7 @@ final class NotesPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+         isReleasedWhenClosed = false
+         isRestorable = false
+         contentView = content
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift b/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
+index 7880a57e..5be9c738 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionPanel.swift
+@@ -28,7 +28,7 @@ final class QuickActionPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+         isReleasedWhenClosed = false
+         isRestorable = false
+         contentView = content
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift b/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
+index bce18f4a..3109cafc 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionPanelController.swift
+@@ -56,10 +56,8 @@ final class QuickActionPanelController: NSObject, NSWindowDelegate {
+         self.panel = panel
+         placeAtCursor(panel)
+         // Non-activating like the palette: key focus without pulling the reader out of their app.
+-        panel.fadeIn(duration: Theme.Duration.enter) {
+-            panel.makeKeyAndOrderFront(nil)
+-            panel.orderFrontRegardless()
+-        }
++        panel.makeKeyAndOrderFront(nil)
++        panel.orderFrontRegardless()
+     }
+ 
+     func dismiss() {
+@@ -70,7 +68,7 @@ final class QuickActionPanelController: NSObject, NSWindowDelegate {
+         onRetranslate = nil
+         closing.delegate = nil
+         closing.onKey = nil
+-        closing.fadeOut(duration: Theme.Duration.exit)
++        closing.orderOut(nil)
+     }
+ 
+     private func copyOutput() {
+diff --git a/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift b/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
+index 8ed4f772..a6bcf86c 100644
+--- a/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
++++ b/Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
+@@ -41,7 +41,6 @@ struct QuickActionResultView: View {
+         .background(Theme.Colors.panelScrim)
+         .background(GlassEffectView())
+         .clipShape(RoundedRectangle(cornerRadius: metrics.radius.dialog, style: .continuous))
+-        .panelEntrance()
+         // Reported, not measured: the frame above is ours, so reading it back would feed itself.
+         .onChange(of: panelHeight, initial: true) { onHeight(panelHeight) }
+     }
+diff --git a/Tinycast/Features/Settings/SettingsEditorPresenter.swift b/Tinycast/Features/Settings/SettingsEditorPresenter.swift
+index 7223e37b..035fdfd5 100644
+--- a/Tinycast/Features/Settings/SettingsEditorPresenter.swift
++++ b/Tinycast/Features/Settings/SettingsEditorPresenter.swift
+@@ -116,7 +116,7 @@ final class SettingsEditorPresenter: NSObject {
+             isOpaque = false
+             backgroundColor = .clear
+             hasShadow = true
+-            animationBehavior = .none
++            animationBehavior = .documentWindow
+             isMovableByWindowBackground = false
+             isReleasedWhenClosed = false
+             content.wantsLayer = true
+@@ -139,28 +139,6 @@ final class SettingsEditorPresenter: NSObject {
+             cancelHandler?()
+         }
+ 
+-        func animateEntrance(offset: CGFloat, startingOpacity: CGFloat, duration: TimeInterval) {
+-            guard let layer = contentView?.layer else { return }
+-
+-            let movement = CABasicAnimation(keyPath: "transform.translation.y")
+-            movement.fromValue = -offset
+-            movement.toValue = 0
+-            movement.duration = duration
+-
+-            let opacity = CABasicAnimation(keyPath: "opacity")
+-            opacity.fromValue = startingOpacity
+-            opacity.toValue = 1
+-            opacity.duration = duration
+-
+-            let entrance = CAAnimationGroup()
+-            entrance.animations = [movement, opacity]
+-            entrance.duration = duration
+-            entrance.timingFunction = CAMediaTimingFunction(name: .easeOut)
+-
+-            layer.add(entrance, forKey: "settingsEditorEntrance")
+-            alphaValue = 1
+-        }
+-
+         func focusFirstControl() {
+             makeKey()
+             selectNextKeyView(nil)
+@@ -295,38 +273,20 @@ final class SettingsEditorPresenter: NSObject {
+         // Its own resize too: the content sizes the panel, so a growing form must re-centre it.
+         observeResize(of: panel)
+         layout(presentation)
+-        panel.alphaValue = 0
+         parent.addChildWindow(blocker, ordered: .above)
+         parent.addChildWindow(panel, ordered: .above)
+         blocker.fadeIn(duration: Theme.Duration.dialogEnter) { blocker.orderFront(nil) }
+         panel.makeKeyAndOrderFront(nil)
+-        prepareEntrance(panel: panel)
++        focusAfterLayout(panel: panel)
+     }
+ 
+-    private func prepareEntrance(panel: Panel) {
++    private func focusAfterLayout(panel: Panel) {
+         Task { @MainActor [weak self, weak panel] in
+             await Task.yield()
+             guard let self, let panel,
+                 self.presentations.contains(where: { $0.panel === panel })
+             else { return }
+             panel.focusFirstControl()
+-            await Task.yield()
+-            guard self.presentations.contains(where: { $0.panel === panel }) else { return }
+-            animateEntrance(panel: panel)
+-        }
+-    }
+-
+-    private func animateEntrance(panel: Panel) {
+-        panel.animateEntrance(
+-            offset: Theme.DialogMotion.offset,
+-            startingOpacity: Theme.DialogMotion.initialOpacity,
+-            duration: Theme.Duration.dialogEnter)
+-        Task { @MainActor [weak self, weak panel] in
+-            try? await Task.sleep(for: .seconds(Theme.Duration.dialogEnter))
+-            guard let self, let panel,
+-                self.presentations.contains(where: { $0.panel === panel })
+-            else { return }
+-            panel.animationBehavior = .utilityWindow
+         }
+     }
+ 
+diff --git a/Tinycast/Palette/MenuPanel.swift b/Tinycast/Palette/MenuPanel.swift
+index 56bbdf2a..9ff91292 100644
+--- a/Tinycast/Palette/MenuPanel.swift
++++ b/Tinycast/Palette/MenuPanel.swift
+@@ -14,7 +14,7 @@ final class MenuPanel: NSPanel {
+             contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+             backing: .buffered, defer: false)
+         isFloatingPanel = true
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+         backgroundColor = .clear
+         isOpaque = false
+         hasShadow = true
+@@ -60,7 +60,7 @@ final class MenuPanel: NSPanel {
+ final class MenuPanelController {
+     /// The geometry `layout` last applied, as requested rather than as AppKit rounded it.
+     private struct Placement: Equatable {
+-        let canvas: CGRect
++        let frame: CGRect
+         let corner: MenuPanelCorner
+     }
+ 
+@@ -69,41 +69,27 @@ final class MenuPanelController {
+     private weak var parent: NSWindow?
+     private var clipPath: MenuPanelClipPath?
+     private var placement: Placement?
+-    private var modelScale: CGFloat = 1
+-    private var reducesMotion = false
+-    private var motion: MenuPanelMotion?
+-    private var transition: UInt64 = 0
+ 
+     var isOpen: Bool { panel?.isVisible ?? false }
+-    private(set) var isClosing = false
+ 
+     func show(
+         _ content: AnyView, corner: MenuPanelCorner, parent: NSWindow, core: AppCore,
+-        clipPath: @escaping MenuPanelClipPath, motion: MenuPanelMotion,
++        clipPath: @escaping MenuPanelClipPath,
+         onKeyDown: @escaping (NSEvent) -> Bool, onDismiss: @escaping () -> Void
+     ) {
+-        let transition = beginTransition(closing: false)
+-        self.motion = motion
+-        reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+-        modelScale = reducesMotion ? 1 : motion.entryScale
+         let panel = ensurePanel(state: core.palette)
+-        let wasVisible = panel.isVisible
+         configureCallbacks(
+             for: panel, core: core, onKeyDown: onKeyDown, onDismiss: onDismiss)
+-        panel.cancelFade()
+-        panel.alphaValue = 0
+         let root = AnyView(content.paletteEnvironment(core))
+         setContent(root, clipPath: clipPath, in: panel)
+         self.parent = parent
+         (parent as? PalettePanel)?.onDismissMenu = onDismiss
+-        panel.ignoresMouseEvents = false
+         // Open disarmed: a menu opened by click lands under the pointer, which chose no row of it.
+         core.palette.disarmHoverHighlight(pointerAt: NSEvent.mouseLocation)
+         layout(
+             corner: corner, parent: parent, metrics: core.settings.interfaceSize.metrics,
+-            resetMotion: true)
+-        if !wasVisible, panel.parent == nil { parent.addChildWindow(panel, ordered: .above) }
+-        startReveal(in: panel, transition: transition, motion: motion)
++            force: true)
++        if panel.parent == nil { parent.addChildWindow(panel, ordered: .above) }
+         panel.makeKey()
+         refreshShadow(panel)
+     }
+@@ -111,16 +97,15 @@ final class MenuPanelController {
+     /// Rebuilds the hosted tree in place: the panel keeps its window, so nothing flickers.
+     func update(
+         _ content: AnyView, corner: MenuPanelCorner, core: AppCore,
+-        clipPath: @escaping MenuPanelClipPath, motion: MenuPanelMotion
++        clipPath: @escaping MenuPanelClipPath
+     ) {
+-        guard let panel, let parent, !isClosing else { return }
+-        self.motion = motion
++        guard let panel, panel.isVisible, let parent else { return }
+         setContent(
+             AnyView(content.paletteEnvironment(core)),
+             clipPath: clipPath, in: panel)
+         layout(
+             corner: corner, parent: parent, metrics: core.settings.interfaceSize.metrics,
+-            resetMotion: false)
++            force: false)
+     }
+ 
+     private func setContent(
+@@ -138,7 +123,7 @@ final class MenuPanelController {
+         let container = NSView(frame: .zero)
+         container.addSubview(view)
+         panel.contentView = container
+-        // AppKit owns the hosting layer's first layout; let it settle before applying our anchor.
++        // AppKit owns the hosting layer's first layout; let it settle before ours.
+         panel.displayIfNeeded()
+         hosting = view
+     }
+@@ -163,94 +148,15 @@ final class MenuPanelController {
+         panel.invalidateShadow()
+     }
+ 
+-    private func startReveal(
+-        in panel: MenuPanel, transition: UInt64, motion: MenuPanelMotion
+-    ) {
+-        Task { @MainActor [weak self, weak panel] in
+-            await Task.yield()
+-            guard let self, let panel, panel.parent != nil,
+-                isCurrent(transition, closing: false)
+-            else { return }
+-            panel.displayIfNeeded()
+-            animatePanelAlpha(
+-                panel, to: 1, duration: motion.expansionDuration + motion.settleDuration,
+-                timing: motion.expansionTiming
+-            ) { [weak self, weak panel] in
+-                guard let self, let panel, isCurrent(transition, closing: false) else { return }
+-                refreshShadow(panel)
+-            }
+-            guard !reducesMotion else { return }
+-            animateScale(
+-                from: motion.entryScale,
+-                to: motion.maximumScale,
+-                duration: motion.expansionDuration,
+-                timing: motion.expansionTiming
+-            ) { [weak self, weak panel] in
+-                guard let self, let panel, panel.isVisible,
+-                    isCurrent(transition, closing: false)
+-                else { return }
+-                animateScale(
+-                    to: 1, duration: motion.settleDuration,
+-                    timing: motion.settleTiming)
+-            }
+-        }
+-    }
+-
+     func hide() {
+         (parent as? PalettePanel)?.onDismissMenu = nil
+-        guard let panel else {
+-            cancelTransitions()
+-            return
+-        }
++        guard let panel else { return }
+         panel.onKeyDown = nil
+         panel.onResignKey = nil
+         if panel.isKeyWindow { parent?.makeKey() }
+         // A hidden child must detach or AppKit restores it with its parent on the next summon.
+-        guard panel.isVisible else {
+-            cancelTransitions()
+-            detach(panel)
+-            return
+-        }
+-        guard !isClosing, let motion else { return }
+-        let transition = beginTransition(closing: true)
+-        panel.ignoresMouseEvents = true
+-        Task { @MainActor [weak self, weak panel] in
+-            // Defer until Escape's SwiftUI transaction settles, or it can absorb the animation.
+-            await Task.yield()
+-            guard let self, let panel, isCurrent(transition, closing: true)
+-            else { return }
+-            guard panel.isVisible else {
+-                finishDismissal(panel, transition: transition)
+-                return
+-            }
+-            startDismissalAnimation(in: panel, transition: transition, motion: motion)
+-        }
+-    }
+-
+-    private func finishDismissal(_ panel: MenuPanel, transition: UInt64) {
+-        guard isCurrent(transition, closing: true) else { return }
+-        isClosing = false
+-        detach(panel)
+-    }
+-
+-    private func beginTransition(closing: Bool) -> UInt64 {
+-        transition &+= 1
+-        isClosing = closing
+-        return transition
+-    }
+-
+-    private func cancelTransitions() {
+-        _ = beginTransition(closing: false)
+-    }
+-
+-    private func isCurrent(_ transition: UInt64, closing: Bool) -> Bool {
+-        self.transition == transition && isClosing == closing
+-    }
+-
+-    private func detach(_ panel: MenuPanel) {
+         panel.parent?.removeChildWindow(panel)
+-        panel.orderOut(nil)
+-        hosting?.rootView = AnyView(EmptyView())
++        panel.orderOutAnimated { [weak self] in self?.releaseHiddenContent() }
+     }
+ 
+     private func ensurePanel(state: PaletteState) -> MenuPanel {
+@@ -264,10 +170,16 @@ final class MenuPanelController {
+         return panel
+     }
+ 
++    /// A menu reopened during the close animation keeps the tree it was given.
++    private func releaseHiddenContent() {
++        guard panel?.isVisible == false else { return }
++        hosting?.rootView = AnyView(EmptyView())
++    }
++
+     private func layout(
+-        corner: MenuPanelCorner, parent: NSWindow, metrics: InterfaceMetrics, resetMotion: Bool
++        corner: MenuPanelCorner, parent: NSWindow, metrics: InterfaceMetrics, force: Bool
+     ) {
+-        guard let panel, let hosting, let motion else { return }
++        guard let panel, let hosting else { return }
+         let size = hosting.intrinsicContentSize
+         guard size.width > 0, size.height > 0 else { return }
+         // `bottomBar`'s own padding: a menu's edge must line up with the button it hangs off.
+@@ -276,102 +188,26 @@ final class MenuPanelController {
+             contentSize: size, parentFrame: parent.frame,
+             visibleFrame: parent.screen?.visibleFrame ?? parent.frame, inset: inset,
+             headerExtent: metrics.size.headerPadding + metrics.size.headerHeight)
+-        let anchor = corner.layerAnchor(for: frame, parentFrame: parent.frame)
+-        let canvas = corner.scaledFrame(frame, by: motion.maximumScale, parentFrame: parent.frame)
+-        let next = Placement(canvas: canvas, corner: corner)
+-        // Every arrow key re-pushes the tree; reconfiguring would cut the reveal short.
+-        guard resetMotion || next != placement else { return }
++        let next = Placement(frame: frame, corner: corner)
++        guard force || next != placement else { return }
+         placement = next
+-        panel.setFrame(canvas, display: true)
+-        configureHosting(
+-            contentSize: size, canvasSize: canvas.size, scale: modelScale, anchor: anchor,
+-            corner: corner, metrics: metrics)
++        panel.setFrame(frame, display: true)
++        configureHosting(contentSize: size, corner: corner, metrics: metrics)
+         refreshShadow(panel)
+     }
+ 
+-    private func startDismissalAnimation(
+-        in panel: MenuPanel, transition: UInt64, motion: MenuPanelMotion
+-    ) {
+-        guard let layer = hosting?.layer else {
+-            finishDismissal(panel, transition: transition)
+-            return
+-        }
+-        let visible = layer.presentation() ?? layer
+-        let startScale = CGFloat(visible.transform.m11)
+-        let minimumScale = motion.entryScale - motion.exitScaleDelta
+-        let targetScale =
+-            reducesMotion ? startScale : max(minimumScale, startScale - motion.exitScaleDelta)
+-        if !reducesMotion {
+-            animateScale(to: targetScale, duration: motion.exitDuration, timing: motion.exitTiming)
+-        }
+-        animatePanelAlpha(
+-            panel, to: 0, duration: motion.exitDuration, timing: motion.exitTiming
+-        ) { [weak self, weak panel] in
+-            guard let self, let panel else { return }
+-            finishDismissal(panel, transition: transition)
+-        }
+-    }
+-
+-    private func animateScale(
+-        from start: CGFloat? = nil, to target: CGFloat, duration: TimeInterval,
+-        timing: CAMediaTimingFunction, completion: (@MainActor () -> Void)? = nil
+-    ) {
+-        guard let layer = hosting?.layer else { return }
+-        let transform = CATransform3DMakeScale(target, target, 1)
+-        let animation = CABasicAnimation(keyPath: "transform")
+-        let startTransform =
+-            start.map { CATransform3DMakeScale($0, $0, 1) }
+-            ?? (layer.presentation() ?? layer).transform
+-        animation.fromValue = NSValue(caTransform3D: startTransform)
+-        animation.toValue = NSValue(caTransform3D: transform)
+-        animation.duration = duration
+-        animation.timingFunction = timing
+-
+-        modelScale = target
+-        CATransaction.begin()
+-        CATransaction.setDisableActions(true)
+-        if let completion {
+-            CATransaction.setCompletionBlock {
+-                Task { @MainActor in completion() }
+-            }
+-        }
+-        layer.transform = transform
+-        layer.add(animation, forKey: "menuScale")
+-        CATransaction.commit()
+-    }
+-
+-    private func animatePanelAlpha(
+-        _ panel: MenuPanel, to alpha: CGFloat, duration: TimeInterval,
+-        timing: CAMediaTimingFunction, completion: @escaping @MainActor () -> Void
+-    ) {
+-        NSAnimationContext.runAnimationGroup { context in
+-            context.duration = duration
+-            context.timingFunction = timing
+-            panel.animator().alphaValue = alpha
+-        } completionHandler: {
+-            MainActor.assumeIsolated { completion() }
+-        }
+-    }
+-
+     private func configureHosting(
+-        contentSize: NSSize, canvasSize: NSSize, scale: CGFloat, anchor: CGPoint,
+-        corner: MenuPanelCorner, metrics: InterfaceMetrics
++        contentSize: NSSize, corner: MenuPanelCorner, metrics: InterfaceMetrics
+     ) {
+         guard let hosting, let layer = hosting.layer, let clipPath else { return }
+         CATransaction.begin()
+         CATransaction.setDisableActions(true)
+-        layer.removeAllAnimations()
+-        layer.setAffineTransform(.identity)
+         hosting.frame = NSRect(origin: .zero, size: contentSize)
+-        layer.bounds = NSRect(origin: .zero, size: contentSize)
+-        layer.anchorPoint = anchor
+-        layer.position = CGPoint(x: canvasSize.width * anchor.x, y: canvasSize.height * anchor.y)
+         let mask = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+         mask.frame = NSRect(origin: .zero, size: contentSize)
+         mask.isGeometryFlipped = layer.isGeometryFlipped
+         mask.path = clipPath(mask.bounds, metrics, corner)
+         layer.mask = mask
+-        layer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+         CATransaction.commit()
+     }
+ }
+diff --git a/Tinycast/Palette/PalettePanel.swift b/Tinycast/Palette/PalettePanel.swift
+index bb8afdfc..9a91d383 100644
+--- a/Tinycast/Palette/PalettePanel.swift
++++ b/Tinycast/Palette/PalettePanel.swift
+@@ -271,7 +271,7 @@ final class PalettePanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+         isReleasedWhenClosed = false
+ 
+         let hosting = NSHostingView(rootView: rootView)
+diff --git a/Tinycast/Palette/PalettePlacement.swift b/Tinycast/Palette/PalettePlacement.swift
+index 263d28fe..336e667b 100644
+--- a/Tinycast/Palette/PalettePlacement.swift
++++ b/Tinycast/Palette/PalettePlacement.swift
+@@ -91,17 +91,6 @@ enum MenuPanelCorner: Equatable {
+     case belowHeaderTrailing
+     case belowControl(CGRect, trailing: Bool = true)
+ 
+-    /// The edge a menu grows from: an input menu flipped above its control grows up from it.
+-    func layerAnchor(for frame: CGRect, parentFrame: CGRect) -> CGPoint {
+-        switch self {
+-        case .bottomLeading: CGPoint(x: 0, y: 0)
+-        case .bottomTrailing: CGPoint(x: 1, y: 0)
+-        case .belowHeaderTrailing: CGPoint(x: 1, y: 1)
+-        case .belowControl(let control, let trailing):
+-            CGPoint(x: trailing ? 1 : 0, y: frame.minY >= parentFrame.maxY - control.minY ? 0 : 1)
+-        }
+-    }
+-
+     func frame(
+         contentSize: CGSize, parentFrame: CGRect, visibleFrame: CGRect,
+         inset: CGFloat, headerExtent: CGFloat
+@@ -142,13 +131,4 @@ enum MenuPanelCorner: Equatable {
+                 bounds.maxX - contentSize.width),
+             y: min(max(y, bounds.minY), bounds.maxY - contentSize.height))
+     }
+-
+-    func scaledFrame(_ frame: CGRect, by scale: CGFloat, parentFrame: CGRect) -> CGRect {
+-        let size = CGSize(width: frame.width * scale, height: frame.height * scale)
+-        let anchor = layerAnchor(for: frame, parentFrame: parentFrame)
+-        let origin = CGPoint(
+-            x: frame.minX - (size.width - frame.width) * anchor.x,
+-            y: frame.minY - (size.height - frame.height) * anchor.y)
+-        return CGRect(origin: origin, size: size)
+-    }
+ }
+diff --git a/Tinycast/Palette/PaletteScreen.swift b/Tinycast/Palette/PaletteScreen.swift
+index 0bee6d78..d9aed7b5 100644
+--- a/Tinycast/Palette/PaletteScreen.swift
++++ b/Tinycast/Palette/PaletteScreen.swift
+@@ -1,4 +1,3 @@
+-import QuartzCore
+ import SwiftUI
+ 
+ enum PaletteAxis {
+@@ -6,30 +5,6 @@ enum PaletteAxis {
+     case horizontal
+ }
+ 
+-/// Scale and timing supplied by content while the palette owns the window mechanics.
+-@MainActor struct MenuPanelMotion {
+-    let entryScale: CGFloat
+-    let maximumScale: CGFloat
+-    let exitScaleDelta: CGFloat
+-    let expansionDuration: TimeInterval
+-    let settleDuration: TimeInterval
+-    let exitDuration: TimeInterval
+-    let expansionTiming: CAMediaTimingFunction
+-    let settleTiming: CAMediaTimingFunction
+-    let exitTiming: CAMediaTimingFunction
+-
+-    static let palette = MenuPanelMotion(
+-        entryScale: Theme.MenuMotion.entryScale,
+-        maximumScale: Theme.MenuMotion.maximumScale,
+-        exitScaleDelta: Theme.MenuMotion.exitScaleDelta,
+-        expansionDuration: Theme.MenuMotion.expansionDuration,
+-        settleDuration: Theme.MenuMotion.settleDuration,
+-        exitDuration: Theme.MenuMotion.exitDuration,
+-        expansionTiming: Theme.MenuMotion.expansionTiming,
+-        settleTiming: Theme.MenuMotion.settleTiming,
+-        exitTiming: Theme.MenuMotion.exitTiming)
+-}
+-
+ typealias MenuPanelClipPath =
+     @MainActor (
+         _ bounds: CGRect, _ metrics: InterfaceMetrics, _ corner: MenuPanelCorner
+@@ -40,7 +15,6 @@ typealias MenuPanelClipPath =
+     let preferredSelection: Int?
+     let isSelectable: (Int) -> Bool
+     let clipPath: MenuPanelClipPath
+-    let motion: MenuPanelMotion
+     /// Built on demand: `moveMenu` resolves the open menu on every arrow key.
+     let view: (MenuPanelCorner) -> AnyView
+     /// Bounds-checked by the caller against `rowCount`, so a row index is always one this menu has.
+@@ -51,8 +25,7 @@ typealias MenuPanelClipPath =
+         view: @escaping (MenuPanelCorner) -> AnyView,
+         activate: @escaping (Int) -> Void,
+         isSelectable: @escaping (Int) -> Bool = { _ in true },
+-        clipPath: @escaping MenuPanelClipPath,
+-        motion: MenuPanelMotion
++        clipPath: @escaping MenuPanelClipPath
+     ) {
+         self.rowCount = rowCount
+         self.preferredSelection = preferredSelection
+@@ -60,7 +33,6 @@ typealias MenuPanelClipPath =
+         self.activate = activate
+         self.isSelectable = isSelectable
+         self.clipPath = clipPath
+-        self.motion = motion
+     }
+ 
+     init(
+@@ -86,8 +58,7 @@ typealias MenuPanelClipPath =
+                     attachment: corner.popoverAttachment, radius: metrics.radius.menuPanel,
+                     attachedRadius: metrics.size.menuButton / 2
+                 ).path(in: bounds).cgPath
+-            },
+-            motion: .palette)
++            })
+     }
+ }
+ 
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index c9a6a359..1c85abbc 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -563,7 +563,6 @@ struct RootPaletteView: View {
+                 return screen.pasteKeepingWindowOpen(at: selection) ? .handled : .ignored
+             }
+             .onKeyPress(.escape) {
+-                if menuPanel.isClosing { return .handled }
+                 // An open control list owns Escape before the palette beneath it.
+                 if vm.isControlListOpen { return .ignored }
+                 switch PaletteEscapeAction.resolve(
+@@ -1135,12 +1134,11 @@ struct RootPaletteView: View {
+         if presenting, let hostWindow {
+             menuPanel.show(
+                 view, corner: corner, parent: hostWindow, core: core,
+-                clipPath: content.clipPath, motion: content.motion,
++                clipPath: content.clipPath,
+                 onKeyDown: handleMenuPanelKey, onDismiss: closeMenus)
+         } else {
+             menuPanel.update(
+-                view, corner: corner, core: core, clipPath: content.clipPath,
+-                motion: content.motion)
++                view, corner: corner, core: core, clipPath: content.clipPath)
+         }
+     }
+ 
+diff --git a/Tinycast/Windows/Dialog/DialogController.swift b/Tinycast/Windows/Dialog/DialogController.swift
+index 635d6a61..6906ed52 100644
+--- a/Tinycast/Windows/Dialog/DialogController.swift
++++ b/Tinycast/Windows/Dialog/DialogController.swift
+@@ -95,7 +95,6 @@ final class DialogController: NSObject, NSWindowDelegate {
+     }
+ 
+     private func present(_ request: DialogRequest) async -> Int {
+-        // Keyed on the continuation, so a panel still fading can't swallow the next.
+         guard continuation == nil else { return request.cancelIndex }
+         return await withCheckedContinuation { continuation in
+             self.continuation = continuation
+@@ -130,30 +129,12 @@ final class DialogController: NSObject, NSWindowDelegate {
+             }
+             self.panel = panel
+             place(panel)
+-            show(panel)
++            // Non-activating like the palette: key focus without pulling the user out.
++            panel.makeKeyAndOrderFront(nil)
++            panel.orderFrontRegardless()
+         }
+     }
+ 
+-    /// Moves the full-size glass panel, avoiding the transient rim caused by scaling its content.
+-    private func show(_ panel: NSPanel) {
+-        let destination = panel.frame
+-        panel.alphaValue = Theme.DialogMotion.initialOpacity
+-        panel.setFrameOrigin(
+-            NSPoint(x: destination.minX, y: destination.minY - Theme.DialogMotion.offset))
+-        // Non-activating like the palette: key focus without pulling the user out.
+-        panel.makeKeyAndOrderFront(nil)
+-        panel.orderFrontRegardless()
+-
+-        NSAnimationContext.runAnimationGroup { context in
+-            context.duration = Theme.Duration.dialogEnter
+-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+-            // Moving a cached surface avoids redrawing the glass at each whole-point frame step.
+-            panel.animator().setFrame(destination, display: false)
+-            panel.animator().alphaValue = 1
+-        }
+-    }
+-
+-    /// Resumes before the fade finishes, so a confirmation isn't held up by animation.
+     private func finish(_ index: Int) {
+         guard let continuation else { return }
+         self.continuation = nil
+@@ -163,7 +144,7 @@ final class DialogController: NSObject, NSWindowDelegate {
+         closing?.delegate = nil
+         closing?.onKey = nil
+         continuation.resume(returning: index)
+-        closing?.fadeOut(duration: Theme.Duration.dialogExit)
++        closing?.orderOut(nil)
+     }
+ 
+     private var metrics: InterfaceMetrics { settings.interfaceSize.metrics }
+diff --git a/Tinycast/Windows/Dialog/DialogPanel.swift b/Tinycast/Windows/Dialog/DialogPanel.swift
+index 053c7a0f..b596e9c0 100644
+--- a/Tinycast/Windows/Dialog/DialogPanel.swift
++++ b/Tinycast/Windows/Dialog/DialogPanel.swift
+@@ -31,7 +31,7 @@ final class DialogPanel: NSPanel {
+         isOpaque = false
+         backgroundColor = .clear
+         hasShadow = true
+-        animationBehavior = .none
++        animationBehavior = .documentWindow
+         isReleasedWhenClosed = false
+         content.wantsLayer = true
+         content.layer?.cornerRadius = cornerRadius
+diff --git a/docs/features/calendar.md b/docs/features/calendar.md
+index 86a8f483..f31c2f92 100644
+--- a/docs/features/calendar.md
++++ b/docs/features/calendar.md
+@@ -20,8 +20,8 @@ camera preview, and individual events as searchable launcher entries.
+   `CameraSession.start()` resolves access and blocks on `startRunning` first, then hands
+   `CameraPreviewController` a settled `Feed` — so the panel's first frame is live video rather than a
+   stage it has to swap out, and the TCC prompt never takes key from a panel already up.
+-  `stop()` runs from the fade-out's completion, so the camera light never outlives the preview but
+-  is never torn down under a visible one either.
++  `stop()` runs once AppKit's close animation has left the screen, so the camera light never
++  outlives the preview but is never torn down under a visible one either.
+ - **The card's window is `[start - lead, min(start + lead, end)]`.** The grace period exists because
+   everyone joins late; the `min` is why it never outlives a meeting shorter than the lead.
+ - **Recurrence comes from `predicateForEvents(withStart:end:calendars:)`**, which expands occurrences
+diff --git a/docs/features/camera.md b/docs/features/camera.md
+index f7e37c48..c226f98e 100644
+--- a/docs/features/camera.md
++++ b/docs/features/camera.md
+@@ -14,8 +14,8 @@ controller and footer are all that stay in [calendar.md](calendar.md).
+ - **The camera settles before the panel opens, and stops after it closes.** `start()` resolves access
+   and blocks on `startRunning` first, then hands a settled `Feed` up — so the first frame is live
+   video rather than a stage swapped out from under the user, and the TCC prompt never takes key from
+-  a panel already up. `stop()` runs from the fade-out's completion, so the camera light never
+-  outlives the panel but is never torn down under a visible one either. It also drops the
++  a panel already up. `stop()` runs once AppKit's close animation has left the screen, so the camera
++  light never outlives the panel but is never torn down under a visible one either. It also drops the
+   `AVCaptureSession`, so every open builds its own: a reused session with no output of its own — the
+   preview's — restarts to a black stage.
+ - **Escape, click-away and the shot all end the same way.** Every route goes through
+diff --git a/docs/features/palette.md b/docs/features/palette.md
+index f52ea807..b1175c53 100644
+--- a/docs/features/palette.md
++++ b/docs/features/palette.md
+@@ -494,13 +494,12 @@ The panel is a second SwiftUI hierarchy, so it observes nothing of `RootPaletteV
+ `paletteEnvironment` injects the same stores into both hierarchies so they cannot drift.
+ `WindowReader` reports the palette's `NSWindow`, which the menu's frame is placed against.
+ 
+-`PaletteMenuContent` may supply its own host-layer clip path and motion.
+-The hosting layer scales inside a canvas sized for the largest frame, anchored to the button or
+-header control that opened it, so neither the surface nor its shadow is cropped. AppKit refreshes
+-the shadow after layout and display. Native `PopoverMenu` content reads its motion from
+-`Theme.MenuMotion`; extension menus supply values owned by `Features/Extensions`, so launcher
+-changes cannot silently alter an extension surface. Each extension menu also supplies its own clip
+-path; the controller applies it as an opaque value and never reconstructs extension geometry.
++`PaletteMenuContent` may supply its own host-layer clip path. `MenuPanel` uses
++`animationBehavior = .documentWindow`, so every menu opens and closes with AppKit's native window
++animation and has no motion of its own. The close animation keeps drawing the panel after
++`orderOut`, so the controller releases the hosted tree from `orderOutAnimated`, once it is off screen. AppKit refreshes the shadow after layout and display. Each extension menu supplies its
++own clip path; the controller applies it as an opaque value and never reconstructs extension
++geometry.
+ 
+ ## Menu-open input freeze
+ 
+@@ -514,7 +513,7 @@ caret, mouse selection and standard editing commands.
+   keeps ↑/↓, ↵, Tab and action chords on the menu while leaving text editing, selection and
+   clipboard commands to AppKit.
+ - The palette window delegate ignores this intentional key transfer. Losing key status to anything
+-  else still dismisses the palette, and closing the child restores key status before it fades out.
++  else still dismisses the palette, and closing the child restores key status before it orders out.
+ - The caret is hidden by clearing SwiftUI's **own** live field editor's `insertionPointColor`. SwiftUI
+   force-casts its field editor to a private subclass, so vending a custom one crashes. The searchable
+   menu draws no caret of its own; AppKit draws the caret in its field editor.
+diff --git a/docs/ui.md b/docs/ui.md
+index 8eb84a9c..c118b657 100644
+--- a/docs/ui.md
++++ b/docs/ui.md
+@@ -255,7 +255,7 @@ An extension's own surfaces live in `ExtensionColors` (`Features/Extensions/UI/`
+ 
+ Source: `Palette/PalettePanel.swift`, `Palette/RootPaletteView.swift`.
+ 
+-- **`PalettePanel`** is a borderless `NSPanel`: `isOpaque = false`, `backgroundColor = .clear`, `.palette` level (one above `.modalPanel`, so other apps' open panels never cover it), `hasShadow`, `animationBehavior = .none`. It hosts SwiftUI via `NSHostingView`. `PaletteWindowController` centers it slightly above screen center (`+8%`) and dismisses it on `windowDidResignKey`.
++- **`PalettePanel`** is a borderless `NSPanel`: `isOpaque = false`, `backgroundColor = .clear`, `.palette` level (one above `.modalPanel`, so other apps' open panels never cover it), `hasShadow`, `animationBehavior = .documentWindow`. It hosts SwiftUI via `NSHostingView`. `PaletteWindowController` centers it slightly above screen center (`+8%`) and dismisses it on `windowDidResignKey`.
+ - **The results layer fills the whole panel.** The header and bottom bar attach via `.safeAreaInset(edge: .top/.bottom)` as transparent overlays that float _over_ the list. The list underlaps them and dissolves at the edges.
+ - **Header** (`headerHeight 44`): a back-chevron _or_ mode glyph, then the plain `TextField` (no border/background). Sub-screens (Clipboard, Calculator History) show the back chevron; the launcher shows a magnifying glass. The search icon aligns horizontally with row content, and the query with the row titles.
+ - **Compact keyboard entry:** pressing `↓` in the collapsed launcher expands the results and selects the first row without replacing or defocusing the shared search field.
+@@ -458,7 +458,7 @@ Glass is normally for floating controls. The dialog root is the one modal-surfac
+ - **A menu's `width` is fixed, never intrinsic**, so it can't jitter as its rows change. Every header menu states its own at its `RootPaletteView.menuContent` case — `menuWidth 276`, or a token of its own where that reads too wide (`clipboardFilterMenuWidth`, `fileSearchFilterMenuWidth`, `emojiCategoryMenuWidth`) — so retuning one never moves another. Native footer menus add 30pt without changing those header widths; extension Actions owns its nearby 310pt width inside the feature.
+ - **`PopoverMenu`** uses `glassEffect(.regular)` with `menuPanel 16` corners and **no hand-tuned shadow** — Tahoe glass carries its own elevation; adding a drop shadow reads heavy and non-native. A footer menu raises only its attached bottom corner to the controls' 18-point radius, so the two silhouettes meet exactly.
+ - Its native search field is a row-height sibling of the scroller, above header menus or below footer menus. It uses an 18pt horizontal inset to align with the visible row glyphs. The top field stays vertically symmetric; the bottom field keeps its 1pt optical lift. Menus omit the adjacent edge dissolve and centre **No Results** in one row when their filtered rows are empty. The 8pt resting list inset belongs to the scroll content, so rows can reach the surface edges without shifting their initial position; hover fills keep the dedicated `menuRow 10` corner.
+-- `PopoverMenuRow`: leading glyph, label, trailing shortcut glyph and `menuHover` fill on hover. Menus animate in with opacity and scale from the anchored corner, stretching briefly to 1.003 before settling; `Theme.MenuMotion` owns the entry, settle and exit timings.
++- `PopoverMenuRow`: leading glyph, label, trailing shortcut glyph and `menuHover` fill on hover. Menus open and close with AppKit's native `.documentWindow` animation.
+ - The glyph is a `PopoverMenuIcon`: `.symbol` (SF Symbol, `monochrome`, `menuSymbol` — or **red** when `isDestructive`) `.file` (a real app icon via `IconCache`, used by the paste rows to show the paste target) or `.thumbnail` (a picture's own preview, cropped to the slot, used by the chat's staged-file rows). `PopoverMenuItem` keeps a `systemImage:` convenience init, so symbol rows read exactly as before.
+ - **Every glyph kind shares one square `menuIcon` (20) slot**, which pins one row height. A native SF Symbol uses the dedicated 14pt Medium `menuSymbol` font; file and brand icons keep their own artwork sizing inside the same slot, and a thumbnail fills it.
+ - Menu rows use the `md` icon→label gap; the fixed slot adds the remaining optical slack.
+@@ -508,10 +508,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
+   `NSHostingView` layer to the same continuous radius, then lets AppKit draw the native window shadow;
+   this avoids both the rectangular outline of an unshaped panel and the hard bounds of a SwiftUI blur.
+   The launcher's root gains a `dialogDimming` overlay only when it remains visible behind the panel;
+-  actions that hide the launcher first do no dimming work. Its fade follows `dialogEnter` / `dialogExit`
+-  so both surfaces separate as one transition. Matte button fills come from `controlSurface` /
+-  `selection`, while a destructive action uses the destructive tint. The **volume HUD** and **message
+-  pill** keep the non-glass panel recipe.
++  actions that hide the launcher first do no dimming work. Its fade follows `dialogEnter` / `dialogExit`.
++  Matte button fills come from `controlSurface` / `selection`, while a destructive action uses the
++  destructive tint. The **volume HUD** and **message pill** keep the non-glass panel recipe.
+ - **Layout.** Subject glyph in a low-opacity rounded tile, then title (`panelTitle`) + wrapped
+   secondary message, optional accessory and full-width actions. Content uses a 22-point inset while
+   the actions keep the tighter `dialogInset 18`. One action spans the row; two sit side by side with
+@@ -533,15 +532,11 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
+   panel never learns what a volume step is); click-away resolves as a dismissal.
+ - **Async, not modal.** Presentation is `async` (`withCheckedContinuation`), so there is no nested run
+   loop. A held hotkey can't stack dialogs: while one is up, a second request resolves immediately as a
+-  dismissal — which is why the old `isConfirmingCommand` re-entrancy flag is gone. The guard is keyed
+-  on the live continuation, not on the panel, so a dialog still fading out can't swallow the next one.
+-- **Entrance and exit.** A dialog starts 3pt below its final position at 8% opacity. AppKit moves the
+-  cached full-panel surface upward over `dialogEnter` (0.12s), with the alpha following the same curve
+-  so the fade masks the window's whole-pixel movement and the native shadow travels with the glass.
+-  There is no SwiftUI scale: scaling the content inside a full-size shadow produced a transient rim.
+-  Exit is an interruptible `fadeOut` over `dialogExit` (0.10s); its handler hides the window only if
+-  the alpha is still 0. The
+-  continuation resumes **before** that fade, so confirming Restart is never held up by animation.
++  dismissal — which is why the old `isConfirmingCommand` re-entrancy flag is gone.
++- **Entrance and exit.** `DialogPanel` uses `animationBehavior = .documentWindow`, so a dialog opens
++  and closes with the same native bounce as Settings and the launcher. AppKit scales the whole window,
++  shadow included; a SwiftUI scale of the content inside the full-size shadow produced a transient rim.
++  The continuation resumes **before** `orderOut`, so confirming Restart is never held up by animation.
+   Other borderless surfaces retain the shared `Duration.enter` / `Duration.exit` timings and
+   `PanelTransition` behavior.
+ - **Non-activating**, like the palette: the dialog takes key focus for its own keys without pulling app
+@@ -741,7 +736,8 @@ system-drawn and a pane reads exactly as macOS System Settings does.
+   which that window still uses.
+ - **A Settings editor borrows the dialog language, not its job.** `SettingsEditorPresenter` hosts the
+   existing form in an activating, transparent child `NSPanel`, with the same `panel 26` Liquid Glass
+-  surface, 3pt/8% entrance and matte action buttons. A blocking child covers and dims the whole parent,
++  surface, native `.documentWindow` entrance and matte action buttons. AppKit gives this activating
++  panel no close animation, so it leaves at once. A blocking child covers and dims the whole parent,
+   including its titlebar, so a press on it drags the parent; nested editors form one stack owned by the
+   Settings-window session. As with a sheet, a drag on an editor's empty space moves the Settings window:
+   the surface puts `WindowDragBackground` behind its content, and the panel hands `performDrag(with:)`
+-- 
+2.56.0
+

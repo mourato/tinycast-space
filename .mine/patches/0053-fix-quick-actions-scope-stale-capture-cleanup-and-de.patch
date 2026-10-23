@@ -364,10 +364,10 @@ index 0786de72..c4d47237 100644
      }
  }
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index 6c2f5a03..5e6aec4e 100644
+index d8bca081..52a8aa1b 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-@@ -302,7 +302,7 @@ final class QuickActionCoordinator {
+@@ -305,7 +305,7 @@ final class QuickActionCoordinator {
                  case .failure(let refusal):
                      guard let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine)
                      else {
@@ -376,7 +376,7 @@ index 6c2f5a03..5e6aec4e 100644
                          return
                      }
                      paletteCoordinator.claimKey()
-@@ -318,7 +318,7 @@ final class QuickActionCoordinator {
+@@ -321,7 +321,7 @@ final class QuickActionCoordinator {
                  return
              }
              if previews {
@@ -385,7 +385,7 @@ index 6c2f5a03..5e6aec4e 100644
                  return
              }
              core.hideProgress()
-@@ -332,7 +332,7 @@ final class QuickActionCoordinator {
+@@ -335,7 +335,7 @@ final class QuickActionCoordinator {
                  return
              }
              if previews {
@@ -394,7 +394,7 @@ index 6c2f5a03..5e6aec4e 100644
                  return
              }
              core.hideProgress()
-@@ -407,9 +407,11 @@ final class QuickActionCoordinator {
+@@ -410,9 +410,11 @@ final class QuickActionCoordinator {
          return chat
      }
  
@@ -409,7 +409,7 @@ index 6c2f5a03..5e6aec4e 100644
      }
  
      private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
-@@ -486,7 +488,7 @@ final class QuickActionCoordinator {
+@@ -491,7 +493,7 @@ final class QuickActionCoordinator {
          if isPrepared {
              guard let prepared, let mine, preparedChat(matching: prepared, mine: mine) != nil
              else {
@@ -418,7 +418,7 @@ index 6c2f5a03..5e6aec4e 100644
                  return
              }
              pendingReply = nil
-@@ -545,7 +547,7 @@ final class QuickActionCoordinator {
+@@ -550,7 +552,7 @@ final class QuickActionCoordinator {
          let chat = core.aiChatCoordinator.chats.quickAI
          if let prepared, let mine {
              guard preparedChat(matching: prepared, mine: mine) != nil else {
@@ -427,7 +427,7 @@ index 6c2f5a03..5e6aec4e 100644
                  return
              }
              pendingReply = nil
-@@ -563,7 +565,7 @@ final class QuickActionCoordinator {
+@@ -568,7 +570,7 @@ final class QuickActionCoordinator {
              let text = try await TextTranslator.translate(selection, to: language)
              if let prepared, let mine {
                  guard preparedChat(matching: prepared, mine: mine) != nil else {
@@ -436,7 +436,7 @@ index 6c2f5a03..5e6aec4e 100644
                      return
                  }
              } else {
-@@ -583,7 +585,7 @@ final class QuickActionCoordinator {
+@@ -588,7 +590,7 @@ final class QuickActionCoordinator {
          } catch let failure as TextTranslator.Failure where failure.needsDownload {
              if let prepared, let mine {
                  guard preparedChat(matching: prepared, mine: mine) != nil else {
@@ -445,7 +445,7 @@ index 6c2f5a03..5e6aec4e 100644
                      return
                  }
              } else {
-@@ -606,8 +608,8 @@ final class QuickActionCoordinator {
+@@ -611,8 +613,8 @@ final class QuickActionCoordinator {
              {
                  paletteCoordinator.claimKey()
                  failedChat.report(error.localizedDescription)

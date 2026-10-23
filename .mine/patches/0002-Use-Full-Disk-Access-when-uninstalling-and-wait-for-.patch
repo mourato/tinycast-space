@@ -1,0 +1,920 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 15:57:49 +0600
+Subject: [PATCH] Use Full Disk Access when uninstalling, and wait for the app
+ to quit (#1624)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* Use Full Disk Access when uninstalling, and wait for the app to quit
+
+The uninstall scan checked for Full Disk Access by opening only the per-user
+TCC.db. macOS 27 has no per-user TCC.db, so the check always failed, and
+every Containers, Group Containers and Cookies row stayed locked even with
+the grant (#844). The scan now uses Permissions.hasFullDiskAccess(), the
+check File Search uses, which also opens the system TCC.db.
+
+With the grant, the scan also finds each app's recent-documents list
+(com.apple.sharedfilelist/…ApplicationRecentDocuments/<id>.sfl3). macOS
+refuses even the listing without Full Disk Access.
+
+Before trashing, the coordinator sent quit and started at once. An app that
+is still quitting writes its saved state and preferences again, behind the
+trash. It now waits for that copy of the app to exit. If the app does not
+exit within the grace period, nothing is moved and a notice says so.
+
+Items under /Library and /usr/local/bin stay locked: removing them needs
+an administrator password, which Tinycast never asks for.
+
+* Fix uninstall quit checks and show Full Disk Access in Permissions
+
+* Align the Full Disk Access row with the other permissions
+
+The row now reads its status from the same helper as Accessibility, and its
+button says "Grant Access…" like the others. The footer repeated the
+subtitle, so it is gone with its string. The coordinator test waits on a
+deadline instead of 100 one-millisecond sleeps, so a slow runner cannot fail it.
+---
+ Scripts/run-tests.sh                          |   2 +
+ Tests/app-installation-test.swift             |  68 +++++--
+ Tests/uninstall-coordinator-test.swift        | 189 ++++++++++++++++++
+ Tests/uninstall-test.swift                    |  16 +-
+ .../Launcher/Service/AppLauncher.swift        |  33 ++-
+ .../Panes/PermissionsSettingsView.swift       |  47 ++++-
+ .../Features/Settings/SettingsAnchor.swift    |   1 +
+ .../Settings/SettingsSearchCatalog.swift      |   3 +
+ .../Uninstall/Model/UninstallProtection.swift |   3 +-
+ .../Uninstall/Model/UninstallSearchRoot.swift |   5 +
+ .../Uninstall/Service/UninstallScanner.swift  |  10 +-
+ .../Uninstall/UI/UninstallCoordinator.swift   |  12 +-
+ Tinycast/Platform/Permissions.swift           |   1 +
+ Tinycast/Resources/Localizable.xcstrings      | 110 ++++++++++
+ docs/features/uninstall.md                    |  31 ++-
+ docs/testing.md                               |   5 +
+ website/content/docs/permissions.md           |  10 +-
+ 17 files changed, 490 insertions(+), 56 deletions(-)
+ create mode 100644 Tests/uninstall-coordinator-test.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 20c3dcf5..254e0988 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -474,6 +474,8 @@ run custom-command-test    Tinycast/Platform/PseudoTerminal.swift \
+                            Tinycast/Features/CustomCommands/Service/ShellCommandRunner.swift
+ run custom-command-list-test Tinycast/Features/CustomCommands/Model/CustomCommand.swift \
+                              Tinycast/Features/CustomCommands/UI/CustomCommandListScreen.swift
++run uninstall-coordinator-test Tinycast/Features/Uninstall/Model/*.swift \
++                           Tinycast/Features/Uninstall/UI/UninstallCoordinator.swift
+ run uninstall-test         Tinycast/Features/Uninstall/Model/UninstallTarget.swift \
+                            Tinycast/Features/Uninstall/Model/UninstallSearchRoot.swift \
+                            Tinycast/Features/Uninstall/Model/UninstallRules.swift \
+diff --git a/Tests/app-installation-test.swift b/Tests/app-installation-test.swift
+index 29a85783..e400332b 100644
+--- a/Tests/app-installation-test.swift
++++ b/Tests/app-installation-test.swift
+@@ -266,6 +266,26 @@ struct AppInstallationTest {
+                 try! Data().write(to: marker)
+             }
+ 
++            func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
++                let bundle = Bundle.main.bundleURL
++                let marker = bundle.deletingLastPathComponent()
++                    .appendingPathComponent(bundle.lastPathComponent + ".refuse-quit")
++                if FileManager.default.fileExists(atPath: marker.path) { return .terminateCancel }
++                let delayed = bundle.deletingLastPathComponent()
++                    .appendingPathComponent(bundle.lastPathComponent + ".delay-quit")
++                if FileManager.default.fileExists(atPath: delayed.path) {
++                    Task {
++                        try? await Task.sleep(for: .milliseconds(250))
++                        let completed = bundle.deletingLastPathComponent()
++                            .appendingPathComponent(bundle.lastPathComponent + ".quit-completed")
++                        try! Data().write(to: completed)
++                        sender.reply(toApplicationShouldTerminate: true)
++                    }
++                    return .terminateLater
++                }
++                return .terminateNow
++            }
++
+             func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+                 let bundle = Bundle.main.bundleURL
+                 let marker = bundle.deletingLastPathComponent()
+@@ -359,7 +379,19 @@ struct AppInstallationTest {
+         AppLauncher.launch(second, allowsRunningApplicationSubstitution: false)
+         try await Task.sleep(for: .milliseconds(300))
+         check("reopening reuses the selected installation", running(second)?.processIdentifier == secondPID)
+-        check("Quit finds the selected version", AppLauncher.quit(bundleID: id, url: second))
++        let delayed = root.appendingPathComponent("Second.app.delay-quit")
++        try Data().write(to: delayed)
++        check(
++            "waiting for an accessory app to quit succeeds",
++            await AppLauncher.quitAwaitingExit(bundleID: id, url: second))
++        check(
++            "the quit wait includes the app's final writes",
++            FileManager.default.fileExists(
++                atPath: root.appendingPathComponent("Second.app.quit-completed").path))
++        try FileManager.default.removeItem(at: delayed)
++        check(
++            "waiting for an absent installation succeeds",
++            await AppLauncher.quitAwaitingExit(bundleID: id, url: second))
+         check(
+             "Quit leaves its sibling running",
+             await waitUntil { running(second) == nil && running(first) != nil })
+@@ -371,21 +403,33 @@ struct AppInstallationTest {
+         AppLauncher.launch(second, allowsRunningApplicationSubstitution: false)
+         check("the second installation can reopen", await waitUntil { running(second) != nil })
+         let siblingPID = running(second)?.processIdentifier
+-        if receivesEvents {
+-            let firstPID = running(first)?.processIdentifier
+-            await AppLauncher.restart(bundleID: id, url: first)
+-            check(
+-                "Restart reopens the selected version",
+-                await waitUntil {
+-                    running(first).map { $0.processIdentifier != firstPID } ?? false
+-                })
+-            check(
+-                "Restart leaves the sibling process alone", running(second)?.processIdentifier == siblingPID)
+-        }
++        let restartedPID = running(first)?.processIdentifier
++        await AppLauncher.restart(bundleID: id, url: first)
++        check(
++            "Restart reopens the selected version without workspace notifications",
++            await waitUntil {
++                running(first).map { $0.processIdentifier != restartedPID } ?? false
++            })
++        check(
++            "Restart leaves the sibling process alone", running(second)?.processIdentifier == siblingPID)
+         let canceled = Task { await AppLauncher.restart(bundleID: id, url: second) }
+         canceled.cancel()
+         await canceled.value
+         check("a canceled restart leaves the app running", running(second)?.processIdentifier == siblingPID)
++        let refusal = root.appendingPathComponent("Second.app.refuse-quit")
++        try Data().write(to: refusal)
++        let started = ContinuousClock.now
++        check(
++            "a refused quit times out without claiming success",
++            await !AppLauncher.quitAwaitingExit(bundleID: id, url: second))
++        check("a refused quit retains the grace period", ContinuousClock.now - started >= .seconds(5))
++        check("a refused quit leaves the app alive", running(second)?.processIdentifier == siblingPID)
++        try FileManager.default.removeItem(at: refusal)
++        let canceledQuit = Task { await AppLauncher.quitAwaitingExit(bundleID: id, url: second) }
++        canceledQuit.cancel()
++        check("a canceled quit fails", await !canceledQuit.value)
++        try await Task.sleep(for: .milliseconds(300))
++        check("a canceled quit leaves the app running", running(second)?.processIdentifier == siblingPID)
+         _ = AppLauncher.quit(bundleID: id, url: second, force: true)
+         check(
+             "Force Quit targets the selected path",
+diff --git a/Tests/uninstall-coordinator-test.swift b/Tests/uninstall-coordinator-test.swift
+new file mode 100644
+index 00000000..e0ccd669
+--- /dev/null
++++ b/Tests/uninstall-coordinator-test.swift
+@@ -0,0 +1,189 @@
++import AppKit
++
++@main
++@MainActor
++struct UninstallCoordinatorTests {
++    static func main() async {
++        for confirmed in [false, true] {
++            for quitSucceeded in [false, true] {
++                AppLauncher.quitSucceeded = quitSucceeded
++                AppLauncher.quitRequests = []
++                UninstallRunner.moved = []
++                let session = UninstallSession()
++                let core = AppCore()
++                core.confirmed = confirmed
++                let coordinator = UninstallCoordinator(
++                    session: session, palette: PaletteState(), paletteCoordinator: PaletteCoordinator(),
++                    appIndex: AppIndex(), runningApps: RunningAppsMonitor(), hotKeys: HotKeyManager(),
++                    favorites: FavoritesStore(), visibility: VisibilityStore(),
++                    ranking: LauncherRankingStore(),
++                    aliases: AliasStore(), core: core)
++
++                coordinator.performUninstall()
++                let deadline = ContinuousClock.now + .seconds(5)
++                while !core.finished, ContinuousClock.now < deadline {
++                    try? await Task.sleep(for: .milliseconds(1))
++                }
++                expect(core.finished, "the operation completes")
++                expect(
++                    AppLauncher.quitRequests.count == (confirmed ? 1 : 0),
++                    "confirmation rechecks the app even when the scan and monitor say it is stopped")
++                if let request = AppLauncher.quitRequests.first {
++                    expect(request.0 == session.app?.bundleID, "quit uses the selected bundle ID")
++                    expect(request.1 == session.app?.url, "quit uses the selected installation")
++                }
++                expect(
++                    UninstallRunner.moved == (confirmed && quitSucceeded ? session.selectedCandidates : []),
++                    "only a confirmed uninstall whose quit succeeds reaches the runner")
++                expect(
++                    core.notices == (confirmed && !quitSucceeded ? ["Nothing Was Moved"] : []),
++                    "a refused quit explains why no files moved")
++                expect(!session.isTrashing, "success, refusal and cancellation release the busy state")
++            }
++        }
++        print("ALL PASSED")
++    }
++
++    private static func expect(_ condition: Bool, _ message: String) {
++        guard condition else {
++            print("FAIL: \(message)")
++            exit(1)
++        }
++    }
++}
++
++// Platform effects are recorded so the shipped coordinator cannot touch installed apps or files.
++struct AppEntry {
++    enum Kind { case application }
++    let id = "fixture"
++    let name = "Fixture"
++    let url = URL(fileURLWithPath: "/Applications/Fixture.app")
++    let bundleID: String? = "com.tinycast.uninstall-fixture"
++    let kind = Kind.application
++    var preferenceKey: String { id }
++    var hotKeyAction: String? { nil }
++}
++
++@MainActor
++final class UninstallSession {
++    let app: AppEntry? = AppEntry()
++    let plan: UninstallPlan? = UninstallPlan(
++        target: UninstallTarget(
++            bundleURL: AppEntry().url, bundleID: AppEntry().bundleID,
++            displayName: "Fixture", bundleName: nil),
++        candidates: [], isTargetRunning: false)
++    var isTrashing = false
++    var canConfirm: Bool { !isTrashing }
++    let selectedCandidates = [
++        UninstallCandidate(
++            path: "/Applications/Fixture.app", name: "Fixture", locationLabel: "/Applications",
++            evidence: .bundle, isDirectory: true, size: .zero, protection: .removable)
++    ]
++
++    func begin(app: AppEntry, otherAppNames: [String], otherBundleIDs: [String], isRunning: Bool) {}
++    func setTrashing(_ value: Bool) { isTrashing = value }
++}
++
++@MainActor
++enum AppLauncher {
++    static var quitSucceeded = true
++    static var quitRequests: [(String, URL)] = []
++
++    static func quitAwaitingExit(bundleID: String, url: URL) async -> Bool {
++        quitRequests.append((bundleID, url))
++        await Task.yield()
++        return quitSucceeded
++    }
++
++    static func showInFinder(_ url: URL) {}
++    static func showInfoInFinder(_ url: URL) async -> Bool { true }
++}
++
++@MainActor
++enum UninstallRunner {
++    static var moved: [UninstallCandidate] = []
++
++    static func moveToTrash(_ candidates: [UninstallCandidate]) async -> UninstallReport {
++        moved = candidates
++        return UninstallReport()
++    }
++}
++
++struct UninstallReport {
++    let hasFailures = false
++    let removedBundle = false
++    let trashedCount = 1
++    let freedBytes: Int64 = 0
++    let failed: [UninstallFailedItem] = []
++}
++
++struct UninstallFailedItem {
++    let name: String
++    let reason: String
++}
++
++@MainActor
++final class AppCore {
++    enum Tone { case danger }
++    var confirmed = true
++    var finished = false
++    var notices: [String] = []
++
++    func confirm(title: String, message: String, symbol: String, confirmTitle: String) async -> Bool {
++        await Task.yield()
++        if !confirmed { finished = true }
++        return confirmed
++    }
++
++    func showNotice(title: String, message: String, symbol: String, tone: Tone) async {
++        notices.append(title)
++        finished = true
++    }
++
++    func showMessage(_ message: String) { finished = true }
++}
++
++struct PaletteState {
++    enum Mode { case launcher, uninstall }
++    func pop() -> Bool { true }
++    func prepare(mode: Mode) {}
++}
++
++struct PaletteCoordinator {
++    func navigate(to mode: PaletteState.Mode) {}
++    func hidePalette(restoreFocus: Bool) {}
++}
++
++struct AppIndex {
++    let apps: [AppEntry] = []
++    func refresh() async {}
++}
++
++struct RunningAppsMonitor {
++    func isRunning(_ app: AppEntry) -> Bool { false }
++}
++
++final class HotKeyManager {
++    var recordingAction: String?
++    func setBinding(_ binding: String?, for action: String) {}
++}
++
++struct FavoritesStore {
++    func remove(keys: [String]) {}
++}
++
++struct VisibilityStore {
++    func removeItemKeys(_ keys: [String]) {}
++}
++
++struct LauncherRankingStore {
++    func reset(itemKey: String) {}
++}
++
++struct AliasStore {
++    func removeKeys(_ keys: [String]) {}
++}
++
++enum Paster {
++    static func copyPlainText(_ text: String) {}
++}
+diff --git a/Tests/uninstall-test.swift b/Tests/uninstall-test.swift
+index 5b84891b..768004fa 100644
+--- a/Tests/uninstall-test.swift
++++ b/Tests/uninstall-test.swift
+@@ -9,6 +9,9 @@ struct UninstallTests {
+     static let home = "/Users/tester"
+     static let ownBundleID = "com.tinycast.app"
+     static let ownBundleURL = URL(fileURLWithPath: "/Applications/Tinycast.app")
++    static let recentDocuments =
++        "Application Support/com.apple.sharedfilelist/"
++        + "com.apple.LSSharedFileList.ApplicationRecentDocuments"
+ 
+     static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+         if condition() {
+@@ -132,6 +135,9 @@ struct UninstallTests {
+         expect(
+             evidence("com.foo.Bar.binarycookies", "Cookies", app) == .bundleID,
+             "a .binarycookies strips")
++        expect(
++            evidence("com.foo.bar.sfl3", recentDocuments, app) == .bundleID,
++            "a recent-documents list strips its .sfl3 and matches case-folded")
+         expect(
+             evidence("com.foo.Bar.8A1F2C3D-1111-2222-3333-444455556666.plist", "Preferences/ByHost", app)
+                 == .bundleID,
+@@ -460,6 +466,10 @@ struct UninstallTests {
+             !UninstallProtectionRules.isTCCProtected(
+                 path: home + "/Library/Preferences/com.foo.Bar.plist", home: home),
+             "preferences are not TCC-gated")
++        expect(
++            UninstallProtectionRules.isTCCProtected(
++                path: home + "/Library/" + recentDocuments + "/com.foo.bar.sfl3", home: home),
++            "recent-documents lists are TCC-gated — measured: listing them needs Full Disk Access")
+         expect(
+             !UninstallProtectionRules.isTCCProtected(
+                 path: home + "/Library/Application Scripts/com.foo.Bar", home: home),
+@@ -593,7 +603,8 @@ struct UninstallTests {
+         let shapes: [(String) -> String] = [
+             { $0 }, { $0 + ".plist" }, { $0 + ".savedState" }, { $0 + ".binarycookies" },
+             { $0 + ".helper" }, { $0 + ".Renderer.plist" }, { "group." + $0 },
+-            { "ABCDE12345." + $0 }, { $0 + ".8A1F2C3D-1111-2222-3333-444455556666.plist" }
++            { "ABCDE12345." + $0 }, { $0 + ".8A1F2C3D-1111-2222-3333-444455556666.plist" },
++            { $0.lowercased() + ".sfl3" }
+         ]
+ 
+         var leaks: [String] = []
+@@ -644,7 +655,8 @@ struct UninstallTests {
+         let bundleIDOnly: Set<String> = [
+             "Preferences", "Preferences/ByHost", "Containers", "Group Containers",
+             "Application Scripts", "Saved Application State", "HTTPStorages", "WebKit", "Cookies",
+-            "Autosave Information", "LaunchAgents", "LaunchDaemons", "PrivilegedHelperTools"
++            "Autosave Information", "LaunchAgents", "LaunchDaemons", "PrivilegedHelperTools",
++            recentDocuments
+         ]
+         expect(
+             roots.filter { bundleIDOnly.contains($0.relativePath) }
+diff --git a/Tinycast/Features/Launcher/Service/AppLauncher.swift b/Tinycast/Features/Launcher/Service/AppLauncher.swift
+index e8357246..4afdbdb9 100644
+--- a/Tinycast/Features/Launcher/Service/AppLauncher.swift
++++ b/Tinycast/Features/Launcher/Service/AppLauncher.swift
+@@ -102,6 +102,12 @@ enum AppLauncher {
+         launch(target, allowsRunningApplicationSubstitution: false)
+     }
+ 
++    @MainActor
++    static func quitAwaitingExit(bundleID: String, url: URL) async -> Bool {
++        let running = runningApplications(bundleID: bundleID, at: url)
++        return await quitAwaitingExit(running)
++    }
++
+     @MainActor
+     private static func runningApplications(bundleID: String, at url: URL?) -> [NSRunningApplication] {
+         let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+@@ -109,28 +115,21 @@ enum AppLauncher {
+         return running.filter { $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == target }
+     }
+ 
+-    /// Observes before it terminates, so an instance that exits at once can't outrun the wait.
+     @MainActor
+     private static func quitAwaitingExit(_ apps: [NSRunningApplication]) async -> Bool {
+-        let center = NSWorkspace.shared.notificationCenter
+-        let (exits, continuation) = AsyncStream.makeStream(of: pid_t.self)
+-        let observer = center.addObserver(
+-            of: NSWorkspace.shared, for: NSWorkspace.DidTerminateApplicationMessage.self
+-        ) { continuation.yield($0.application.processIdentifier) }
+-        defer { center.removeObserver(observer) }
+-
+-        var pending = Set(apps.map(\.processIdentifier))
++        guard !Task.isCancelled else { return false }
+         for app in apps { app.terminate() }
+ 
+-        let grace = Task {
+-            try? await Task.sleep(for: exitGrace); continuation.finish()
+-        }
+-        defer { grace.cancel() }
+-        for await pid in exits {
+-            pending.remove(pid)
+-            if pending.isEmpty { return true }
++        let deadline = ContinuousClock.now + exitGrace
++        while apps.contains(where: { !$0.isTerminated }) {
++            guard !Task.isCancelled, ContinuousClock.now < deadline else { return false }
++            do {
++                try await Task.sleep(for: .milliseconds(50))
++            } catch {
++                return false
++            }
+         }
+-        return false
++        return !Task.isCancelled
+     }
+ 
+     /// Finder is never a Quit All target: `terminate()` only makes it relaunch.
+diff --git a/Tinycast/Features/Settings/Panes/PermissionsSettingsView.swift b/Tinycast/Features/Settings/Panes/PermissionsSettingsView.swift
+index 77749f82..89805c72 100644
+--- a/Tinycast/Features/Settings/Panes/PermissionsSettingsView.swift
++++ b/Tinycast/Features/Settings/Panes/PermissionsSettingsView.swift
+@@ -5,6 +5,7 @@ import SwiftUI
+ struct PermissionsSettingsView: View {
+     @Environment(AppCore.self) private var core
+     @State private var accessibilityTrusted = Permissions.isAccessibilityTrusted()
++    @State private var fullDiskAccess = Permissions.hasFullDiskAccess()
+     @State private var calendarAccess = Permissions.calendarAccess()
+     @State private var microphoneAccess = Permissions.microphoneAccess()
+     private let refreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+@@ -42,6 +43,37 @@ struct PermissionsSettingsView: View {
+                 SettingsSectionHeader(.permissionsAccessibility)
+             }
+ 
++            Section {
++                LabeledContent {
++                    HStack(spacing: Theme.Spacing.lg) {
++                        HStack(spacing: Theme.Spacing.xs) {
++                            Image(systemName: fullDiskAccessStatus.symbol)
++                                .accessibilityHidden(true)
++                            Text(fullDiskAccessStatus.title)
++                        }
++                        .foregroundStyle(fullDiskAccessStatus.tint)
++                        Button(fullDiskAccess ? "Open…" : "Grant Access…") {
++                            Permissions.openFullDiskAccessSettings()
++                        }
++                        .help("Opens Privacy & Security › Full Disk Access.")
++                    }
++                } label: {
++                    HStack(spacing: Theme.Spacing.lg) {
++                        Image(systemName: "internaldrive.fill")
++                            .font(.system(size: SettingsListMetrics.iconSize - Theme.Spacing.xs))
++                            .frame(width: SettingsListMetrics.iconSize)
++                            .accessibilityHidden(true)
++                        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
++                            SettingsRowTitle(.permissionsFullDiskAccess, "Full Disk Access")
++                            Text("For File Search and protected app leftovers.")
++                                .foregroundStyle(.secondary)
++                        }
++                    }
++                }
++            } header: {
++                SettingsSectionHeader(.permissionsFullDiskAccess)
++            }
++
+             Section {
+                 LabeledContent {
+                     HStack(spacing: Theme.Spacing.lg) {
+@@ -129,7 +161,15 @@ struct PermissionsSettingsView: View {
+     private var calendarNeedsPrompt: Bool { calendarAccess == .notDetermined }
+ 
+     private var accessibilityStatus: (title: String, symbol: String, tint: Color) {
+-        accessibilityTrusted
++        grantStatus(accessibilityTrusted)
++    }
++
++    private var fullDiskAccessStatus: (title: String, symbol: String, tint: Color) {
++        grantStatus(fullDiskAccess)
++    }
++
++    private func grantStatus(_ granted: Bool) -> (title: String, symbol: String, tint: Color) {
++        granted
+             ? (String(localized: "Granted"), "checkmark.circle.fill", .green)
+             : (String(localized: "Not granted"), "exclamationmark.triangle.fill", .orange)
+     }
+@@ -155,6 +195,11 @@ struct PermissionsSettingsView: View {
+     private func refresh() {
+         let trusted = Permissions.isAccessibilityTrusted()
+         if trusted != accessibilityTrusted { accessibilityTrusted = trusted }
++        let diskAccess = Permissions.hasFullDiskAccess()
++        if diskAccess != fullDiskAccess {
++            fullDiskAccess = diskAccess
++            core.fileIndexer.refreshAccess()
++        }
+         let access = Permissions.calendarAccess()
+         if access != calendarAccess { calendarAccess = access }
+         let microphone = Permissions.microphoneAccess()
+diff --git a/Tinycast/Features/Settings/SettingsAnchor.swift b/Tinycast/Features/Settings/SettingsAnchor.swift
+index f4f9e7bd..9166cefe 100644
+--- a/Tinycast/Features/Settings/SettingsAnchor.swift
++++ b/Tinycast/Features/Settings/SettingsAnchor.swift
+@@ -114,6 +114,7 @@ extension SettingsAnchor {
+     static let extensionsStorage = Self(tab: .extensions, title: "Storage")
+ 
+     static let permissionsAccessibility = Self(tab: .permissions, title: "Accessibility")
++    static let permissionsFullDiskAccess = Self(tab: .permissions, title: "Full Disk Access")
+     static let permissionsCalendars = Self(tab: .permissions, title: "Calendars")
+     static let permissionsMicrophone = Self(tab: .permissions, title: "Microphone")
+ 
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 9220f9c9..3839d333 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -622,6 +622,9 @@ enum SettingsSearchCatalog {
+         .init(
+             .permissionsAccessibility, "Accessibility",
+             keywords: ["paste", "keystrokes", "privacy", "grant"]),
++        .init(
++            .permissionsFullDiskAccess, "Full Disk Access",
++            keywords: ["files", "folders", "uninstall", "leftovers", "privacy", "grant", "fda"]),
+         .init(
+             .permissionsCalendars, "Calendars",
+             keywords: ["events", "privacy", "grant", "eventkit"]),
+diff --git a/Tinycast/Features/Uninstall/Model/UninstallProtection.swift b/Tinycast/Features/Uninstall/Model/UninstallProtection.swift
+index 8c70f7b5..f8a61880 100644
+--- a/Tinycast/Features/Uninstall/Model/UninstallProtection.swift
++++ b/Tinycast/Features/Uninstall/Model/UninstallProtection.swift
+@@ -109,6 +109,7 @@ enum UninstallProtectionRules {
+         "Library/Application Support/AddressBook",
+         "Library/Application Support/CallHistoryDB",
+         "Library/Application Support/com.apple.TCC",
+-        "Library/Application Support/MobileSync"
++        "Library/Application Support/MobileSync",
++        "Library/Application Support/com.apple.sharedfilelist/"
+     ]
+ }
+diff --git a/Tinycast/Features/Uninstall/Model/UninstallSearchRoot.swift b/Tinycast/Features/Uninstall/Model/UninstallSearchRoot.swift
+index 734d092b..6ebcb9fa 100644
+--- a/Tinycast/Features/Uninstall/Model/UninstallSearchRoot.swift
++++ b/Tinycast/Features/Uninstall/Model/UninstallSearchRoot.swift
+@@ -51,6 +51,11 @@ struct UninstallSearchRoot: Hashable, Sendable {
+         UninstallSearchRoot(
+             base: .userLibrary, relativePath: "Autosave Information", styles: [.bundleID]),
+         UninstallSearchRoot(base: .userLibrary, relativePath: "LaunchAgents", styles: [.bundleID]),
++        UninstallSearchRoot(
++            base: .userLibrary,
++            relativePath: "Application Support/com.apple.sharedfilelist/"
++                + "com.apple.LSSharedFileList.ApplicationRecentDocuments",
++            styles: [.bundleID]),
+         // Plug-in wells: a child is a wrapper named after its product, suffix stripped.
+         UninstallSearchRoot(
+             base: .userLibrary, relativePath: "Internet Plug-Ins", styles: [.bundleID, .displayName]),
+diff --git a/Tinycast/Features/Uninstall/Service/UninstallScanner.swift b/Tinycast/Features/Uninstall/Service/UninstallScanner.swift
+index 4d7e675b..14588d90 100644
+--- a/Tinycast/Features/Uninstall/Service/UninstallScanner.swift
++++ b/Tinycast/Features/Uninstall/Service/UninstallScanner.swift
+@@ -28,7 +28,7 @@ enum UninstallScanner {
+         try await Signposts.interval("UninstallScanner.discover") {
+             let home = NSHomeDirectory()
+             let environment = UninstallEnvironment(
+-                home: home, hasFullDiskAccess: detectFullDiskAccess(home: home))
++                home: home, hasFullDiskAccess: Permissions.hasFullDiskAccess())
+             guard
+                 let identity = UninstallIdentity.make(
+                     target: target, otherAppNames: otherAppNames, otherBundleIDs: otherBundleIDs,
+@@ -241,12 +241,4 @@ enum UninstallScanner {
+         }
+         return size
+     }
+-
+-    /// Detected, never requested: TCC denies silently, and under-reporting only locks a row.
+-    private static func detectFullDiskAccess(home: String) -> Bool {
+-        let descriptor = open(home + "/Library/Application Support/com.apple.TCC/TCC.db", O_RDONLY)
+-        guard descriptor >= 0 else { return false }
+-        close(descriptor)
+-        return true
+-    }
+ }
+diff --git a/Tinycast/Features/Uninstall/UI/UninstallCoordinator.swift b/Tinycast/Features/Uninstall/UI/UninstallCoordinator.swift
+index 37709f0a..a0ac4d64 100644
+--- a/Tinycast/Features/Uninstall/UI/UninstallCoordinator.swift
++++ b/Tinycast/Features/Uninstall/UI/UninstallCoordinator.swift
+@@ -72,8 +72,18 @@ final class UninstallCoordinator {
+                     symbol: "trash", confirmTitle: String(localized: "Move to Trash"))
+             else { return }
+ 
+-            if running, let bundleID = app.bundleID { _ = AppLauncher.quit(bundleID: bundleID) }
+             session.setTrashing(true)
++            // An app still quitting rewrites its saved state and preferences behind the trash.
++            if let bundleID = app.bundleID,
++                await !AppLauncher.quitAwaitingExit(bundleID: bundleID, url: app.url)
++            {
++                session.setTrashing(false)
++                await core.showNotice(
++                    title: String(localized: "Nothing Was Moved"),
++                    message: String(localized: "\(app.name) didn’t quit. Quit it, then try again."),
++                    symbol: "trash", tone: .danger)
++                return
++            }
+             let report = await UninstallRunner.moveToTrash(items)
+             session.setTrashing(false)
+ 
+diff --git a/Tinycast/Platform/Permissions.swift b/Tinycast/Platform/Permissions.swift
+index 558f03f6..0f50bb45 100644
+--- a/Tinycast/Platform/Permissions.swift
++++ b/Tinycast/Platform/Permissions.swift
+@@ -30,6 +30,7 @@ enum Permissions {
+         let home = FileManager.default.homeDirectoryForCurrentUser.path
+         let guarded = [
+             home + "/Library/Application Support/com.apple.TCC/TCC.db",
++            // macOS 27 has no per-user TCC.db, so only the system one can answer there.
+             "/Library/Application Support/com.apple.TCC/TCC.db"
+         ]
+         return guarded.contains { path in
+diff --git a/Tinycast/Resources/Localizable.xcstrings b/Tinycast/Resources/Localizable.xcstrings
+index 9b200190..76f6a6b2 100644
+--- a/Tinycast/Resources/Localizable.xcstrings
++++ b/Tinycast/Resources/Localizable.xcstrings
+@@ -1078,6 +1078,58 @@
+         }
+       }
+     },
++    "%@ didn’t quit. Quit it, then try again." : {
++      "localizations" : {
++        "de" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@ wurde nicht beendet. Beende die App und versuche es erneut."
++          }
++        },
++        "es" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@ no se cerró. Ciérralo e inténtalo de nuevo."
++          }
++        },
++        "fr" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@ n’a pas pu être quitté. Quittez-le, puis réessayez."
++          }
++        },
++        "ja" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@が終了しませんでした。終了してから、もう一度お試しください。"
++          }
++        },
++        "ko" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@이(가) 종료되지 않았습니다. 앱을 종료한 다음 다시 시도하세요."
++          }
++        },
++        "pt" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@ não foi encerrado. Encerre o app e tente novamente."
++          }
++        },
++        "ru" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Не удалось завершить %@. Завершите приложение и повторите попытку."
++          }
++        },
++        "zh-Hans" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@ 未退出。请先退出它，然后重试。"
++          }
++        }
++      }
++    },
+     "%@ doesn't contain a Raycast extension (no package.json with commands)." : {
+       "localizations" : {
+         "de" : {
+@@ -54925,6 +54977,64 @@
+         }
+       }
+     },
++    "For File Search and protected app leftovers." : {
++      "localizations" : {
++        "de" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Für die Dateisuche und geschützte App-Reste."
++          }
++        },
++        "en" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "For File Search and protected app leftovers."
++          }
++        },
++        "es" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Para la búsqueda de archivos y los archivos residuales protegidos de las apps."
++          }
++        },
++        "fr" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Pour la recherche de fichiers et les fichiers résiduels protégés des apps."
++          }
++        },
++        "ja" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "ファイル検索と、保護されたアプリの残存ファイルに使用します。"
++          }
++        },
++        "ko" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "파일 검색과 보호된 앱 잔여 파일에 사용합니다."
++          }
++        },
++        "pt" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Para a pesquisa de arquivos e os arquivos residuais protegidos de apps."
++          }
++        },
++        "ru" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Для поиска файлов и защищённых остаточных файлов приложений."
++          }
++        },
++        "zh-Hans" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "用于文件搜索和受保护的应用残留文件。"
++          }
++        }
++      }
++    },
+     "Force" : {
+       "localizations" : {
+         "de" : {
+diff --git a/docs/features/uninstall.md b/docs/features/uninstall.md
+index 76044d80..21671d41 100644
+--- a/docs/features/uninstall.md
++++ b/docs/features/uninstall.md
+@@ -37,7 +37,7 @@ Same split as `WindowManagement`: a pure half that decides, an impure half that
+ | `Model/UninstallRules.swift` | Matching, plus `isAcceptableCandidate` |
+ | `Model/UninstallProtection.swift` | `PathFacts` → `UninstallProtection` |
+ | `Model/UninstallPlan.swift` | `UninstallCandidate`, `UninstallPlan`, `UninstallSelection` |
+-| `Service/UninstallScanner.swift` | **Impure.** `discover` (`contentsOfDirectory`, `lstat`, the FDA probe) and `measure` (the directory walks) |
++| `Service/UninstallScanner.swift` | **Impure.** `discover` (`contentsOfDirectory`, `lstat`, `Permissions.hasFullDiskAccess`) and `measure` (the directory walks) |
+ | `Service/UninstallRunner.swift` | **Impure.** `trashItem`, and nothing else |
+ | `Service/UninstallSession.swift` | `@MainActor` lifecycle behind the screen |
+ | `UI/UninstallScreen.swift`, `UI/UninstallView.swift` | The palette screen, list, row and actions menu |
+@@ -126,6 +126,11 @@ corrupts the installer's view of the system), `~/Library/Keychains`, `/Library/E
+ user-document location. `/usr/local` is reached **only** through `binDirectories`, and only for
+ symlinks that resolve into the bundle — never by name, and never recursively.
+ 
++One root only yields under Full Disk Access:
++`Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments`,
++each app's recent-documents list, named `<bundle id>.sfl3`. Without the grant the listing itself is
++refused, so the root contributes nothing rather than a locked row. `~/Library/Cookies` behaves the same.
++
+ `UninstallRules.isAcceptableCandidate` is belt and braces over whatever matched: an immediate child of
+ its own root, never the home directory or `/`, no relative components, and no overlap with the app
+ bundle (which is emitted separately).
+@@ -166,17 +171,21 @@ a row that has since become locked for free.
+ 
+ The TCC list is **measured, not assumed.** A probe that creates and then trashes a throwaway
+ directory in each candidate location shows that `~/Library/Containers`, `~/Library/Group Containers`
+-and `~/Library/Cookies` refuse the move, while `~/Library/Application Scripts` and
++and `~/Library/Cookies` refuse the move, and `com.apple.sharedfilelist` refuses even the listing, while `~/Library/Application Scripts` and
+ `~/Library/Autosave Information` allow it — which is why Books' five `Application Scripts` rows are
+ checkable while the five `Containers` rows beside them are locked. Note that _listing_ a directory is
+ not the test: both container roots enumerate fine and still refuse the trash. Re-measure before
+ adding an entry.
+ 
+-**Full Disk Access is detected, never requested.** The probe opens
+-`~/Library/Application Support/com.apple.TCC/TCC.db` — TCC denies that read _silently_, with no
+-prompt, which is what makes it usable under the rule that this feature asks for no permissions. It
+-runs once per scan, not once per candidate, and can only under-report (a per-folder grant reads as
+-"no access"), which just leaves a row locked.
++**Full Disk Access is detected, never requested.** The probe is `Permissions.hasFullDiskAccess()`,
++shared with File Search: it opens the per-user `TCC.db`, then the system one at
++`/Library/Application Support/com.apple.TCC/TCC.db`. TCC denies that read _silently_, with no prompt,
++which is what makes it usable under the rule that this feature asks for no permissions. macOS 27 has
++no per-user `TCC.db` at all, so a probe of that file alone reads every grant as "no access" and locks
++every gated row — keep the system path. It runs once per scan, not once per candidate, and can only
++under-report (a per-folder grant reads as "no access"), which just leaves a row locked. Settings ›
++Permissions shows the same status and opens the Full Disk Access pane in System Settings; File Search
++keeps its own access section. Granting access is optional for Uninstall and required for File Search.
+ 
+ Symlinks are never followed: `lstat`, and no descent when sizing. A symlinked candidate is judged and
+ trashed as the link.
+@@ -226,8 +235,12 @@ trade); the two Finder actions hand focus to Finder and so hide the palette. Sho
+ route and drives Finder over Apple events, which raises the system Automation prompt on first use.
+ 
+ `UninstallCoordinator.performUninstall()` is the one funnel, so neither ↵ nor the menu row can skip the
+-confirmation. It quits the app first if it's running, trashes, and **only clears the app's hotkey,
+-favorite, visibility and ranking when the bundle itself went** — a leftovers-only cleanup leaves the
++confirmation. After confirmation it checks the selected copy again and **waits for it to exit** before
++trashing anything — an app still quitting writes its saved state and preferences back behind the trash.
++If it hasn't exited within `AppLauncher`'s grace period (a save sheet left standing), nothing is moved.
++The wait checks `NSRunningApplication.isTerminated`, since workspace exit notifications exclude
++background and menu-bar apps. It then trashes, and **only clears the app's hotkey, favorite, visibility
++and ranking when the bundle itself went** — a leftovers-only cleanup leaves the
+ app installed. The bundle is trashed last: either order can leave a partial state, but with the
+ bundle still in place the user can re-run the uninstall to retry, and once it's gone the launcher
+ entry that reaches this screen is gone with it. Success shows the message pill; partial failure names
+diff --git a/docs/testing.md b/docs/testing.md
+index e200a82f..342795eb 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -146,6 +146,7 @@ If a change touches anything in the right column, the harness on the left is man
+ | `custom-command-test` | Command storage and execution, editor drafts, argument identities and dynamic keyboard focus |
+ | `custom-command-list-test` | Browser result snapshots, observation, row actions and empty-library messages |
+ | `uninstall-test` | all five pure files in `Uninstall/Model/` |
++| `uninstall-coordinator-test` | Confirmation and the post-confirmation quit gate; recorded quit and Trash effects only |
+ | `quicklink-test` | all of `Quicklinks/Model/`, plus editor drafts and placeholder selection |
+ | `quicklink-coordinator-test` | Opening and requested arguments, launcher editing, current enabled-state preservation, deletion during editing and feature gates; no platform effects or on-screen focus checks |
+ | `apple-shortcut-test` | all of `AppleShortcuts/Model/` — the `shortcuts list` parser and entry ids |
+@@ -533,6 +534,10 @@ caches, TCC grants and login item, so this cannot disturb an installed copy.
+ - Rows appear with no loading copy at any point; folder sizes fill in behind them and totals climb
+ - Locked rows cannot be checked; filtering by name works
+ - Confirming moves items to the Trash and they are **recoverable from it**
++- A running app exits before any files move, including a menu-bar app or one launched during confirmation
++- An app that refuses to quit leaves every item in place after the grace period
++- Full Disk Access appears in both Permissions and File Search, and both open the correct privacy pane
++- With Full Disk Access granted, protected leftovers become selectable; administrator-only items stay locked
+ - Escaping mid-scan cancels promptly with no spinner left behind
+ - Hiding and immediately restoring the screen never strands an in-flight file icon as a placeholder
+ 
+diff --git a/website/content/docs/permissions.md b/website/content/docs/permissions.md
+index f00360ae..63d67177 100644
+--- a/website/content/docs/permissions.md
++++ b/website/content/docs/permissions.md
+@@ -75,7 +75,12 @@ fails silently.
+ 
+ ## Full Disk Access
+ 
+-Tinycast **checks** whether it has Full Disk Access but **never asks** for it.
++Tinycast **checks** whether it has Full Disk Access but **never asks** for it automatically.
++Settings → Permissions and Settings → File Search both show its status and offer a button to open
++System Settings → Privacy & Security → Full Disk Access, where you can grant it manually.
++
++[File Search](/docs/features/file-search) requires this access to build its private index on your Mac.
++For uninstalling apps, it is optional.
+ 
+ The [uninstaller](/docs/launcher/uninstall) checks in the background to work out which files it can
+ move. Without Full Disk Access, protected folders like `~/Library/Containers`,
+@@ -84,9 +89,6 @@ those by hand.
+ 
+ ## What Tinycast never needs
+ 
+-- **File access for File Search.** [File Search](/docs/features/file-search) uses the Spotlight
+-  index that macOS already maintains. If Spotlight hasn't indexed something, you get fewer results,
+-  not a permission prompt.
+ - **Screen Recording.** The window switcher reads window titles through Accessibility.
+ - **Location.** The calculator picks your currency from your Mac's region setting.
+ - **Input Monitoring.** Snippets listen through Accessibility, as described above.
+-- 
+2.56.0
+

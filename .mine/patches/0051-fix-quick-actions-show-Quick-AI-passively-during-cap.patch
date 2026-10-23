@@ -10,23 +10,23 @@ window. The admitted capture claims key when it lands or fails in-window.
 Cancel, hide, new chat, conflicting send/attach and disabled switches drop
 the capture and clear its gathering notice; Replace only stays silent.
 ---
- Scripts/run-tests.sh                          |  30 +-
+ Scripts/run-tests.sh                          |  32 +-
  Tests/quick-action-test.swift                 | 731 ++++++++++++++----
  Tinycast/Features/AI/UI/AIChatState.swift     |  32 +-
  Tinycast/Features/AI/UI/AIScreen.swift        |   3 +-
  .../Model/QuickActionCapturePlan.swift        |  66 --
  .../UI/QuickActionCoordinator.swift           | 127 ++-
- Tinycast/Palette/PaletteCoordinator.swift     |  14 +-
- .../Palette/PaletteWindowController.swift     |  94 ++-
+ Tinycast/Palette/PaletteCoordinator.swift     |  18 +-
+ .../Palette/PaletteWindowController.swift     |  92 ++-
  docs/features/quick-actions.md                |  22 +-
- 9 files changed, 821 insertions(+), 298 deletions(-)
+ 9 files changed, 825 insertions(+), 298 deletions(-)
  delete mode 100644 Tinycast/Features/QuickActions/Model/QuickActionCapturePlan.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index 99ed141b..d3132ac7 100755
+index 52a2de24..ac9dd792 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -757,18 +757,46 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
+@@ -806,19 +806,47 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/MCP/Model/*.swift \
                             Tinycast/Features/MCP/Settings/MCPSettingsStore.swift
  run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
@@ -70,8 +70,10 @@ index 99ed141b..d3132ac7 100755
                             Tinycast/Features/QuickActions/Model/QuickActionFailure.swift \
                             Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
                             Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
+-                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift \
 +                           Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift \
-                            Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
++                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
+                            Tinycast/Platform/LocalizedResource.swift
  run apple-intelligence-test Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/AI/Model/*.swift \
 diff --git a/Tests/quick-action-test.swift b/Tests/quick-action-test.swift
@@ -841,7 +843,7 @@ index 4e9d372e..5effb2d2 100644
 +    static func openSettingsPane(bundleID: String) {}
  }
 diff --git a/Tinycast/Features/AI/UI/AIChatState.swift b/Tinycast/Features/AI/UI/AIChatState.swift
-index 36bd5442..5c94fdf9 100644
+index e033729e..3136e3f4 100644
 --- a/Tinycast/Features/AI/UI/AIChatState.swift
 +++ b/Tinycast/Features/AI/UI/AIChatState.swift
 @@ -8,6 +8,8 @@ final class AIChatState {
@@ -880,7 +882,7 @@ index 36bd5442..5c94fdf9 100644
          if let model { session.model = model }
          startReply(
              using: provider, webSearch: webSearch, instructions: instructions,
-@@ -131,6 +133,19 @@ final class AIChatState {
+@@ -132,6 +134,19 @@ final class AIChatState {
  
      func report(_ message: String) {
          notice = message
@@ -900,7 +902,7 @@ index 36bd5442..5c94fdf9 100644
      }
  
      /// Refused, not truncated: the composer is the last place an oversized turn can be explained.
-@@ -168,6 +183,11 @@ final class AIChatState {
+@@ -169,6 +184,11 @@ final class AIChatState {
          stagingGeneration += 1
      }
  
@@ -912,7 +914,7 @@ index 36bd5442..5c94fdf9 100644
      func cancel() {
          replyGeneration += 1
          replyTask?.cancel()
-@@ -182,7 +202,7 @@ final class AIChatState {
+@@ -183,7 +203,7 @@ final class AIChatState {
      func startNewChat() {
          cancel()
          session = ChatSession()
@@ -921,7 +923,7 @@ index 36bd5442..5c94fdf9 100644
          clearStaging()
      }
  
-@@ -193,7 +213,7 @@ final class AIChatState {
+@@ -194,7 +214,7 @@ final class AIChatState {
          guard let loaded = history.session(id: id) else { return false }
          cancel()
          session = loaded
@@ -930,7 +932,7 @@ index 36bd5442..5c94fdf9 100644
          clearStaging()
          return true
      }
-@@ -202,7 +222,7 @@ final class AIChatState {
+@@ -203,7 +223,7 @@ final class AIChatState {
          if session.id == id {
              cancel()
              session = ChatSession()
@@ -940,10 +942,10 @@ index 36bd5442..5c94fdf9 100644
          }
          history.remove(id: id)
 diff --git a/Tinycast/Features/AI/UI/AIScreen.swift b/Tinycast/Features/AI/UI/AIScreen.swift
-index cd95c148..2d94a2af 100644
+index 8f0cf0ee..dd8e561d 100644
 --- a/Tinycast/Features/AI/UI/AIScreen.swift
 +++ b/Tinycast/Features/AI/UI/AIScreen.swift
-@@ -198,7 +198,8 @@ private struct AIChatView: View {
+@@ -209,7 +209,8 @@ private struct AIChatView: View {
                  let unavailability = availability()
                  AIEmptyState(
                      message: chat.notice ?? unavailability,
@@ -1026,10 +1028,10 @@ index 2716423a..00000000
 -    }
 -}
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index 167f6607..69fa2c4a 100644
+index 3fa04203..0122eb08 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-@@ -210,6 +210,7 @@ final class QuickActionCoordinator {
+@@ -213,6 +213,7 @@ final class QuickActionCoordinator {
          running?.cancel()
          running = nil
          core.hideProgress()
@@ -1037,7 +1039,7 @@ index 167f6607..69fa2c4a 100644
      }
  
      /// The generation stops a superseded task from clearing the newer handle as it finishes.
-@@ -245,11 +246,9 @@ final class QuickActionCoordinator {
+@@ -248,11 +249,9 @@ final class QuickActionCoordinator {
              return
          }
          guard !Task.isCancelled else { return }
@@ -1052,7 +1054,7 @@ index 167f6607..69fa2c4a 100644
          if action.usesTranslationFramework {
              await translate(
                  selection, sourceName: sourceName, action: action, target: target,
-@@ -265,9 +264,9 @@ final class QuickActionCoordinator {
+@@ -268,9 +267,9 @@ final class QuickActionCoordinator {
          _ action: QuickAction, app: NSRunningApplication?, target: Target
      ) async {
          let replacesOnly = store.settings.replacesOnly(action)
@@ -1064,7 +1066,7 @@ index 167f6607..69fa2c4a 100644
          if previews {
              guard !Task.isCancelled, mine == generation else { return }
              guard settings.quickActionsEnabled, settings.aiEnabled else { return }
-@@ -302,7 +301,11 @@ final class QuickActionCoordinator {
+@@ -305,7 +304,11 @@ final class QuickActionCoordinator {
                  case .success(let text): selection = text
                  case .failure(let refusal):
                      guard let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine)
@@ -1077,7 +1079,7 @@ index 167f6607..69fa2c4a 100644
                      chat.report(refusal.message)
                      return
                  }
-@@ -310,30 +313,36 @@ final class QuickActionCoordinator {
+@@ -313,30 +316,36 @@ final class QuickActionCoordinator {
              }
          } catch let failure as QuickActionFailure {
              if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
@@ -1121,7 +1123,7 @@ index 167f6607..69fa2c4a 100644
          if previews {
              guard let snapshot = prepared else { return }
              if action.usesTranslationFramework {
-@@ -361,37 +370,45 @@ final class QuickActionCoordinator {
+@@ -364,37 +373,45 @@ final class QuickActionCoordinator {
          }
      }
  
@@ -1188,7 +1190,7 @@ index 167f6607..69fa2c4a 100644
      private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
          switch failure {
          case .noSelection, .unreadableApp: return true
-@@ -459,14 +476,18 @@ final class QuickActionCoordinator {
+@@ -464,14 +481,18 @@ final class QuickActionCoordinator {
      private func answer(
          _ action: QuickAction, selection: String, sourceName: String, target: Target,
          writesBack: Bool, silently: Bool,
@@ -1209,7 +1211,7 @@ index 167f6607..69fa2c4a 100644
          } else {
              chat.startNewChat()
              pendingReply = nil
-@@ -504,7 +525,7 @@ final class QuickActionCoordinator {
+@@ -509,7 +530,7 @@ final class QuickActionCoordinator {
          if !sent {
              chat.onNextReplyEnded = nil
              if isPrepared {
@@ -1218,7 +1220,7 @@ index 167f6607..69fa2c4a 100644
              } else if silently {
                  core.hideProgress()
                  core.showMessage(chat.notice ?? "\(action.title) didn't start", tone: .danger)
-@@ -516,12 +537,16 @@ final class QuickActionCoordinator {
+@@ -521,12 +542,16 @@ final class QuickActionCoordinator {
      private func translate(
          _ selection: String, sourceName: String, action: QuickAction, target: Target,
          writesBack: Bool, silently: Bool,
@@ -1237,7 +1239,7 @@ index 167f6607..69fa2c4a 100644
          } else {
              chat.startNewChat()
              pendingReply = nil
-@@ -534,7 +559,10 @@ final class QuickActionCoordinator {
+@@ -539,7 +564,10 @@ final class QuickActionCoordinator {
          do {
              let text = try await TextTranslator.translate(selection, to: language)
              if let prepared, let mine {
@@ -1249,7 +1251,7 @@ index 167f6607..69fa2c4a 100644
              } else {
                  guard !Task.isCancelled else { return }
              }
-@@ -550,6 +578,14 @@ final class QuickActionCoordinator {
+@@ -555,6 +583,14 @@ final class QuickActionCoordinator {
                      chatID: chat.session.id, messageID: messageID, action: action, target: target)
              }
          } catch let failure as TextTranslator.Failure where failure.needsDownload {
@@ -1264,7 +1266,7 @@ index 167f6607..69fa2c4a 100644
              guard
                  await core.reportFailure(
                      title: "\(languageName) isn’t downloaded yet",
-@@ -562,6 +598,13 @@ final class QuickActionCoordinator {
+@@ -567,6 +603,13 @@ final class QuickActionCoordinator {
          } catch {
              if silently {
                  core.showMessage(error.localizedDescription, tone: .danger)
@@ -1279,7 +1281,7 @@ index 167f6607..69fa2c4a 100644
                  chat.report(error.localizedDescription)
              }
 diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
-index e44e2231..4320ade4 100644
+index 3c3a0501..db56dc86 100644
 --- a/Tinycast/Palette/PaletteCoordinator.swift
 +++ b/Tinycast/Palette/PaletteCoordinator.swift
 @@ -85,7 +85,8 @@ final class PaletteCoordinator {
@@ -1292,20 +1294,24 @@ index e44e2231..4320ade4 100644
      ) {
          let preserved = windowController.consumePreservedState()
          let restoring = preserved && (restoreAnyMode || palette.mode == mode)
-@@ -98,7 +99,11 @@ final class PaletteCoordinator {
+@@ -98,8 +99,14 @@ final class PaletteCoordinator {
          if let query { palette.query = query }
          // Before the show: `targetApp` must still name the app in front, and no row may pop in.
          onScreenOpening?(palette.mode)
 -        windowController.show()
+-        if palette.mode == .fileSearch { fileSearch.search(palette.query, filter: palette.fileSearchFilter) }
 +        if takingKey {
 +            windowController.show()
 +        } else {
 +            windowController.showWithoutTakingKey()
 +        }
-         if palette.mode == .fileSearch { fileSearch.search(palette.query) }
++        if palette.mode == .fileSearch {
++            fileSearch.search(palette.query, filter: palette.fileSearchFilter)
++        }
          if palette.mode == .menuSearch { menuSearch.filter(palette.query) }
          if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
-@@ -109,6 +114,11 @@ final class PaletteCoordinator {
+         // Re-scan on open so an app uninstalled since the last scan drops out of the launcher.
+@@ -109,6 +116,11 @@ final class PaletteCoordinator {
          }
      }
  
@@ -1318,10 +1324,10 @@ index e44e2231..4320ade4 100644
      func showArguments(of entry: AppEntry, values: [String: String]) {
          showPalette(mode: .launcher, seeding: entry.name)
 diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
-index 9a002e26..54e837a9 100644
+index bdde02ef..99c93bfd 100644
 --- a/Tinycast/Palette/PaletteWindowController.swift
 +++ b/Tinycast/Palette/PaletteWindowController.swift
-@@ -59,42 +59,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+@@ -58,40 +58,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
  
      func show() {
          Signposts.interval("PaletteWindowController.show") {
@@ -1359,13 +1365,11 @@ index 9a002e26..54e837a9 100644
 -            core.calendarCoordinator.paletteDidShow()
 -            core.palette.noteVisible(true)
 -            core.clipboardStore.setTextSearchActive(true)
--            // Only while we are on screen: a system-wide tap has no business outliving the window.
--            commandEscapeTap.enable()
 +            let panel = prepareForShow()
              // Non-activating, so summoning never raises our own aux windows behind it.
              panel.makeKeyAndOrderFront(nil)
              panel.orderFrontRegardless()
-@@ -106,6 +71,63 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+@@ -103,6 +70,63 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
          }
      }
  
@@ -1430,7 +1434,7 @@ index 9a002e26..54e837a9 100644
      isolated deinit {
          if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
-index e17ec783..0092e98c 100644
+index 4c4a8440..028dd747 100644
 --- a/docs/features/quick-actions.md
 +++ b/docs/features/quick-actions.md
 @@ -33,8 +33,11 @@ nothing and says so with a HUD.
@@ -1458,7 +1462,7 @@ index e17ec783..0092e98c 100644
  - **A browser page stands in for a missing selection only where browser context is on.** When no
    selection is found and the target is a supported browser, `QuickActionCoordinator` reads its active
    tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
-@@ -203,7 +208,8 @@ A failed reply keeps the chat's usual `failed` state and no button. Cancelling i
+@@ -209,7 +214,8 @@ A failed reply keeps the chat's usual `failed` state and no button. Cancelling i
  behaves as cancelling any reply does.
  
  Quick AI has no progress pill of its own. The streaming reply is the progress. While a preview
@@ -1468,7 +1472,7 @@ index e17ec783..0092e98c 100644
  
  ## Reading the selection
  
-@@ -274,7 +280,8 @@ failure handler, so automatic expansion stays silent as before.
+@@ -280,7 +286,8 @@ failure handler, so automatic expansion stays silent as before.
  - Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
    text untouched.
  - Press Summarize with text selected: Quick AI opens at once saying it is gathering the text, then
@@ -1478,7 +1482,7 @@ index e17ec783..0092e98c 100644
    nothing is typed into the page.
  - Set a writing action to Replace only and run it in a browser with no selection: the pill shows
    first, then Quick AI opens with the gathering notice, and a page failure reports there.
-@@ -302,5 +309,6 @@ failure handler, so automatic expansion stays silent as before.
+@@ -308,5 +315,6 @@ failure handler, so automatic expansion stays silent as before.
  - Press one in a password field: refused.
  - Revoke Accessibility while enabled: a HUD explains instead of failing silently.
  - Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action

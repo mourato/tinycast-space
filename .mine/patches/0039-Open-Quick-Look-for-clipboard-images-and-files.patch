@@ -24,7 +24,7 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
  create mode 100644 Tinycast/Features/Clipboard/UI/ClipboardQuickLook.swift
 
 diff --git a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
-index 7b410aaa..395f9ee2 100644
+index 50c1778f..484f4105 100644
 --- a/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
 +++ b/Tinycast/Features/Clipboard/Model/ClipboardStore.swift
 @@ -39,6 +39,9 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
@@ -38,10 +38,10 @@ index 7b410aaa..395f9ee2 100644
          self.init(
              id: UUID(), kind: .text, text: text, imagePath: nil, createdAt: Date(),
 diff --git a/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift b/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift
-index 515bbf12..36a8e254 100644
+index 73df3ea6..1aa691c7 100644
 --- a/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift
 +++ b/Tinycast/Features/Clipboard/UI/ClipboardCoordinator.swift
-@@ -206,6 +206,14 @@ final class ClipboardCoordinator {
+@@ -203,6 +203,14 @@ final class ClipboardCoordinator {
          AppLauncher.open(url)
      }
  
@@ -117,12 +117,12 @@ index 00000000..b217711e
 +    }
 +}
 diff --git a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
-index 510ae991..47fdaa4f 100644
+index 7cdca906..153d1167 100644
 --- a/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
 +++ b/Tinycast/Features/Clipboard/UI/ClipboardScreen.swift
-@@ -54,10 +54,21 @@ struct ClipboardScreen: PaletteScreen {
-             guard let item = item(at: selection), item.offersTextExtraction else { return false }
-             core.clipboardCoordinator.copyImageText(item)
+@@ -65,10 +65,21 @@ struct ClipboardScreen: PaletteScreen {
+             guard let item = item(at: selection), item.kind == .text else { return false }
+             Task { await core.clipboardCoordinator.editClip(item) }
              return true
 +        case .quickLook: return toggleQuickLook(at: selection)
          default: return false
@@ -140,9 +140,9 @@ index 510ae991..47fdaa4f 100644
 +    }
 +
      private func activatePinned(at index: Int) -> Bool {
-         guard let item = store.pinnedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
+         guard let item = store.numberedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
              return false
-@@ -154,6 +165,15 @@ struct ClipboardScreen: PaletteScreen {
+@@ -165,6 +176,15 @@ struct ClipboardScreen: PaletteScreen {
                      .frame(width: 1)
                  ClipboardPreview(item: selected)
              }
@@ -158,7 +158,7 @@ index 510ae991..47fdaa4f 100644
          }
      }
  }
-@@ -188,6 +208,12 @@ enum ClipboardActionsMenu {
+@@ -207,6 +227,12 @@ enum ClipboardActionsMenu {
              ) {
                  core.clipboardCoordinator.pasteKeepingWindowOpen(item)
              })
@@ -168,10 +168,10 @@ index 510ae991..47fdaa4f 100644
 +                    core.clipboardCoordinator.quickLook(item)
 +                })
 +        }
-         if item.isPinned {
+         if item.kind == .text {
              items.append(
                  PopoverMenuItem(
-@@ -266,7 +292,7 @@ enum ClipboardActionsMenu {
+@@ -286,7 +312,7 @@ enum ClipboardActionsMenu {
          }
      }
  
@@ -181,10 +181,10 @@ index 510ae991..47fdaa4f 100644
          case .text:
              // Collapse whitespace so a multi-line copy stays a clean one-line title.
 diff --git a/Tinycast/Palette/PaletteState.swift b/Tinycast/Palette/PaletteState.swift
-index 82d6f458..56cb658e 100644
+index 70f0f448..e4e47b6d 100644
 --- a/Tinycast/Palette/PaletteState.swift
 +++ b/Tinycast/Palette/PaletteState.swift
-@@ -23,6 +23,8 @@ final class PaletteState {
+@@ -33,6 +33,8 @@ final class PaletteState {
      var emojiCategoryFilter: EmojiCategoryFilter = .all
      /// Nil means the configured default; zoom only overrides it for this picker session.
      var emojiGridColumnsOverride: EmojiGridColumns?
@@ -193,7 +193,7 @@ index 82d6f458..56cb658e 100644
      /// Ordering out leaves the SwiftUI tree mounted, so a media preview needs this to stop playing.
      private(set) var isVisible = false
      /// Changes every time the palette is shown so the search field can re-focus.
-@@ -79,6 +81,8 @@ final class PaletteState {
+@@ -89,6 +91,8 @@ final class PaletteState {
  
      func noteVisible(_ visible: Bool) {
          isVisible = visible
@@ -201,9 +201,9 @@ index 82d6f458..56cb658e 100644
 +        if !visible { quickLook = false }
      }
  
-     var canGoBack: Bool { !backStack.isEmpty }
-@@ -144,6 +148,7 @@ final class PaletteState {
-         fileSearchFilter = .all
+     var canGoBack: Bool { !backStack.isEmpty || isInFileSearchFolder }
+@@ -167,6 +171,7 @@ final class PaletteState {
+         fileSearchFolder = nil
          emojiCategoryFilter = .all
          emojiGridColumnsOverride = nil
 +        quickLook = false
@@ -211,10 +211,10 @@ index 82d6f458..56cb658e 100644
          dropHoverHighlight()
          menuOpen = false
 diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
-index b61106cb..e7069623 100644
+index 81862540..45979d44 100644
 --- a/Tinycast/Palette/PaletteWindowController.swift
 +++ b/Tinycast/Palette/PaletteWindowController.swift
-@@ -411,7 +411,9 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+@@ -410,7 +410,9 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
                  core.snippetCoordinator.cancelSnippetEditing()
                  return true
              }
@@ -226,19 +226,19 @@ index b61106cb..e7069623 100644
          // Handled at the panel: the field editor or a missing main menu eats these first.
          panel.onCommandShortcut = { [weak self] event in
 diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
-index 75f7c3e8..82c49778 100644
+index 996ad2e6..9e5e5141 100644
 --- a/Tinycast/Palette/RootPaletteView.swift
 +++ b/Tinycast/Palette/RootPaletteView.swift
-@@ -422,6 +422,7 @@ struct RootPaletteView: View {
+@@ -430,6 +430,7 @@ struct RootPaletteView: View {
                  vm.fileSearchFilter = .all
                  vm.emojiCategoryFilter = .all
                  vm.emojiGridColumnsOverride = nil
 +                vm.quickLook = false
                  if menuOpen { closeMenus() }
-                 land(restoringNavigation: true)
+                 land(restoringSelection: true)
                  searchFocused = !screen.hidesSearchField
 diff --git a/docs/features/clipboard.md b/docs/features/clipboard.md
-index 5e40e9b6..8972b8ea 100644
+index 1c82ee44..7b4557a4 100644
 --- a/docs/features/clipboard.md
 +++ b/docs/features/clipboard.md
 @@ -17,6 +17,11 @@
@@ -252,7 +252,7 @@ index 5e40e9b6..8972b8ea 100644
 +  ⌘K row nor the chord.
  - **Clipboard writes stamp a private `internalType` marker** so the poller skips Tinycast's own writes.
    If the writer and the poller ever disagree, the app re-captures its own pastes in a loop.
- - **Paste Sequentially never promotes, and its walk is frozen at the first press.** `PasteSequence`
+ - **Edit Entry rewrites a text entry in place and never adds one.** The id, pin and source app
 -- 
 2.56.0
 

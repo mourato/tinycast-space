@@ -1,0 +1,600 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 15:59:04 +0600
+Subject: [PATCH] Narrow File Search to home with editable defaults (#1625)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* Narrow File Search to home with editable defaults
+
+Adding a folder under the default `/` scope did nothing: normalizing
+folded it into `/` and dropped it from the list. The list now keeps what
+the user adds; only the crawl folds a nested scope.
+
+The default scope is home, and the ignore list is one stored list seeded
+with recommended defaults — build and dependency folders, the Photos
+library, the Trash, tool caches and the noisy parts of ~/Library. Every
+row can be removed, and Restore Defaults brings either list back.
+
+* Keep shipped ignore rules compiled in, stored as edits
+
+Storing the whole ignore list let a value saved by an earlier build, in
+UserDefaults, settings.json or a backup, replace the new defaults with
+the user's additions alone, or with nothing. The shipped rules are
+compiled in again; fileSearchIgnorePatterns keeps only what the user
+added, and the new fileSearchRemovedDefaultPatterns the rules they
+removed. Restore Defaults clears both.
+
+/Library/Caches and /private/var/folders return to the defaults so a
+scope of / stays filtered.
+---
+ Tests/file-index-test.swift                   |  4 +-
+ Tests/file-search-test.swift                  | 31 +++++++++--
+ Tests/settings-backup-test.swift              |  3 +
+ Tinycast/App/AppCore.swift                    |  1 +
+ .../Backup/Model/SettingsBackup.swift         |  6 ++
+ .../Backup/Model/SettingsBackupCoverage.swift |  1 +
+ .../Model/FileSearchIgnoreList.swift          | 12 +++-
+ .../FileSearch/Model/FileSearchPolicy.swift   |  6 +-
+ .../FileSearch/Model/FileSearchScope.swift    | 12 ++--
+ .../Settings/FileSearchSettingsView.swift     | 55 +++++++++++--------
+ .../FileSearch/UI/FileSearchCoordinator.swift |  2 +-
+ Tinycast/Features/Settings/AppSettings.swift  | 15 +++++
+ .../Features/Settings/AppSettingsKey.swift    |  1 +
+ .../Settings/Model/SettingsFileKey.swift      |  1 +
+ .../Settings/SettingsFileSchema.swift         |  2 +
+ Tinycast/Resources/Localizable.xcstrings      | 52 ------------------
+ docs/features/file-search.md                  | 30 +++++++---
+ 17 files changed, 132 insertions(+), 102 deletions(-)
+
+diff --git a/Tests/file-index-test.swift b/Tests/file-index-test.swift
+index dc8f3013..fc59f351 100644
+--- a/Tests/file-index-test.swift
++++ b/Tests/file-index-test.swift
+@@ -27,7 +27,7 @@ struct FileIndexTests {
+         }
+ 
+         let policy = FileSearchPolicy(
+-            scopes: [root.path], ignorePatterns: ["~/Movies"], homeDirectory: root)
++            scopes: [root.path], ignorePatterns: ["node_modules", "~/Movies"], homeDirectory: root)
+         let index = FileIndex()
+         let snapshot = try build(policy, at: scratch.appending(path: "index.bin"))
+         index.replace(with: snapshot, policy: policy)
+@@ -61,7 +61,7 @@ struct FileIndexTests {
+             main.map(snapshot.path(of:)) == root + "/Developer/app/src/main.swift",
+             "a path round-trips")
+         expect(snapshot.lookup(root + "/Developer/app/.git/config") != nil, "hidden files are indexed")
+-        expect(snapshot.lookup(root + "/Developer/app/node_modules") == nil, "a shipped rule skips")
++        expect(snapshot.lookup(root + "/Developer/app/node_modules") == nil, "a name rule skips")
+         expect(snapshot.lookup(root + "/Movies") == nil, "a tilde path skips that folder")
+         if let developer = snapshot.lookup(root + "/Developer"), let main {
+             expect(snapshot.subtree(of: developer).contains(main), "a subtree is one range")
+diff --git a/Tests/file-search-test.swift b/Tests/file-search-test.swift
+index f65bbc2b..f4967a81 100644
+--- a/Tests/file-search-test.swift
++++ b/Tests/file-search-test.swift
+@@ -158,7 +158,10 @@ struct FileSearchTests {
+         for name in FileSearchIgnoreList.defaults where !name.contains("/") {
+             expect(shipped.excludes(name: name, path: "/x/\(name)"), "\(name) is skipped")
+         }
+-        for path in ["/Users/test/Library/Caches", "/Library/Caches", "/private/var/folders"] {
++        for path in [
++            "/Users/test/.Trash", "/Users/test/Library/Caches", "/Users/test/Library/Containers",
++            "/Users/test/Library/Application Support", "/Library/Caches", "/private/var/folders"
++        ] {
+             expect(
+                 shipped.excludes(name: URL(filePath: path).lastPathComponent, path: path),
+                 "\(path) is skipped")
+@@ -167,8 +170,23 @@ struct FileSearchTests {
+             !shipped.excludes(name: "Caches", path: "/Users/test/Developer/Caches"),
+             "a caches folder elsewhere is indexed")
+         expect(
+-            !shipped.excludes(name: ".git", path: "/x/.git"),
++            !shipped.excludes(name: ".config", path: "/Users/test/.config"),
+             "hidden folders are indexed unless a pattern says otherwise")
++        expect(
++            !shipped.excludes(name: "Preferences", path: "/Users/test/Library/Preferences"),
++            "only the noisy parts of the user's Library are skipped")
++
++        let edited = FileSearchIgnoreList.patterns(
++            added: ["*.log", "node_modules", "*.log"], removedDefaults: [".git", "*.log"])
++        expect(!edited.contains(".git"), "a removed default no longer applies")
++        expect(
++            edited.filter { $0 == "node_modules" }.count == 1,
++            "an added copy of a default never lists it twice")
++        expect(edited.last == "*.log", "an added pattern follows the defaults once")
++        expect(
++            FileSearchIgnoreList.patterns(added: [], removedDefaults: [])
++                == FileSearchIgnoreList.defaults,
++            "no edits leave exactly the defaults")
+     }
+ 
+     static func ignorePathMatching() {
+@@ -228,8 +246,8 @@ struct FileSearchTests {
+             "a cleared list resolves to no roots at all")
+         expect(
+             policy.ignore.excludes(name: "run.log", path: "/Volumes/Work/run.log")
+-                && policy.ignore.excludes(name: "node_modules", path: "/Volumes/Work/node_modules"),
+-            "the user's patterns and the shipped ones both apply")
++                && !policy.ignore.excludes(name: "node_modules", path: "/Volumes/Work/node_modules"),
++            "the policy applies exactly the patterns it is given")
+ 
+         let same = FileSearchPolicy(
+             scopes: ["~/Developer", "~", "/Volumes/Work", "~/Developer"],
+@@ -265,8 +283,9 @@ struct FileSearchTests {
+                 == ["~/Developer", "/etc"],
+             "normalizing abbreviates home and drops the duplicate it creates")
+         expect(
+-            FileSearchScope.normalize(["~/a", "/", "~"], homeDirectory: home) == ["/"],
+-            "adding the whole disk absorbs every other scope")
++            FileSearchScope.normalize(["~/a", "/", "~", "/Users/test/a"], homeDirectory: home)
++                == ["~/a", "/", "~"],
++            "normalizing keeps a nested scope listed; only the crawl folds it")
+         expect(
+             FileSearchScope.expand("~", homeDirectory: home).path == "/Users/test",
+             "a bare tilde expands to home itself")
+diff --git a/Tests/settings-backup-test.swift b/Tests/settings-backup-test.swift
+index 4a909d71..01ce03e0 100644
+--- a/Tests/settings-backup-test.swift
++++ b/Tests/settings-backup-test.swift
+@@ -52,6 +52,9 @@ struct SettingsBackupTest {
+         check(
+             "user ignore patterns ride the settings backup",
+             mirrored["fileSearchIgnorePatterns"] == .fileSearchIgnorePatterns)
++        check(
++            "removed default ignore patterns ride the settings backup",
++            mirrored["fileSearchRemovedDefaultPatterns"] == .fileSearchRemovedDefaultPatterns)
+         check("notes enablement rides the settings backup", mirrored["notesEnabled"] == .notesEnabled)
+         check(
+             "Markdown rendering rides the settings backup",
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index e64b3a99..62b18a85 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -736,6 +736,7 @@ final class AppCore {
+             {
+                 _ = $0.fileSearchScopes
+                 _ = $0.fileSearchIgnorePatterns
++                _ = $0.fileSearchRemovedDefaultPatterns
+             }, reproject: { $0.fileSearchCoordinator.applyPolicy() })
+         track({ _ = $0.snippetsEnabled }, reproject: { $0.snippetCoordinator.applySnippetsEnabled() })
+         // Not a feature switch, but the same re-projection: a combo has the chord's ⇧ bit baked in.
+diff --git a/Tinycast/Features/Backup/Model/SettingsBackup.swift b/Tinycast/Features/Backup/Model/SettingsBackup.swift
+index b3a3f949..abbaf3ac 100644
+--- a/Tinycast/Features/Backup/Model/SettingsBackup.swift
++++ b/Tinycast/Features/Backup/Model/SettingsBackup.swift
+@@ -50,6 +50,7 @@ struct SettingsBackup: Codable {
+         var fileSearchEnabled: Bool?
+         var fileSearchScopes: [String]?
+         var fileSearchIgnorePatterns: [String]?
++        var fileSearchRemovedDefaultPatterns: [String]?
+         var fileSearchShowInLauncher: Bool?
+         var notesEnabled: Bool?
+         var notesRendersMarkdown: Bool?
+@@ -162,6 +163,7 @@ extension SettingsBackup {
+             fileSearchEnabled: s.fileSearchEnabled,
+             fileSearchScopes: s.fileSearchScopes,
+             fileSearchIgnorePatterns: s.fileSearchIgnorePatterns,
++            fileSearchRemovedDefaultPatterns: s.fileSearchRemovedDefaultPatterns,
+             fileSearchShowInLauncher: s.fileSearchShowInLauncher,
+             notesEnabled: s.notesEnabled,
+             notesRendersMarkdown: s.notesRendersMarkdown,
+@@ -422,6 +424,10 @@ extension SettingsBackup {
+             settings.fileSearchIgnorePatterns = patterns
+             count += 1
+         }
++        if let patterns = s.fileSearchRemovedDefaultPatterns {
++            settings.fileSearchRemovedDefaultPatterns = patterns
++            count += 1
++        }
+         if let flag = s.fileSearchShowInLauncher {
+             settings.fileSearchShowInLauncher = flag
+             count += 1
+diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
+index 8132cc0e..620773e6 100644
+--- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
++++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
+@@ -31,6 +31,7 @@ enum SettingsBackupCoverage {
+         "fileSearchEnabled": .fileSearchEnabled,
+         "fileSearchScopes": .fileSearchScopes,
+         "fileSearchIgnorePatterns": .fileSearchIgnorePatterns,
++        "fileSearchRemovedDefaultPatterns": .fileSearchRemovedDefaultPatterns,
+         "fileSearchShowInLauncher": .fileSearchShowInLauncher,
+         "notesEnabled": .notesEnabled,
+         "notesRendersMarkdown": .notesRendersMarkdown,
+diff --git a/Tinycast/Features/FileSearch/Model/FileSearchIgnoreList.swift b/Tinycast/Features/FileSearch/Model/FileSearchIgnoreList.swift
+index c314eb1e..63596d8c 100644
+--- a/Tinycast/Features/FileSearch/Model/FileSearchIgnoreList.swift
++++ b/Tinycast/Features/FileSearch/Model/FileSearchIgnoreList.swift
+@@ -5,10 +5,18 @@ import Foundation
+ struct FileSearchIgnoreList: Sendable, Equatable {
+     /// Compiled in, not stored, so changing the shipped rules reaches existing installs.
+     static let defaults = [
+-        "node_modules", "DerivedData", "build", "dist", "target", "Pods", ".next", "~/Library/Caches",
+-        "/Library/Caches", "/private/var/folders"
++        "node_modules", ".git", ".build", "build", "dist", "target", "DerivedData", "Pods", ".next",
++        ".venv", "*.photoslibrary", "~/.Trash", "~/.cache", "~/.npm", "~/Library/Application Support",
++        "~/Library/Caches", "~/Library/Containers", "~/Library/Developer", "~/Library/Group Containers",
++        "~/Library/Mail", "/Library/Caches", "/private/var/folders"
+     ]
+ 
++    /// A shipped rule is governed by `removedDefaults` alone, even when `added` repeats it.
++    static func patterns(added: [String], removedDefaults: [String]) -> [String] {
++        var seen = Set(defaults)
++        return defaults.filter { !removedDefaults.contains($0) } + added.filter { seen.insert($0).inserted }
++    }
++
+     private let literalNames: [Glob]
+     private let nameGlobs: [Glob]
+     private let pathGlobs: [Glob]
+diff --git a/Tinycast/Features/FileSearch/Model/FileSearchPolicy.swift b/Tinycast/Features/FileSearch/Model/FileSearchPolicy.swift
+index cd0a4a9c..c25d0eb2 100644
+--- a/Tinycast/Features/FileSearch/Model/FileSearchPolicy.swift
++++ b/Tinycast/Features/FileSearch/Model/FileSearchPolicy.swift
+@@ -3,7 +3,6 @@ import Foundation
+ struct FileSearchPolicy: Sendable, Equatable {
+     struct Request: Codable, Sendable, Equatable {
+         let scopes: [String]
+-        /// Only what the user added; the shipped rules are applied on top.
+         let ignorePatterns: [String]
+         let homeDirectory: String
+     }
+@@ -40,9 +39,8 @@ struct FileSearchPolicy: Sendable, Equatable {
+         // Not standardized: that drops a leading `/private`, and the crawl compares real paths.
+         homePath = homeDirectory.path
+         roots = FileSearchScope.roots(for: request.scopes, homeDirectory: homeDirectory)
+-        let patterns = FileSearchIgnoreList.defaults + request.ignorePatterns
+-        ignore = FileSearchIgnoreList(patterns: patterns, homeDirectory: homeDirectory)
+-        fingerprint = Self.fnv1a((roots + ["\0"] + patterns).joined(separator: "\n"))
++        ignore = FileSearchIgnoreList(patterns: request.ignorePatterns, homeDirectory: homeDirectory)
++        fingerprint = Self.fnv1a((roots + ["\0"] + request.ignorePatterns).joined(separator: "\n"))
+     }
+ 
+     static func == (lhs: Self, rhs: Self) -> Bool { lhs.request == rhs.request }
+diff --git a/Tinycast/Features/FileSearch/Model/FileSearchScope.swift b/Tinycast/Features/FileSearch/Model/FileSearchScope.swift
+index ea0e99ed..5048287e 100644
+--- a/Tinycast/Features/FileSearch/Model/FileSearchScope.swift
++++ b/Tinycast/Features/FileSearch/Model/FileSearchScope.swift
+@@ -2,8 +2,8 @@ import Foundation
+ 
+ /// The configured scopes are the crawl roots: only what lies under one is indexed or searched.
+ enum FileSearchScope {
+-    /// The whole disk; stored tilde-abbreviated otherwise, so a backup stays portable.
+-    static let defaultScopes = ["/"]
++    /// Stored tilde-abbreviated, so a backup stays portable.
++    static let defaultScopes = ["~"]
+ 
+     static func expand(_ scope: String, homeDirectory: URL) -> URL {
+         guard scope.hasPrefix("~") else {
+@@ -22,9 +22,13 @@ enum FileSearchScope {
+         return "~" + path.dropFirst(home.count)
+     }
+ 
++    /// Keeps a scope inside another as the user listed it; only `roots(for:)` folds it.
+     static func normalize(_ scopes: [String], homeDirectory: URL) -> [String] {
+-        roots(for: scopes, homeDirectory: homeDirectory)
+-            .map { abbreviate($0, homeDirectory: homeDirectory) }
++        var seen = Set<String>()
++        return scopes.compactMap { scope in
++            let path = expand(scope, homeDirectory: homeDirectory).path
++            return seen.insert(path).inserted ? abbreviate(path, homeDirectory: homeDirectory) : nil
++        }
+     }
+ 
+     static func roots(for scopes: [String], homeDirectory: URL) -> [String] {
+diff --git a/Tinycast/Features/FileSearch/Settings/FileSearchSettingsView.swift b/Tinycast/Features/FileSearch/Settings/FileSearchSettingsView.swift
+index 4cff53c3..be2836f2 100644
+--- a/Tinycast/Features/FileSearch/Settings/FileSearchSettingsView.swift
++++ b/Tinycast/Features/FileSearch/Settings/FileSearchSettingsView.swift
+@@ -176,7 +176,6 @@ private struct FileSearchScopesSection: View {
+                     Button("Restore Defaults") {
+                         settings.fileSearchScopes = FileSearchScope.defaultScopes
+                     }
+-                    .help("Index the whole disk.")
+                 }
+             }
+         } header: {
+@@ -219,15 +218,12 @@ private struct FileSearchIgnoreSection: View {
+ 
+     private let home = FileManager.default.homeDirectoryForCurrentUser
+ 
++    private var patterns: [String] { settings.fileSearchEffectiveIgnorePatterns }
++
+     var body: some View {
+         Section {
+-            ForEach(FileSearchIgnoreList.defaults, id: \.self) { pattern in
+-                PatternRow(pattern: pattern, onRemove: nil)
+-            }
+-            ForEach(settings.fileSearchIgnorePatterns, id: \.self) { pattern in
+-                PatternRow(pattern: pattern) {
+-                    settings.fileSearchIgnorePatterns.removeAll { $0 == pattern }
+-                }
++            ForEach(patterns, id: \.self) { pattern in
++                PatternRow(pattern: pattern) { remove(pattern) }
+             }
+ 
+             // Titled, a grouped form squeezes the field into a sliver too narrow to click.
+@@ -239,6 +235,9 @@ private struct FileSearchIgnoreSection: View {
+                     .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                 Button("Add Folder…", action: addFolders)
+                     .help("Skip a folder and everything in it.")
++                if patterns != FileSearchIgnoreList.defaults {
++                    Button("Restore Defaults", action: restoreDefaults)
++                }
+             }
+         } header: {
+             SettingsSectionHeader(.fileSearchIgnorePatterns)
+@@ -267,11 +266,25 @@ private struct FileSearchIgnoreSection: View {
+     private func add(_ text: String) {
+         let pattern = text.trimmingCharacters(in: .whitespaces)
+         draft = ""
+-        guard !pattern.isEmpty,
+-            !FileSearchIgnoreList.defaults.contains(pattern),
+-            !settings.fileSearchIgnorePatterns.contains(pattern)
+-        else { return }
+-        settings.fileSearchIgnorePatterns.append(pattern)
++        guard !pattern.isEmpty, !patterns.contains(pattern) else { return }
++        if FileSearchIgnoreList.defaults.contains(pattern) {
++            settings.fileSearchRemovedDefaultPatterns.removeAll { $0 == pattern }
++        } else {
++            settings.fileSearchIgnorePatterns.append(pattern)
++        }
++    }
++
++    private func remove(_ pattern: String) {
++        if FileSearchIgnoreList.defaults.contains(pattern) {
++            settings.fileSearchRemovedDefaultPatterns.append(pattern)
++        } else {
++            settings.fileSearchIgnorePatterns.removeAll { $0 == pattern }
++        }
++    }
++
++    private func restoreDefaults() {
++        settings.fileSearchIgnorePatterns = []
++        settings.fileSearchRemovedDefaultPatterns = []
+     }
+ }
+ 
+@@ -291,24 +304,20 @@ private func chooseFolders(message: String) -> [URL]? {
+ 
+ private struct PatternRow: View {
+     let pattern: String
+-    /// Nil for a built-in rule, which has no remove affordance because it cannot be turned off.
+-    let onRemove: (() -> Void)?
++    let onRemove: () -> Void
+ 
+     var body: some View {
+         LabeledContent {
+-            if let onRemove {
+-                Button(action: onRemove) {
+-                    Image(systemName: "xmark.circle.fill")
+-                        .foregroundStyle(.tertiary)
+-                }
+-                .buttonStyle(.plain)
+-                .accessibilityLabel("Remove \(pattern)")
++            Button(action: onRemove) {
++                Image(systemName: "xmark.circle.fill")
++                    .foregroundStyle(.tertiary)
+             }
++            .buttonStyle(.plain)
++            .accessibilityLabel("Remove \(pattern)")
+         } label: {
+             Text(pattern)
+                 .lineLimit(1)
+                 .truncationMode(.middle)
+-                .foregroundStyle(onRemove == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+         }
+     }
+ }
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+index f63ddf1d..7da29632 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+@@ -41,7 +41,7 @@ final class FileSearchCoordinator {
+         indexer.apply(
+             FileSearchPolicy(
+                 scopes: settings.fileSearchScopes,
+-                ignorePatterns: settings.fileSearchIgnorePatterns,
++                ignorePatterns: settings.fileSearchEffectiveIgnorePatterns,
+                 homeDirectory: FileManager.default.homeDirectoryForCurrentUser))
+     }
+ 
+diff --git a/Tinycast/Features/Settings/AppSettings.swift b/Tinycast/Features/Settings/AppSettings.swift
+index 9429e027..c84f8db8 100644
+--- a/Tinycast/Features/Settings/AppSettings.swift
++++ b/Tinycast/Features/Settings/AppSettings.swift
+@@ -324,6 +324,19 @@ final class AppSettings {
+         }
+     }
+ 
++    var fileSearchRemovedDefaultPatterns: [String] {
++        didSet {
++            defaults.set(
++                fileSearchRemovedDefaultPatterns,
++                forKey: Key.fileSearchRemovedDefaultPatterns.rawValue)
++        }
++    }
++
++    var fileSearchEffectiveIgnorePatterns: [String] {
++        FileSearchIgnoreList.patterns(
++            added: fileSearchIgnorePatterns, removedDefaults: fileSearchRemovedDefaultPatterns)
++    }
++
+     var fileSearchShowInLauncher: Bool {
+         didSet {
+             defaults.set(fileSearchShowInLauncher, forKey: Key.fileSearchShowInLauncher.rawValue)
+@@ -742,6 +755,8 @@ final class AppSettings {
+             ?? FileSearchScope.defaultScopes
+         fileSearchIgnorePatterns =
+             defaults.stringArray(forKey: Key.fileSearchIgnorePatterns.rawValue) ?? []
++        fileSearchRemovedDefaultPatterns =
++            defaults.stringArray(forKey: Key.fileSearchRemovedDefaultPatterns.rawValue) ?? []
+         fileSearchShowInLauncher = defaults.bool(forKey: Key.fileSearchShowInLauncher.rawValue)
+         notesEnabled = defaults.bool(forKey: Key.notesEnabled.rawValue)
+         dictationEnabled = defaults.bool(forKey: Key.dictationEnabled.rawValue)
+diff --git a/Tinycast/Features/Settings/AppSettingsKey.swift b/Tinycast/Features/Settings/AppSettingsKey.swift
+index dfcd547f..cacbf9bc 100644
+--- a/Tinycast/Features/Settings/AppSettingsKey.swift
++++ b/Tinycast/Features/Settings/AppSettingsKey.swift
+@@ -35,6 +35,7 @@ enum AppSettingsKey: String, CaseIterable {
+     case fileSearchEnabled = "fileSearchEnabled"
+     case fileSearchScopes = "fileSearchScopes"
+     case fileSearchIgnorePatterns = "fileSearchIgnorePatterns"
++    case fileSearchRemovedDefaultPatterns = "fileSearchRemovedDefaultPatterns"
+     case fileSearchShowInLauncher = "fileSearchShowInLauncher"
+     case notesEnabled = "notesEnabled"
+     case notesRendersMarkdown = "notesRendersMarkdown"
+diff --git a/Tinycast/Features/Settings/Model/SettingsFileKey.swift b/Tinycast/Features/Settings/Model/SettingsFileKey.swift
+index df6813e7..0763ce45 100644
+--- a/Tinycast/Features/Settings/Model/SettingsFileKey.swift
++++ b/Tinycast/Features/Settings/Model/SettingsFileKey.swift
+@@ -66,6 +66,7 @@ enum SettingsFileKey: String, CaseIterable, Sendable {
+     case fileSearchEnabled = "fileSearch.enabled"
+     case fileSearchScopes = "fileSearch.scopes"
+     case fileSearchIgnorePatterns = "fileSearch.ignorePatterns"
++    case fileSearchRemovedDefaultPatterns = "fileSearch.removedDefaultPatterns"
+     case fileSearchShowInLauncher = "fileSearch.showInLauncher"
+     case fileSearchCommands = "fileSearch.commands"
+     case notesEnabled = "notes.enabled"
+diff --git a/Tinycast/Features/Settings/SettingsFileSchema.swift b/Tinycast/Features/Settings/SettingsFileSchema.swift
+index b1aa24d2..0ba41d8a 100644
+--- a/Tinycast/Features/Settings/SettingsFileSchema.swift
++++ b/Tinycast/Features/Settings/SettingsFileSchema.swift
+@@ -85,6 +85,8 @@ enum SettingsFileSchema {
+         case .fileSearchEnabled: return bind(settings, \.fileSearchEnabled)
+         case .fileSearchScopes: return bind(settings, \.fileSearchScopes)
+         case .fileSearchIgnorePatterns: return bind(settings, \.fileSearchIgnorePatterns)
++        case .fileSearchRemovedDefaultPatterns:
++            return bind(settings, \.fileSearchRemovedDefaultPatterns)
+         case .fileSearchShowInLauncher: return bind(settings, \.fileSearchShowInLauncher)
+         case .fileSearchCommands: return launcher.commandsBinding(for: key, owner: .fileSearch)
+         case .notesEnabled: return bind(settings, \.notesEnabled)
+diff --git a/Tinycast/Resources/Localizable.xcstrings b/Tinycast/Resources/Localizable.xcstrings
+index 76f6a6b2..b25fc179 100644
+--- a/Tinycast/Resources/Localizable.xcstrings
++++ b/Tinycast/Resources/Localizable.xcstrings
+@@ -62703,58 +62703,6 @@
+         }
+       }
+     },
+-    "Index the whole disk." : {
+-      "localizations" : {
+-        "de" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "Das gesamte Volume indexieren."
+-          }
+-        },
+-        "es" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "Indexar todo el disco."
+-          }
+-        },
+-        "fr" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "Indexer tout le disque."
+-          }
+-        },
+-        "ja" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "ディスク全体のインデックスを作成します。"
+-          }
+-        },
+-        "ko" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "전체 디스크의 색인을 만듭니다."
+-          }
+-        },
+-        "pt" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "Indexar o disco inteiro."
+-          }
+-        },
+-        "ru" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "Индексировать весь диск."
+-          }
+-        },
+-        "zh-Hans" : {
+-          "stringUnit" : {
+-            "state" : "translated",
+-            "value" : "为整个磁盘建立索引。"
+-          }
+-        }
+-      }
+-    },
+     "Indexed Items" : {
+       "localizations" : {
+         "de" : {
+diff --git a/docs/features/file-search.md b/docs/features/file-search.md
+index 646d7f81..760ac337 100644
+--- a/docs/features/file-search.md
++++ b/docs/features/file-search.md
+@@ -1,8 +1,8 @@
+ # Search Files
+ 
+ Search Files is a palette screen for opening any file or folder on the disk. It searches Tinycast's own
+-filename index, built from a whole-disk crawl and kept current from FSEvents. Spotlight is not involved.
+-It is reached from the built-in Search Files launcher command, or its own global shortcut, after the
++filename index, built by crawling the search scopes and kept current from FSEvents. Spotlight is not
++involved. It is reached from the built-in Search Files launcher command, or its own global shortcut, after the
+ feature is enabled in Settings; with **Show in launcher** on, root search lists the top hits too. The
+ design follows [fsearch](https://github.com/noahdunnagan/fsearch).
+ 
+@@ -14,7 +14,9 @@ design follows [fsearch](https://github.com/noahdunnagan/fsearch).
+ - **Full Disk Access is required, and nothing is indexed without it.** `Permissions.hasFullDiskAccess()`
+   probes a TCC-guarded file, which never prompts. The pane and the palette both say how to grant it.
+ - **Scopes are the crawl roots.** Only what lies under a scope is indexed or searched; a scope inside
+-  another folds into it, and a cleared list indexes nothing. The default is the whole disk (`/`).
++  another stays listed but folds into it at crawl time, and a cleared list indexes nothing. The default
++  is home (`~`): dotfiles are user files, the rest of the disk is the system's, and apps are the
++  launcher's.
+ - **A matching ignore pattern skips a folder and everything in it at crawl time.** Changing either list
+   rebuilds the index, debounced by a second; the old index serves until the new one maps.
+ - **Hidden files and bundle contents are indexed.** They rank last instead (see Ranking), and the ignore
+@@ -26,8 +28,11 @@ design follows [fsearch](https://github.com/noahdunnagan/fsearch).
+   duplicate or an event that races a rebuild changes nothing twice.
+ - **File Search is off by default, and off means no index on disk.** Disabling stops the watcher, cancels
+   any build and deletes `Application Support/<bundle id>/FileIndex/`.
+-- **The shipped ignore rules are compiled in and never persisted.** `fileSearchIgnorePatterns` stores only
+-  what the user added, so changing `FileSearchIgnoreList.defaults` reaches installs that already ran.
++- **The shipped ignore rules are compiled in and never persisted.** `fileSearchIgnorePatterns` stores
++  only what the user added and `fileSearchRemovedDefaultPatterns` only the shipped rules they removed,
++  so changing `FileSearchIgnoreList.defaults` reaches installs that already ran. Every row can be
++  removed, and **Restore Defaults** clears both lists. Scopes are one stored list that `defaultScopes`
++  only seeds.
+ - **The launcher's Files section is off by default, and off costs nothing.** With it off a keystroke never
+   reaches the index, and `LauncherScreen` reads the switch before the session, so it observes nothing.
+ - **A superseded query never publishes.** The session runs one search at a time, keeps only the newest
+@@ -154,9 +159,18 @@ somewhere on another; `/` is shown as the startup volume's name. The helper reso
+ | no `/`, has `*` `?` `[` | the entry name, via `fnmatch` | `*.tmp` |
+ | contains `/`, or starts with `~/` | the whole absolute path, via `fnmatch` | `~/Movies`, `**/[Cc]ache/**` |
+ 
+-The shipped rules also skip `.next`, `~/Library/Caches`, `/Library/Caches` and `/private/var/folders`.
+-They are the busiest folders on a disk — one browser's cache alone holds tens of thousands of files
+-rewritten on every page load — and never what a search is for.
++The defaults skip what a search for one's own files never wants: build output and dependency
++folders (`node_modules`, `.git`, `build`, `DerivedData`, `.venv`, …), the Photos library, the Trash,
++the `~/.cache` and `~/.npm` caches, and the noisy parts of `~/Library` — `Application Support`,
++`Caches`, `Containers`, `Developer`, `Group Containers` and `Mail`. Together they hold most of a home
++folder's entries and most of its churn: one browser's cache alone rewrites tens of thousands of files
++on every page load. `Preferences`, `LaunchAgents` and the cloud drives stay indexed. `/Library/Caches`
++and `/private/var/folders` cover a scope added outside home.
++
++The pane lists `FileSearchIgnoreList.patterns(added:removedDefaults:)`: the defaults the user kept,
++then what they added. Adding a removed default takes it off the removed list rather than storing it
++twice, and a default repeated in `fileSearchIgnorePatterns` is ignored, so a shipped rule has one
++switch.
+ 
+ `fnmatch` runs with `FNM_CASEFOLD` and without `FNM_PATHNAME`, so `*` spans `/`. Name patterns read the
+ NUL-terminated name straight out of the `getattrlistbulk` buffer. Literal path patterns first check the
+-- 
+2.56.0
+

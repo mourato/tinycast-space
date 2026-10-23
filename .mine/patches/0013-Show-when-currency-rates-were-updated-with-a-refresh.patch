@@ -1,0 +1,382 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 08:10:34 +0600
+Subject: [PATCH] Show when currency rates were updated, with a refresh button
+ (#1648)
+
+---
+ Tests/command-escape-tap-test.swift           |  29 +++--
+ .../Calculator/Model/CalcEngine.swift         |  10 +-
+ .../Calculator/Model/CalcNumberFormat.swift   |   3 +-
+ .../Calculator/Model/CalcQuantity.swift       |   3 +-
+ .../Service/CurrencyRateStore.swift           |  12 ++
+ .../Calculator/UI/CalculatorCardView.swift    |  39 +++++++
+ Tinycast/Resources/Localizable.xcstrings      | 106 ++++++++++++++++++
+ docs/features/calculator.md                   |   3 +
+ 8 files changed, 189 insertions(+), 16 deletions(-)
+
+diff --git a/Tests/command-escape-tap-test.swift b/Tests/command-escape-tap-test.swift
+index 093577f0..3ea430d6 100644
+--- a/Tests/command-escape-tap-test.swift
++++ b/Tests/command-escape-tap-test.swift
+@@ -37,7 +37,8 @@ extension CGEvent {
+         let (fail, gate) = fixture.withLock { fixture in
+             fixture.attempts += 1
+             fixture.touchedMainThread = fixture.touchedMainThread || Thread.isMainThread
+-            fixture.wrongConfiguration = fixture.wrongConfiguration
++            fixture.wrongConfiguration =
++                fixture.wrongConfiguration
+                 || tap != .cghidEventTap || place != .headInsertEventTap
+                 || options != .defaultTap || eventsOfInterest != 1 << CGEventType.keyDown.rawValue
+             let fail = fixture.failNext
+@@ -51,8 +52,9 @@ extension CGEvent {
+         guard let port = CFMachPortCreate(kCFAllocatorDefault, { _, _, _, _ in }, &context, nil)
+         else { return nil }
+         fixture.withLock {
+-            $0.records.append(TapRecord(
+-                port: port, runLoop: CFRunLoopGetCurrent(), callback: callback, userInfo: userInfo))
++            $0.records.append(
++                TapRecord(
++                    port: port, runLoop: CFRunLoopGetCurrent(), callback: callback, userInfo: userInfo))
+         }
+         if let gate {
+             gate.entered.signal()
+@@ -128,7 +130,8 @@ struct CommandEscapeTapTests {
+             result.withLock { $0 = claimed }
+             completed.signal()
+         }
+-        expect(completed.wait(timeout: .now() + 2) == .success,
++        expect(
++            completed.wait(timeout: .now() + 2) == .success,
+             "the worker returns while the main thread is blocked")
+         return result.withLock { $0 }
+     }
+@@ -203,10 +206,12 @@ struct CommandEscapeTapTests {
+         fixture.withLock { $0.failNext = true }
+         let attempts = fixture.withLock { $0.attempts }
+         tap.enable()
+-        await waitFor("a refused tap can retry on the next enable", {
+-            tap.enable()
+-            return fixture.withLock { $0.attempts >= attempts + 2 && $0.records.count == 4 }
+-        })
++        await waitFor(
++            "a refused tap can retry on the next enable",
++            {
++                tap.enable()
++                return fixture.withLock { $0.attempts >= attempts + 2 && $0.records.count == 4 }
++            })
+         expect(deliver(3) == true, "a retried installation handles the chord")
+         await waitFor("the retry dispatches normally", { fires == 3 })
+         tap.disable()
+@@ -225,9 +230,11 @@ struct CommandEscapeTapTests {
+             tap.enable()
+             tap.disable()
+         }
+-        await waitFor("rapid show and hide leaves no valid ports", {
+-            fixture.withLock { $0.records.allSatisfy { !CFMachPortIsValid($0.port) } }
+-        })
++        await waitFor(
++            "rapid show and hide leaves no valid ports",
++            {
++                fixture.withLock { $0.records.allSatisfy { !CFMachPortIsValid($0.port) } }
++            })
+         expect(fixture.withLock { !$0.wrongConfiguration }, "the tap keeps the required HID signature")
+         expect(fixture.withLock { !$0.touchedMainThread }, "tap installation and control stay off main")
+         expect(fires == 3, "closed sessions never deliver an action")
+diff --git a/Tinycast/Features/Calculator/Model/CalcEngine.swift b/Tinycast/Features/Calculator/Model/CalcEngine.swift
+index 111c1ab6..e83cabfb 100644
+--- a/Tinycast/Features/Calculator/Model/CalcEngine.swift
++++ b/Tinycast/Features/Calculator/Model/CalcEngine.swift
+@@ -30,16 +30,18 @@ struct CalcResult: Equatable, Sendable {
+     let payload: Payload
+     /// False when the copy text, typed back as a query, is not this answer: dates, times, booleans.
+     let canChain: Bool
++    let isCurrency: Bool
+ 
+     init(
+         expression: String, sourceBadge: String? = nil, targetBadge: String? = nil, payload: Payload,
+-        canChain: Bool = true
++        canChain: Bool = true, isCurrency: Bool = false
+     ) {
+         self.expression = expression
+         self.sourceBadge = sourceBadge
+         self.targetBadge = targetBadge
+         self.payload = payload
+         self.canChain = canChain
++        self.isCurrency = isCurrency
+     }
+ 
+     /// True only for a copyable value; an error card has no primary action and no actions menu.
+@@ -136,7 +138,8 @@ enum CalcEngine {
+                     targetBadge: to.name,
+                     payload: .value(
+                         display: "\(CalcFormatter.grouped(amount)) \(to.code)",
+-                        copyText: "\(amount) \(to.code)"))
++                        copyText: "\(amount) \(to.code)"),
++                    isCurrency: true)
+             case .mismatch(let from, let to):
+                 return CalcResult(
+                     expression: query,
+@@ -251,7 +254,8 @@ enum CalcEngine {
+             sourceBadge: result.sourceBadge,
+             targetBadge: result.targetBadge,
+             payload: result.payload,
+-            canChain: result.canChain)
++            canChain: result.canChain,
++            isCurrency: result.isCurrency)
+     }
+ 
+     private static func unchained(_ result: CalcResult) -> CalcResult {
+diff --git a/Tinycast/Features/Calculator/Model/CalcNumberFormat.swift b/Tinycast/Features/Calculator/Model/CalcNumberFormat.swift
+index d13c4ba6..a91f1f12 100644
+--- a/Tinycast/Features/Calculator/Model/CalcNumberFormat.swift
++++ b/Tinycast/Features/Calculator/Model/CalcNumberFormat.swift
+@@ -136,7 +136,8 @@ struct CalcNumberFormat: Equatable, Sendable {
+         }
+         return CalcResult(
+             expression: localizedExpression(result.expression), sourceBadge: result.sourceBadge,
+-            targetBadge: result.targetBadge, payload: payload, canChain: result.canChain)
++            targetBadge: result.targetBadge, payload: payload, canChain: result.canChain,
++            isCurrency: result.isCurrency)
+     }
+ 
+     private func rewrite(_ text: String, separatingArguments: Bool) -> String {
+diff --git a/Tinycast/Features/Calculator/Model/CalcQuantity.swift b/Tinycast/Features/Calculator/Model/CalcQuantity.swift
+index e2fa66a6..28fead24 100644
+--- a/Tinycast/Features/Calculator/Model/CalcQuantity.swift
++++ b/Tinycast/Features/Calculator/Model/CalcQuantity.swift
+@@ -148,7 +148,8 @@ enum CalcQuantity {
+             sourceBadge: sourceBadge, targetBadge: definition.name,
+             payload: .value(
+                 display: "\(CalcFormatter.grouped(formatted)) \(definition.code)",
+-                copyText: "\(formatted) \(definition.code)"))
++                copyText: "\(formatted) \(definition.code)"),
++            isCurrency: true)
+     }
+ 
+     static func convertUnit(_ amount: Double, from: UnitDef, to: UnitDef) -> Double {
+diff --git a/Tinycast/Features/Calculator/Service/CurrencyRateStore.swift b/Tinycast/Features/Calculator/Service/CurrencyRateStore.swift
+index 310a0ba4..419b8206 100644
+--- a/Tinycast/Features/Calculator/Service/CurrencyRateStore.swift
++++ b/Tinycast/Features/Calculator/Service/CurrencyRateStore.swift
+@@ -16,6 +16,7 @@ final class CurrencyRateStore {
+     private static let retryInterval: TimeInterval = 30 * 60
+ 
+     private(set) var rates: CurrencyRates?
++    private(set) var isRefreshing = false
+ 
+     private let fileURL: URL
+     @ObservationIgnored private var pump: Task<Void, Never>?
+@@ -49,6 +50,17 @@ final class CurrencyRateStore {
+         }
+     }
+ 
++    /// The pump re-measures age from `completedAt` when it wakes, so its schedule needs no reset.
++    func refresh() {
++        guard !isRefreshing else { return }
++        isRefreshing = true
++        Task {
++            await fetchAndStore()
++            isRefreshing = false
++        }
++    }
++
++    @discardableResult
+     private func fetchAndStore() async -> Bool {
+         guard let result = await Self.fetch() else { return false }
+         rates = result.rates
+diff --git a/Tinycast/Features/Calculator/UI/CalculatorCardView.swift b/Tinycast/Features/Calculator/UI/CalculatorCardView.swift
+index 3ae8df43..7b6f6397 100644
+--- a/Tinycast/Features/Calculator/UI/CalculatorCardView.swift
++++ b/Tinycast/Features/Calculator/UI/CalculatorCardView.swift
+@@ -70,10 +70,49 @@ struct CalculatorCard: View {
+         }
+         .padding(.horizontal, metrics.spacing.xl)
+         .padding(.vertical, metrics.spacing.xxxl)
++        .overlay(alignment: .bottomTrailing) {
++            if result.isCurrency { RatesFreshness() }
++        }
+         .leadCard(selected: selected)
+     }
+ }
+ 
++private struct RatesFreshness: View {
++    @Environment(\.metrics) private var metrics
++    @Environment(CurrencyRateStore.self) private var currencyRates
++    @State private var hovered = false
++
++    var body: some View {
++        if let fetchedAt = currencyRates.rates?.fetchedAt {
++            HStack(spacing: metrics.spacing.xs) {
++                Text("Updated \(fetchedAt, formatter: Self.formatter)")
++                Button(
++                    "Refresh Exchange Rates", systemImage: "arrow.clockwise", action: currencyRates.refresh
++                )
++                .labelStyle(.iconOnly)
++                .buttonStyle(.plain)
++                .symbolEffect(.rotate, options: .repeat(.continuous), isActive: currencyRates.isRefreshing)
++                .foregroundStyle(hovered ? .secondary : .tertiary)
++                .onHover { hovered = $0 }
++                .help("Refresh Exchange Rates")
++            }
++            .font(metrics.typography.compactKeyCap)
++            .foregroundStyle(.tertiary)
++            .padding(.trailing, metrics.spacing.lg)
++            .padding(.bottom, metrics.spacing.md)
++        }
++    }
++
++    @MainActor private static let formatter: DateFormatter = {
++        let formatter = DateFormatter()
++        formatter.dateStyle = .medium
++        formatter.timeStyle = .short
++        formatter.doesRelativeDateFormatting = true
++        formatter.formattingContext = .middleOfSentence
++        return formatter
++    }()
++}
++
+ /// Dims the words that join an expression, so the values they join read first.
+ private enum CalcSyntax {
+     static func highlighted(_ text: String) -> AttributedString {
+diff --git a/Tinycast/Resources/Localizable.xcstrings b/Tinycast/Resources/Localizable.xcstrings
+index c004f0e2..7e8eeaf5 100644
+--- a/Tinycast/Resources/Localizable.xcstrings
++++ b/Tinycast/Resources/Localizable.xcstrings
+@@ -94377,6 +94377,59 @@
+         }
+       }
+     },
++    "Refresh Exchange Rates" : {
++      "comment" : "Fetch the calculator's currency exchange rates again",
++      "localizations" : {
++        "de" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Wechselkurse aktualisieren"
++          }
++        },
++        "es" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Actualizar tipos de cambio"
++          }
++        },
++        "fr" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Actualiser les taux de change"
++          }
++        },
++        "ja" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "為替レートを更新"
++          }
++        },
++        "ko" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "환율 새로 고침"
++          }
++        },
++        "pt" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Atualizar taxas de câmbio"
++          }
++        },
++        "ru" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Обновить курсы валют"
++          }
++        },
++        "zh-Hans" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "刷新汇率"
++          }
++        }
++      }
++    },
+     "Refresh Now" : {
+       "comment" : "Run an extension's background refresh now",
+       "localizations" : {
+@@ -128599,6 +128652,59 @@
+         }
+       }
+     },
++    "Updated %@" : {
++      "comment" : "When the calculator's exchange rates were fetched; %@ is a day and time, such as “today at 10:45 AM”",
++      "localizations" : {
++        "de" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Aktualisiert %@"
++          }
++        },
++        "es" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Actualizado %@"
++          }
++        },
++        "fr" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Mis à jour %@"
++          }
++        },
++        "ja" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@に更新"
++          }
++        },
++        "ko" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "%@ 업데이트됨"
++          }
++        },
++        "pt" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Atualizado %@"
++          }
++        },
++        "ru" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "Обновлено %@"
++          }
++        },
++        "zh-Hans" : {
++          "stringUnit" : {
++            "state" : "translated",
++            "value" : "更新于 %@"
++          }
++        }
++      }
++    },
+     "Updates available" : {
+       "localizations" : {
+         "de" : {
+diff --git a/docs/features/calculator.md b/docs/features/calculator.md
+index 2e3c8bd9..0943a78b 100644
+--- a/docs/features/calculator.md
++++ b/docs/features/calculator.md
+@@ -607,6 +607,9 @@ newer numbers. Age is measured from the persisted `fetchedAt`, not from launch,
+ Tinycast never re-fetches a snapshot that is still fresh — a cold start with a same-day cache makes
+ zero requests. Offline, the last snapshot keeps answering; with no snapshot at all the card says so
+ rather than guessing, and a currency the feed doesn't quote reports `No exchange rate for <CODE>.`
++A money answer sets `CalcResult.isCurrency`, so its card shows when the snapshot was fetched and a
++small refresh button. `CurrencyRateStore.refresh()` fetches at once without touching the pump, which
++re-measures age from `completedAt` whenever it wakes.
+ The store hands `CalcEngine.evaluate` a finished `CurrencyRates` value — the engine never fetches,
+ which is what keeps it Foundation-only and testable. `CalcMemo` keys its memo on the snapshot's
+ `fetchedAt` and the region currency, so either changing re-evaluates without diffing every rate.
+-- 
+2.56.0
+

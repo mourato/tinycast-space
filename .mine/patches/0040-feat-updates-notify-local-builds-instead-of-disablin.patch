@@ -13,12 +13,12 @@ newer releases are offered.
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
 ---
- Tinycast/Features/Updates/Model/ReleaseFeed.swift    |  5 +++++
- .../Features/Updates/Service/UpdateCheckStore.swift  |  4 +---
- Tinycast/Features/Updates/UI/UpdateCoordinator.swift | 12 +++++++++++-
- Tinycast/Features/Updates/UI/UpdateWindowView.swift  | 12 ++++++++++--
- docs/features/updates.md                             |  5 +++++
- 5 files changed, 32 insertions(+), 6 deletions(-)
+ Tinycast/Features/Updates/Model/ReleaseFeed.swift  |  5 +++++
+ .../Updates/Service/UpdateCheckStore.swift         |  4 +---
+ .../Features/Updates/UI/UpdateCoordinator.swift    | 12 +++++++++++-
+ .../Features/Updates/UI/UpdateWindowView.swift     | 14 +++++++++++---
+ docs/features/updates.md                           |  5 +++++
+ 5 files changed, 33 insertions(+), 7 deletions(-)
 
 diff --git a/Tinycast/Features/Updates/Model/ReleaseFeed.swift b/Tinycast/Features/Updates/Model/ReleaseFeed.swift
 index a68d9e5a..5d28d042 100644
@@ -37,10 +37,10 @@ index a68d9e5a..5d28d042 100644
      static func offer(
          _ release: AvailableRelease?, running: AppVersion, skipped: AppVersion?
 diff --git a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-index 56048a57..3df76e63 100644
+index 50a342ed..d6c31356 100644
 --- a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
 +++ b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-@@ -36,9 +36,7 @@ final class UpdateCheckStore {
+@@ -37,9 +37,7 @@ final class UpdateCheckStore {
      @ObservationIgnored private var pump: Task<Void, Never>?
  
      init(
@@ -52,7 +52,7 @@ index 56048a57..3df76e63 100644
              .flatMap(AppVersion.init),
          fileURL: URL = AppPaths.caches().appendingPathComponent("update-check.json"),
 diff --git a/Tinycast/Features/Updates/UI/UpdateCoordinator.swift b/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
-index 35052b35..f9e5f05e 100644
+index 7ead406f..48df8b94 100644
 --- a/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
 +++ b/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
 @@ -5,6 +5,9 @@ import SwiftUI
@@ -65,7 +65,7 @@ index 35052b35..f9e5f05e 100644
      /// One surface for prompt, progress and report: a download cannot move into a dialog.
      enum Stage: Equatable {
          case checking
-@@ -105,7 +108,7 @@ final class UpdateCoordinator {
+@@ -110,7 +113,7 @@ final class UpdateCoordinator {
      // MARK: - Actions
  
      func install() {
@@ -74,7 +74,7 @@ index 35052b35..f9e5f05e 100644
          // Re-asked at the moment of the click, never read from a flag that could have gone stale.
          if let blocker = UpdateReadiness.evaluate(core.currentActivity) {
              stage = .blocked(blocker, release)
-@@ -131,6 +134,13 @@ final class UpdateCoordinator {
+@@ -137,6 +140,13 @@ final class UpdateCoordinator {
          }
      }
  
@@ -89,20 +89,22 @@ index 35052b35..f9e5f05e 100644
      func skip() {
          if let release = pendingRelease { store.skip(release) }
 diff --git a/Tinycast/Features/Updates/UI/UpdateWindowView.swift b/Tinycast/Features/Updates/UI/UpdateWindowView.swift
-index 73365bcf..8cb752df 100644
+index 035738a4..30e37634 100644
 --- a/Tinycast/Features/Updates/UI/UpdateWindowView.swift
 +++ b/Tinycast/Features/Updates/UI/UpdateWindowView.swift
-@@ -83,6 +83,9 @@ struct UpdateWindowView: View {
+@@ -86,7 +86,10 @@ struct UpdateWindowView: View {
          case .localBuild:
-             return "This is a local build — rebuild it to move it forward."
+             return String(localized: "This is a local build — rebuild it to move it forward.")
          case .available, .blocked, .installing:
+-            return String(localized: "You have \(updates.runningVersion).")
 +            guard UpdateCoordinator.installsUpdates else {
 +                return "You have \(updates.runningVersion). Local builds don't install updates."
 +            }
-             return "You have \(updates.runningVersion)."
++            return "You have \(updates.runningVersion)."
          case .readyToRelaunch:
-             return "Relaunch to start using it."
-@@ -168,8 +171,13 @@ struct UpdateWindowView: View {
+             return String(localized: "Relaunch to start using it.")
+         }
+@@ -171,8 +174,13 @@ struct UpdateWindowView: View {
              case .available:
                  Button("Later") { updates.skip() }
                      .keyboardShortcut(.cancelAction)
@@ -119,10 +121,10 @@ index 73365bcf..8cb752df 100644
                  Button("Later") { updates.skip() }
                      .keyboardShortcut(.cancelAction)
 diff --git a/docs/features/updates.md b/docs/features/updates.md
-index d289821b..9c6c4dbd 100644
+index 146ca469..c6577426 100644
 --- a/docs/features/updates.md
 +++ b/docs/features/updates.md
-@@ -64,6 +64,11 @@ no appcast: the release feed the website already reads is the feed the app reads
+@@ -68,6 +68,11 @@ no appcast: the release feed the website already reads is the feed the app reads
    the web, and a bare mention is what notifies the contributor, so the published body keeps them
    plain and `ReleaseNotes` spells them as Markdown links on the way to the window. Both point at
    `ReleaseFeed.repository`, the one place the repo is named.

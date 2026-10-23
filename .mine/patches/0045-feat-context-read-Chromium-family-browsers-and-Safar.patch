@@ -913,10 +913,10 @@ index 7e0d1ca8..30a67c2c 100644
          for tab in tabs.prefix(10) {
              items.append(
 diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-index 5c331ad4..93d11f07 100644
+index a8b04ab7..377b463c 100644
 --- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
 +++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-@@ -198,7 +198,7 @@ enum SettingsBackupCoverage {
+@@ -203,7 +203,7 @@ enum SettingsBackupCoverage {
          AppSettingsKey.contextAppEnabled.rawValue:
              "Grants reading the front app's text for chat context; an import must not enable capture.",
          AppSettingsKey.contextBrowserEnabled.rawValue:
@@ -926,10 +926,10 @@ index 5c331ad4..93d11f07 100644
              "Stages app context without asking each time; an import must not switch that on.",
          AppSettingsKey.contextAutoAttachBrowser.rawValue:
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index df5cbce4..3e778bfc 100644
+index e83abfb8..72e69dbe 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-@@ -216,10 +216,23 @@ final class QuickActionCoordinator {
+@@ -219,10 +219,23 @@ final class QuickActionCoordinator {
  
      private func begin(_ action: QuickAction, target: Target) async {
          let selection: String
@@ -954,7 +954,7 @@ index df5cbce4..3e778bfc 100644
              case .note(let note):
                  selection = try QuickActionRunner.accepted(note.text)
              }
-@@ -230,13 +243,56 @@ final class QuickActionCoordinator {
+@@ -233,13 +246,56 @@ final class QuickActionCoordinator {
              core.showMessage(error.localizedDescription, tone: .danger)
              return
          }
@@ -1013,10 +1013,10 @@ index df5cbce4..3e778bfc 100644
      private func reportRefusal(_ failure: QuickActionFailure) {
          guard failure.opensAccessibilitySettings else {
 diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
-index 6366266f..b3676c7b 100644
+index a6c9c5f9..8f39a382 100644
 --- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
 +++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
-@@ -333,10 +333,10 @@ enum SettingsSearchCatalog {
+@@ -348,10 +348,10 @@ enum SettingsSearchCatalog {
              keywords: ["auto", "capture", "frontmost"]),
          .init(
              .contextBrowser, "Enable browser context",
@@ -1029,7 +1029,7 @@ index 6366266f..b3676c7b 100644
          .init(
              .contextOptions, "Use selected text only",
              keywords: ["selection", "full page", "whole"]),
-@@ -351,7 +351,7 @@ enum SettingsSearchCatalog {
+@@ -366,7 +366,7 @@ enum SettingsSearchCatalog {
              keywords: ["sources", "priority", "ranking", "order"]),
          .init(
              .contextItems, "Browser tabs",
@@ -1039,7 +1039,7 @@ index 6366266f..b3676c7b 100644
              .contextItems, "Apps",
              keywords: ["frontmost", "priority", "source"]),
 diff --git a/Tinycast/Info.plist b/Tinycast/Info.plist
-index 5740afcb..e4702d6a 100644
+index 6d3649f9..04657a2a 100644
 --- a/Tinycast/Info.plist
 +++ b/Tinycast/Info.plist
 @@ -64,7 +64,7 @@
@@ -1114,7 +1114,7 @@ index 712b8a1e..77adfe7a 100644
  - Switch capture off mid-read: nothing lands. Remove an auto-staged quote and re-summon: it does
    not come back until a new chat.
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
-index e4c4b92a..c8c27219 100644
+index 6e7bc1ea..fd2aebce 100644
 --- a/docs/features/quick-actions.md
 +++ b/docs/features/quick-actions.md
 @@ -35,6 +35,13 @@ selectable Markdown renderer with AI Chat.

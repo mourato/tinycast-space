@@ -1,0 +1,563 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Abue Ammar <14371506+abue-ammar@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 23:34:23 +0600
+Subject: [PATCH] Resolve localized resources through the bundle's table cache
+ (#1686)
+
+On macOS 26, String(localized:) on a LocalizedStringResource reads and
+parses the whole string table on every call. The palette resolves
+command names, kind labels and section titles that way on each render,
+so translated builds stutter and English pays a smaller cost.
+
+resolved() looks the key up through Bundle.main's cached table and
+falls back to String(localized:) whenever the result needs the
+resource's arguments or its default value, so every string is unchanged.
+---
+ Scripts/run-tests.sh                          | 40 +++++---
+ Tests/localized-resource-test.swift           | 95 +++++++++++++++++++
+ Tinycast.xcodeproj/project.pbxproj            |  4 +
+ Tinycast/DesignSystem/FormRow.swift           |  2 +-
+ .../DesignSystem/SettingsComponents.swift     |  2 +-
+ .../Features/AI/UI/AIChatDetailView.swift     |  2 +-
+ .../Features/Launcher/Model/CommandID.swift   |  2 +-
+ .../Features/Launcher/Service/AppIndex.swift  |  4 +-
+ .../Features/Launcher/UI/AppActionsMenu.swift |  2 +-
+ .../Features/Launcher/UI/LauncherList.swift   |  4 +-
+ .../Features/Launcher/UI/LauncherScreen.swift |  2 +-
+ .../Model/BuiltInQuickAction.swift            |  2 +-
+ .../Features/Settings/SettingsAnchor.swift    |  2 +-
+ .../Settings/SettingsScrollTarget.swift       |  2 +-
+ .../Settings/SettingsSearchCatalog.swift      |  4 +-
+ .../SystemActions/Model/SystemAction.swift    |  2 +-
+ .../Model/WindowCommand.swift                 |  2 +-
+ Tinycast/Platform/LocalizedResource.swift     | 11 +++
+ docs/standards.md                             |  2 +
+ docs/testing.md                               |  1 +
+ 20 files changed, 157 insertions(+), 30 deletions(-)
+ create mode 100644 Tests/localized-resource-test.swift
+ create mode 100644 Tinycast/Platform/LocalizedResource.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 12dca4ac..bdea68f9 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -141,7 +141,8 @@ run app-installation-test  $L/SearchRelevance.swift $L/ScriptRomanization.swift
+                            Tinycast/Platform/AppDisplayName.swift Tinycast/Platform/BundleLocalization.swift \
+                            Tinycast/Platform/SystemLanguages.swift \
+                            Tinycast/Platform/Images/FileIconStamp.swift Tinycast/Platform/Memo.swift \
+-                           Tinycast/Platform/Signposts.swift Tinycast/Platform/NotificationToken.swift
++                           Tinycast/Platform/Signposts.swift Tinycast/Platform/NotificationToken.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run launcher-file-test     $L/LauncherFileFormat.swift \
+                            Tinycast/Features/Settings/Model/SettingsFileJSON.swift
+ run launcher-settings-file-test \
+@@ -166,7 +167,8 @@ run launcher-settings-file-test \
+                            Tinycast/Features/Quicklinks/Model/QuicklinkDestination.swift \
+                            Tinycast/Features/SystemActions/Model/SystemAction.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+-                           Tinycast/Features/Snippets/Model/Snippet.swift
++                           Tinycast/Features/Snippets/Model/Snippet.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run apple-shortcut-test    Tinycast/Features/AppleShortcuts/Model/*.swift
+ run calc-test              Tinycast/Features/Calculator/Model/*.swift
+ run index calc-performance Tinycast/Features/Calculator/Model/*.swift
+@@ -257,6 +259,7 @@ run appearance-test        Tinycast/Platform/Appearance.swift \
+                            Tinycast/DesignSystem/InterfaceMetrics.swift \
+                            Tinycast/Features/Settings/AppAppearance.swift
+ run language-test          Tinycast/Features/Settings/AppLanguage.swift
++run localized-resource-test Tinycast/Platform/LocalizedResource.swift
+ run exclusive onboarding-test Tinycast/Features/Onboarding/OnboardingCoordinator.swift \
+                            Tinycast/Windows/AppWindowController.swift \
+                            Tinycast/Windows/WindowChrome.swift Tinycast/Platform/ActivationPolicy.swift
+@@ -332,7 +335,8 @@ run fallback-test          Tinycast/Features/Launcher/Model/Fallback.swift \
+                            Tinycast/Features/Quicklinks/Model/QuicklinkDestination.swift \
+                            Tinycast/Features/SystemActions/Model/SystemAction.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+-                           Tinycast/Features/Snippets/Model/Snippet.swift
++                           Tinycast/Features/Snippets/Model/Snippet.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run dictionary-test        Tinycast/Features/Dictionary/Model/DictionaryEntry.swift \
+                            Tinycast/Features/Dictionary/Model/DictionaryMarkup.swift
+ run dictation-test         Tinycast/Features/Dictation/Model/DictationModel.swift Tinycast/Features/Dictation/Model/DictationIdleRelease.swift Tinycast/Features/Dictation/Model/DictationLanguage.swift Tinycast/Features/Dictation/Model/DictationTextFormatter.swift
+@@ -385,7 +389,8 @@ run hotkey-test            Tinycast/Features/HotKeys/Model/DoubleTapModifier.swi
+                            Tinycast/Features/Quicklinks/Model/QuicklinkDestination.swift \
+                            Tinycast/Features/SystemActions/Model/SystemAction.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+-                           Tinycast/Features/Snippets/Model/Snippet.swift
++                           Tinycast/Features/Snippets/Model/Snippet.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run callout-test          Tinycast/Platform/Appearance.swift \
+                            Tinycast/DesignSystem/Theme.swift \
+                            Tinycast/DesignSystem/InterfaceMetrics.swift \
+@@ -417,14 +422,16 @@ run ext-icon-test          Tinycast/Platform/Appearance.swift \
+                            Tinycast/Features/Extensions/UI/ExtensionImage.swift \
+                            Tinycast/Features/Clipboard/Model/ColorValue.swift \
+                            Tinycast/Features/Clipboard/Model/ColorSpaces.swift
+-run system-action-test     Tinycast/Features/SystemActions/Model/SystemAction.swift
++run system-action-test     Tinycast/Features/SystemActions/Model/SystemAction.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run microphone-mute-test   Tinycast/Features/SystemActions/Service/SystemActionFailure.swift \
+                            Tinycast/Features/SystemActions/Service/SystemActionRunner+Microphone.swift
+ run volume-test            Tinycast/Features/SystemActions/Model/VolumeLevel.swift
+ run window-command-test    Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCycle.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowPlacementEngine.swift \
+-                           Tinycast/Features/WindowManagement/Model/WindowActionMemory.swift
++                           Tinycast/Features/WindowManagement/Model/WindowActionMemory.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run window-preset-test     Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowShortcutPreset.swift \
+                            Tinycast/Features/HotKeys/Model/DoubleTapModifier.swift \
+@@ -433,9 +440,11 @@ run window-preset-test     Tinycast/Features/WindowManagement/Model/WindowComman
+                            Tinycast/Features/HotKeys/Model/HyperKey.swift \
+                            Tinycast/Features/HotKeys/Model/HIDKeyMapping.swift \
+                            Tinycast/Platform/ASCIIKeyboardLayout.swift \
+-                           Tinycast/Features/HotKeys/Service/KeyShortcut.swift
++                           Tinycast/Features/HotKeys/Service/KeyShortcut.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run space-gesture-test     Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+-                           Tinycast/Features/WindowManagement/Model/SpaceGesture.swift
++                           Tinycast/Features/WindowManagement/Model/SpaceGesture.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run window-layout-test     Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCycle.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowPlacementEngine.swift \
+@@ -446,7 +455,8 @@ run window-layout-test     Tinycast/Features/WindowManagement/Model/WindowComman
+                            Tinycast/Features/WindowManagement/Model/WindowLayoutPlan.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowLayoutStore.swift \
+                            Tinycast/Features/WindowManagement/Model/CustomWindowSize.swift \
+-                           Tinycast/Features/WindowManagement/Model/CustomWindowSizeStore.swift
++                           Tinycast/Features/WindowManagement/Model/CustomWindowSizeStore.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run window-room-test       Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCycle.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowPlacementEngine.swift \
+@@ -466,7 +476,8 @@ run window-room-test       Tinycast/Features/WindowManagement/Model/WindowComman
+                            Tinycast/Features/WindowManagement/Model/RoomArrangement.swift \
+                            Tinycast/Features/WindowManagement/Model/RoomStore.swift \
+                            Tinycast/Features/WindowManagement/Model/RoomMinimumSizeStore.swift \
+-                           Tinycast/Features/WindowManagement/Model/RoomParkingLedger.swift
++                           Tinycast/Features/WindowManagement/Model/RoomParkingLedger.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run window-file-test       Tinycast/Features/WindowManagement/Model/WindowCommand.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowCycle.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowPlacementEngine.swift \
+@@ -482,7 +493,8 @@ run window-file-test       Tinycast/Features/WindowManagement/Model/WindowComman
+                            Tinycast/Features/WindowManagement/Model/RoomLayoutEngine.swift \
+                            Tinycast/Features/WindowManagement/Model/WindowManagementFileFormat.swift \
+                            Tinycast/Features/Settings/Model/SettingsFileJSON.swift \
+-                           Tinycast/Features/Settings/Model/SettingsFileIdentity.swift
++                           Tinycast/Features/Settings/Model/SettingsFileIdentity.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run custom-command-test    Tinycast/Platform/PseudoTerminal.swift \
+                            Tinycast/Platform/ProcessExit.swift \
+                            Tinycast/Features/CustomCommands/Model/CustomCommand.swift \
+@@ -698,7 +710,8 @@ run settings-history-test  Tinycast/Features/Settings/SettingsTab.swift \
+                            Tinycast/Features/Settings/SettingsAnchor.swift \
+                            Tinycast/Features/Settings/SettingsNavigationState.swift \
+                            Tinycast/Features/Settings/SettingsSearchCatalog.swift \
+-                           $L/SearchRelevance.swift
++                           $L/SearchRelevance.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run updates-test           Tinycast/Features/Updates/Model/*.swift \
+                            Tinycast/Features/Updates/Service/BundleSignature.swift
+ run update-check-test      Tinycast/Features/Updates/Model/*.swift \
+@@ -786,7 +799,8 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionFailure.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
+-                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
++                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift \
++                           Tinycast/Platform/LocalizedResource.swift
+ run apple-intelligence-test Tinycast/Features/Settings/AppSettingsKey.swift \
+                            Tinycast/Features/AI/Model/*.swift \
+                            Tinycast/Features/AI/Service/AIProvider.swift \
+diff --git a/Tests/localized-resource-test.swift b/Tests/localized-resource-test.swift
+new file mode 100644
+index 00000000..61c5fdda
+--- /dev/null
++++ b/Tests/localized-resource-test.swift
+@@ -0,0 +1,95 @@
++import Foundation
++
++@main
++@MainActor
++struct LocalizedResourceTests {
++    static var failures = 0
++    static var passes = 0
++    static let languageVariable = "TINYCAST_RESOLVED_LANGUAGE"
++
++    static func check(_ label: String, _ ok: Bool, _ detail: String = "") {
++        if ok {
++            passes += 1
++        } else {
++            failures += 1
++            print("FAIL  \(label)\(detail.isEmpty ? "" : ": \(detail)")")
++        }
++    }
++
++    static func main() {
++        if let language = ProcessInfo.processInfo.environment[languageVariable] {
++            checkResolution(in: language)
++            exit(failures == 0 ? 0 : 1)
++        }
++        do {
++            try checkEachLanguage()
++        } catch {
++            check("each language runs", false, error.localizedDescription)
++        }
++        print("\n\(passes) passed, \(failures) failed")
++        exit(failures == 0 ? 0 : 1)
++    }
++
++    /// `resolved()` reads `Bundle.main`, so each language runs a copy that sits beside the tables.
++    private static func checkEachLanguage() throws {
++        let root = FileManager.default.temporaryDirectory
++            .appendingPathComponent("tinycast-resolved-\(UUID().uuidString)")
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
++        defer { try? FileManager.default.removeItem(at: root) }
++        let compile = Process()
++        compile.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
++        compile.arguments = [
++            "xcstringstool", "compile", "Tinycast/Resources/Localizable.xcstrings",
++            "--output-directory", root.path
++        ]
++        try compile.run()
++        compile.waitUntilExit()
++        guard compile.terminationStatus == 0, let executable = Bundle.main.executableURL else {
++            check("Localizable compiles", false)
++            return
++        }
++        let copy = root.appendingPathComponent(executable.lastPathComponent)
++        try FileManager.default.copyItem(at: executable, to: copy)
++
++        for language in ["en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh-Hans"] {
++            let process = Process()
++            process.executableURL = copy
++            process.arguments = ["-AppleLanguages", "(\(language))"]
++            process.environment = ProcessInfo.processInfo.environment.merging([languageVariable: language]) {
++                $1
++            }
++            try process.run()
++            process.waitUntilExit()
++            check("\(language) resolves like String(localized:)", process.terminationStatus == 0)
++        }
++    }
++
++    private static func checkResolution(in language: String) {
++        check(
++            "\(language) is the bundle's localization",
++            Bundle.main.preferredLocalizations.first == language)
++        let name = "Notes"
++        var resources: [(label: String, resource: LocalizedStringResource)] = [
++            ("a translated key", "Cancel"),
++            ("a key the catalog lacks", "Tinycast harness key"),
++            (
++                "a contextual key",
++                LocalizedStringResource("apple-shortcuts-section", defaultValue: "Shortcuts")
++            ),
++            (
++                "a contextual key the catalog lacks",
++                LocalizedStringResource("tinycast-harness-key", defaultValue: "Cancel")
++            ),
++            ("an interpolated key", "Customize \(name)"),
++            ("a literal percent sign", "Set Volume to 25%")
++        ]
++        for count in [1, 2, 5] {
++            resources.append(("a plural of \(count)", "\(count) hidden items"))
++        }
++        for (label, resource) in resources {
++            let expected = String(localized: resource)
++            let resolved = resource.resolved()
++            check("\(language) \(label)", resolved == expected, "\(resolved) instead of \(expected)")
++        }
++    }
++}
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index cd0092b6..4925d39b 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -731,6 +731,7 @@
+ 		DEBA3D842236875993867A25 /* AIConnectionKeyPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A93BF11B823786E8B468B05 /* AIConnectionKeyPolicy.swift */; };
+ 		DEBCF434AB244DAD43DB8A6A /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BA9F5F7226AD5A91835AF5C /* LaunchAtLogin.swift */; };
+ 		DF45F095F4BE5E5BAF0A3DF8 /* ModifierTapMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709C3F8952A500267E1D8242 /* ModifierTapMonitor.swift */; };
++		DF4EA86957A4C9F17C5F9FE5 /* LocalizedResource.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C0F66A568B254D17C11355 /* LocalizedResource.swift */; };
+ 		DFB25A4CDD35071B745F2EF9 /* DoubleTapModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72F0F0DDA5FC1F6ED59E73E9 /* DoubleTapModifier.swift */; };
+ 		DFED3F4C7B67FED3DBD016E5 /* FallbackActionsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AEDF156B61DD90C5ADA8FA /* FallbackActionsMenu.swift */; };
+ 		E01CA28454F75BE0B3A878E0 /* FormTextArea.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84D93A74803104966F150620 /* FormTextArea.swift */; };
+@@ -1556,6 +1557,7 @@
+ 		C5941CE8F08FD5986FED12E9 /* QuickActionsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActionsSettingsView.swift; sourceTree = "<group>"; };
+ 		C5BA06E4CC7E8D40E3285F16 /* KeyCapChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCapChip.swift; sourceTree = "<group>"; };
+ 		C7B3FC48B58E1005453E7E18 /* Snippet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snippet.swift; sourceTree = "<group>"; };
++		C7C0F66A568B254D17C11355 /* LocalizedResource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizedResource.swift; sourceTree = "<group>"; };
+ 		C7C343C0FEA2652D8E82E04B /* ChatComposerTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposerTextView.swift; sourceTree = "<group>"; };
+ 		C80806A442BADAC390ECD993 /* RaycastSnippetImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaycastSnippetImport.swift; sourceTree = "<group>"; };
+ 		C809E7E8DBD838AE0DEA6A0A /* ExtensionMenuBarImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionMenuBarImage.swift; sourceTree = "<group>"; };
+@@ -1783,6 +1785,7 @@
+ 				2FCD070CDE64691E5F6ED28D /* InputSourceSwitcher.swift */,
+ 				CC02192DE787DBE081C589B8 /* KeychainSecretStore.swift */,
+ 				3BA9F5F7226AD5A91835AF5C /* LaunchAtLogin.swift */,
++				C7C0F66A568B254D17C11355 /* LocalizedResource.swift */,
+ 				EB76FDBFE1E306C2A5B1A29B /* Memo.swift */,
+ 				E1FB75182A60F65BA1FB9BA8 /* NotificationToken.swift */,
+ 				2E5C752F98428A767405AD12 /* PasteboardFiles.swift */,
+@@ -4409,6 +4412,7 @@
+ 				6E6C27BE575CACD8A0070311 /* LauncherSettingsFile.swift in Sources */,
+ 				2E05FC5D5A0C2BACE7DB8CDD /* LauncherSuggestions.swift in Sources */,
+ 				67516BE31774EE56EE2173BA /* LeadCard.swift in Sources */,
++				DF4EA86957A4C9F17C5F9FE5 /* LocalizedResource.swift in Sources */,
+ 				50A5E2CC839C7A65B3391391 /* MCPComposerAddress.swift in Sources */,
+ 				F37AC0478A0A96243E833900 /* MCPCoordinator.swift in Sources */,
+ 				B374B57D0E9D902AF877153D /* MCPHTTPTransport.swift in Sources */,
+diff --git a/Tinycast/DesignSystem/FormRow.swift b/Tinycast/DesignSystem/FormRow.swift
+index df7279e4..74ebf8b7 100644
+--- a/Tinycast/DesignSystem/FormRow.swift
++++ b/Tinycast/DesignSystem/FormRow.swift
+@@ -13,7 +13,7 @@ struct FormRow<Content: View>: View {
+         _ title: LocalizedStringResource? = nil, alignment: VerticalAlignment = .center,
+         labelInset: CGFloat? = nil, @ViewBuilder content: () -> Content
+     ) {
+-        self.title = title.map { String(localized: $0) } ?? ""
++        self.title = title?.resolved() ?? ""
+         self.alignment = alignment
+         self.labelInset = labelInset
+         self.content = content()
+diff --git a/Tinycast/DesignSystem/SettingsComponents.swift b/Tinycast/DesignSystem/SettingsComponents.swift
+index 1b1c8bd5..2004bcd5 100644
+--- a/Tinycast/DesignSystem/SettingsComponents.swift
++++ b/Tinycast/DesignSystem/SettingsComponents.swift
+@@ -112,7 +112,7 @@ extension SettingsRow where Icon == EmptyView {
+         @ViewBuilder trailing: () -> Trailing
+     ) {
+         self.init(
+-            title: String(localized: title), subtitle: subtitle,
++            title: title.resolved(), subtitle: subtitle,
+             subtitleLineLimit: subtitleLineLimit, alignment: alignment, anchor: anchor,
+             icon: { EmptyView() }, trailing: trailing)
+     }
+diff --git a/Tinycast/Features/AI/UI/AIChatDetailView.swift b/Tinycast/Features/AI/UI/AIChatDetailView.swift
+index 7fe675b6..eaeb254d 100644
+--- a/Tinycast/Features/AI/UI/AIChatDetailView.swift
++++ b/Tinycast/Features/AI/UI/AIChatDetailView.swift
+@@ -689,7 +689,7 @@ private struct ContextCard: View {
+ 
+     private func section(_ title: LocalizedStringResource) -> some View {
+         GridRow {
+-            Text(String(localized: title).uppercased())
++            Text(title.resolved().uppercased())
+                 .font(.caption2.weight(.semibold))
+                 .foregroundStyle(.tertiary)
+                 .gridCellColumns(2)
+diff --git a/Tinycast/Features/Launcher/Model/CommandID.swift b/Tinycast/Features/Launcher/Model/CommandID.swift
+index da3d8968..01981ba0 100644
+--- a/Tinycast/Features/Launcher/Model/CommandID.swift
++++ b/Tinycast/Features/Launcher/Model/CommandID.swift
+@@ -49,7 +49,7 @@ enum CommandID: String, CaseIterable, Sendable {
+     case support = "command:support"
+     case quit = "command:quit"
+ 
+-    var name: String { String(localized: nameResource) }
++    var name: String { nameResource.resolved() }
+ 
+     var englishName: String { nameResource.key }
+ 
+diff --git a/Tinycast/Features/Launcher/Service/AppIndex.swift b/Tinycast/Features/Launcher/Service/AppIndex.swift
+index a5400c63..e1611b01 100644
+--- a/Tinycast/Features/Launcher/Service/AppIndex.swift
++++ b/Tinycast/Features/Launcher/Service/AppIndex.swift
+@@ -165,7 +165,7 @@ struct AppEntry: Identifiable, Hashable, Sendable {
+         alternateTitles.append(candidate)
+     }
+ 
+-    var kindLabel: String { ownerName ?? String(localized: kind.descriptor.label) }
++    var kindLabel: String { ownerName ?? kind.descriptor.label.resolved() }
+ 
+     var hotKeyAction: HotKeyAction? {
+         switch kind {
+@@ -327,7 +327,7 @@ extension AppEntry.Kind {
+     private var englishCategoryNames: [String] { [descriptor.sectionTitle.key, descriptor.label.key] }
+ 
+     private var localizedCategoryNames: [String] {
+-        [descriptor.sectionTitle, descriptor.label].map { String(localized: $0) }
++        [descriptor.sectionTitle, descriptor.label].map { $0.resolved() }
+     }
+ 
+     static func named(by query: LauncherOrder.CategoryQuery) -> AppEntry.Kind? {
+diff --git a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+index e371bc3b..b532293b 100644
+--- a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
++++ b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+@@ -170,7 +170,7 @@ enum AppActionsMenu {
+             }
+         var items = [
+             PopoverMenuItem(
+-                title: String(localized: app.kind.descriptor.openVerb), systemImage: primarySymbol,
++                title: app.kind.descriptor.openVerb.resolved(), systemImage: primarySymbol,
+                 shortcut: "↵"
+             ) { core.launcherCoordinator.launch(app, searchQuery: searchQuery) }
+         ]
+diff --git a/Tinycast/Features/Launcher/UI/LauncherList.swift b/Tinycast/Features/Launcher/UI/LauncherList.swift
+index 4445a4b7..471056b2 100644
+--- a/Tinycast/Features/Launcher/UI/LauncherList.swift
++++ b/Tinycast/Features/Launcher/UI/LauncherList.swift
+@@ -120,7 +120,7 @@ struct LauncherList: View {
+                 })
+         }
+         if !meetings.isEmpty {
+-            rows.append(.header(String(localized: AppEntry.Kind.meeting.descriptor.sectionTitle)))
++            rows.append(.header(AppEntry.Kind.meeting.descriptor.sectionTitle.resolved()))
+             rows.append(contentsOf: meetings.map { .app($0, slot: nil) })
+         }
+         if !suggestions.isEmpty {
+@@ -139,7 +139,7 @@ struct LauncherList: View {
+         ]
+         for kind in kinds {
+             guard let group = grouped[kind], !group.isEmpty else { continue }
+-            rows.append(.header(String(localized: kind.descriptor.sectionTitle)))
++            rows.append(.header(kind.descriptor.sectionTitle.resolved()))
+             rows.append(contentsOf: group.map { .app($0, slot: nil) })
+         }
+         // A missing kind would make every later row activate its neighbour: assert instead.
+diff --git a/Tinycast/Features/Launcher/UI/LauncherScreen.swift b/Tinycast/Features/Launcher/UI/LauncherScreen.swift
+index c448beaa..a39c6c4a 100644
+--- a/Tinycast/Features/Launcher/UI/LauncherScreen.swift
++++ b/Tinycast/Features/Launcher/UI/LauncherScreen.swift
+@@ -142,7 +142,7 @@ struct LauncherScreen: PaletteScreen {
+         case .meeting(let meeting):
+             return meeting.link == nil
+                 ? String(localized: "Open in Calendar") : String(localized: "Join Meeting")
+-        case .entry(let app): return String(localized: app.kind.descriptor.openVerb)
++        case .entry(let app): return app.kind.descriptor.openVerb.resolved()
+         case .file(let result):
+             return result.isDirectory ? String(localized: "Open Folder") : String(localized: "Open File")
+         case .fallback(let fallback, _): return fallback.openVerb
+diff --git a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
+index 19e9bca3..c65e9e7e 100644
+--- a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
++++ b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
+@@ -8,7 +8,7 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
+ 
+     var id: String { rawValue }
+ 
+-    var title: String { String(localized: titleResource) }
++    var title: String { titleResource.resolved() }
+ 
+     /// A resource, so a launcher command named after it keeps the English name searchable.
+     var titleResource: LocalizedStringResource {
+diff --git a/Tinycast/Features/Settings/SettingsAnchor.swift b/Tinycast/Features/Settings/SettingsAnchor.swift
+index 0fb9f0b4..5af9cd2e 100644
+--- a/Tinycast/Features/Settings/SettingsAnchor.swift
++++ b/Tinycast/Features/Settings/SettingsAnchor.swift
+@@ -9,7 +9,7 @@ struct SettingsAnchor: Hashable, Sendable {
+ 
+     init(tab: SettingsTab, title: LocalizedStringResource) {
+         self.tab = tab
+-        self.title = String(localized: title)
++        self.title = title.resolved()
+     }
+ }
+ 
+diff --git a/Tinycast/Features/Settings/SettingsScrollTarget.swift b/Tinycast/Features/Settings/SettingsScrollTarget.swift
+index 5cd665ce..bbb3f037 100644
+--- a/Tinycast/Features/Settings/SettingsScrollTarget.swift
++++ b/Tinycast/Features/Settings/SettingsScrollTarget.swift
+@@ -60,7 +60,7 @@ struct SettingsRowTitle: View {
+     let title: String
+ 
+     init(_ anchor: SettingsAnchor, _ title: LocalizedStringResource) {
+-        self.init(anchor, verbatim: String(localized: title))
++        self.init(anchor, verbatim: title.resolved())
+     }
+ 
+     init(_ anchor: SettingsAnchor, verbatim title: String) {
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 6fdadfb4..ac84e201 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -17,13 +17,13 @@ struct SettingsSearchEntry: Identifiable, Hashable, Sendable {
+ 
+     /// One setting, which its pane marks with a matching `SettingsRowTitle`.
+     init(_ anchor: SettingsAnchor, _ title: LocalizedStringResource, keywords: [String] = []) {
+-        let localized = String(localized: title)
++        let localized = title.resolved()
+         self.init(.row(anchor, localized), localized, keywords + [title.key])
+     }
+ 
+     /// A whole group, for a result no single row answers — a list, or a section's master switch.
+     init(group anchor: SettingsAnchor, _ title: LocalizedStringResource, keywords: [String] = []) {
+-        self.init(.section(anchor), String(localized: title), keywords + [title.key])
++        self.init(.section(anchor), title.resolved(), keywords + [title.key])
+     }
+ 
+     init(pane: SettingsTab, keywords: [String] = []) {
+diff --git a/Tinycast/Features/SystemActions/Model/SystemAction.swift b/Tinycast/Features/SystemActions/Model/SystemAction.swift
+index 1cbd193e..24dc7932 100644
+--- a/Tinycast/Features/SystemActions/Model/SystemAction.swift
++++ b/Tinycast/Features/SystemActions/Model/SystemAction.swift
+@@ -60,7 +60,7 @@ enum SystemActionCatalog {
+     static let all: [SystemAction] = SystemAction.ID.allCases.map { id in
+         let name = name(for: id)
+         return SystemAction(
+-            id: id, name: String(localized: name), englishName: name.key, sfSymbol: symbol(for: id),
++            id: id, name: name.resolved(), englishName: name.key, sfSymbol: symbol(for: id),
+             confirmation: confirmation(for: id))
+     }
+ 
+diff --git a/Tinycast/Features/WindowManagement/Model/WindowCommand.swift b/Tinycast/Features/WindowManagement/Model/WindowCommand.swift
+index cc72153c..4833f71a 100644
+--- a/Tinycast/Features/WindowManagement/Model/WindowCommand.swift
++++ b/Tinycast/Features/WindowManagement/Model/WindowCommand.swift
+@@ -92,7 +92,7 @@ enum WindowCommandCatalog {
+     static let all: [WindowCommand] = WindowCommand.ID.allCases.map { id in
+         let name = name(for: id)
+         return WindowCommand(
+-            id: id, name: String(localized: name), englishName: name.key, sfSymbol: symbol(for: id),
++            id: id, name: name.resolved(), englishName: name.key, sfSymbol: symbol(for: id),
+             kind: kind(for: id), group: group(for: id), cyclesOnRepeat: cyclesOnRepeat.contains(id),
+             resizes: !movesOnly.contains(id))
+     }
+diff --git a/Tinycast/Platform/LocalizedResource.swift b/Tinycast/Platform/LocalizedResource.swift
+new file mode 100644
+index 00000000..51fb2881
+--- /dev/null
++++ b/Tinycast/Platform/LocalizedResource.swift
+@@ -0,0 +1,11 @@
++import Foundation
++
++extension LocalizedStringResource {
++    /// `String(localized:)` on a resource can bypass the bundle's table cache and reparse every call.
++    func resolved() -> String {
++        let value = Bundle.main.localizedString(forKey: key, value: nil, table: table)
++        let needsArguments = value.contains("%")
++        let needsDefault = value == key && defaultValue != String.LocalizationValue(key)
++        return needsArguments || needsDefault ? String(localized: self) : value
++    }
++}
+diff --git a/docs/standards.md b/docs/standards.md
+index da0788e2..774e8299 100644
+--- a/docs/standards.md
++++ b/docs/standards.md
+@@ -250,6 +250,8 @@ the catalog (Xcode's own build does the same in the IDE). The six privacy prompt
+ - **A view that only ever labels takes `LocalizedStringResource`**, so its callers pass plain literals
+   and the compiler still extracts them: `SettingsRowTitle`, `SettingsAnchor`, `SettingsSearchEntry`,
+   `FormRow`, `FeatureSwitchSection`, `SettingsEditorHeader`, `SettingsFilterField`.
++- **A `LocalizedStringResource` becomes a `String` through `resolved()`**, never `String(localized:)`:
++  that overload can skip the bundle's string-table cache and reparse the whole table on every call.
+ - **Everything that also carries runtime text keeps `String`**, and its literal callers write
+   `String(localized: "…")` — dialogs, HUD messages, `PopoverMenuItem`, AppKit menus and windows,
+   `LocalizedError`, and every model `title`. `Model/` files use it too; it is Foundation.
+diff --git a/docs/testing.md b/docs/testing.md
+index 2fe8fafb..83ed6822 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -117,6 +117,7 @@ If a change touches anything in the right column, the harness on the left is man
+ | `scopes-test` | `Launcher/Model/SearchScopes.swift` |
+ | `app-name-test` | `Platform/AppDisplayName.swift` — every path that names a scanned bundle |
+ | `language-test` | `AppLanguage` and both string catalogs — compile every language, load privacy prompts, and select plural forms and independent counts at runtime |
++| `localized-resource-test` | `Platform/LocalizedResource.swift` — `resolved()` matches `String(localized:)` in every language, for plain, contextual, interpolated, plural and missing keys |
+ | `onboarding-test` | Onboarding's handoff to the palette keeps focus; ordinary windows retain their Dock ownership |
+ | `relaunch-test` | The shipped app delegate and relaunch helper — asynchronous cleanup, repeated quit requests, and a responsive replacement process |
+ | `calc-test` | all of `Calculator/Model/` |
+-- 
+2.56.0
+

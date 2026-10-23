@@ -13,10 +13,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-index 3df76e63..56048a57 100644
+index d6c31356..50a342ed 100644
 --- a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
 +++ b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-@@ -36,7 +36,9 @@ final class UpdateCheckStore {
+@@ -37,7 +37,9 @@ final class UpdateCheckStore {
      @ObservationIgnored private var pump: Task<Void, Never>?
  
      init(
