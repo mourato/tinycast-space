@@ -14,14 +14,14 @@ help:
 	@echo "make prune-derived  List Xcode DerivedData of deleted worktrees (ARGS=--apply removes)"
 
 status:
-	@git fetch --quiet space; git fetch --quiet tinycast
+	@git fetch --quiet space && git fetch --quiet tinycast
 	@echo "main base:   $$(git log -1 --format='%h %s' mine-base~1 2>/dev/null || echo 'no mine-base')"
 	@echo "space/main:  $$(git log -1 --format='%h %s' space/main)"
 	@echo "upstream:    $$(git log -1 --format='%h %s' tinycast/main)"
 	@echo "my patches:  $$(git rev-list --count mine-base..HEAD -- . ':!.mine' ':!Makefile' 2>/dev/null || echo 0)"
 
 check-space:
-	@git fetch --quiet space; git fetch --quiet tinycast
+	@git fetch --quiet space && git fetch --quiet tinycast
 	@echo "== Space patch changes since main's base =="
 	@git diff --stat mine-base~1 space/main -- .space || true
 	@echo "== Upstream commits not yet in Space =="
