@@ -846,7 +846,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
                            Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
                            Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift \
-                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
+                           Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift \
                            Tinycast/Platform/LocalizedResource.swift
 run apple-intelligence-test Tinycast/Features/Settings/AppSettingsKey.swift \
                            Tinycast/Features/AI/Model/*.swift \
