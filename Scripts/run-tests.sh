@@ -7,11 +7,10 @@ set -uo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.." || exit 1
 
-BIN="${TMPDIR:-/tmp}/tinycast-harness"
-mkdir -p "$BIN"
-
 # `--exec` is the worker half: xargs re-enters here once per queued harness.
 if [ "${1:-}" = "--exec" ]; then
+    BIN="${TINYCAST_TEST_RUN_DIR:-}"
+    [ -n "$BIN" ] || { echo "run-tests --exec is internal; run Scripts/run-tests.sh" >&2; exit 2; }
     shift
     name=$1 opt=$2
     shift 2
@@ -48,6 +47,14 @@ if [ "${1:-}" = "--exec" ]; then
     exit 0
 fi
 
+# Each run owns its directory, so concurrent runs keep logs, binaries and the compile DB apart.
+BIN="$(mktemp -d "${TMPDIR:-/tmp}/tinycast-harness.XXXXXX")" || exit 1
+export TINYCAST_TEST_RUN_DIR="$BIN"
+trap 'rm -rf "$BIN"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
 QUEUE="$BIN/queue"
 EXCLUSIVE_QUEUE="$BIN/exclusive-queue"
 : > "$QUEUE"
@@ -60,7 +67,7 @@ only="${1:-}"
 
 # `--index` feeds harness compile commands to .compile, as xcodebuild never compiles Tests/.
 emit_db=0
-DB="${TMPDIR:-/tmp}/tinycast-compile-db.json"
+DB="$BIN/compile-db.json"
 if [ "$only" = "--index" ]; then
     emit_db=1
     only=""
