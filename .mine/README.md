@@ -38,10 +38,14 @@ Every commit after the `mine-base` tag is a candidate patch. `make save` exports
   `WorkspacePath` is a `.worktrees/<slug>` that no longer exists, and `make prune-derived ARGS=--apply`
   removes them. It is dry-run by default and never matches a live worktree or the main checkout.
 - **`make sync`** and **`make update`** run `.mine/rebuild.sh`. It refuses a dirty tree and a `main` that is
-  not checked out, saves `main` as `backup/main-<timestamp>`, resets to the new base, carries `.mine/` and
-  `Makefile` over from the old tree, retags `mine-base`, and replays `.mine/patches` with `git am -3`. It
-  never pushes. A conflicting patch stops it: fix the files, `git add`, `git am --continue`, then
-  `make save`. To abandon the rebuild, run `git am --abort` and then `git reset --hard backup/main-<timestamp>`.
+  not checked out. `make update` first applies the incoming Space patches on a disposable worktree; a
+  preflight conflict leaves `main` untouched. After that it saves the patches, creates
+  `backup/main-<timestamp>`, resets to the new base, carries `.mine/` and `Makefile` over from the old
+  tree, retags `mine-base`, and replays `.mine/patches` with `git am -3`. If the Space phase fails, the
+  backup is restored automatically; if a local patch conflicts, the new base remains in place for manual
+  resolution and `.mine/` plus `Makefile` are restored before the command exits. It never pushes.
+  A conflicting local patch stops it: fix the files, `git add`, `git am --continue`, then `make save`.
+  To abandon that rebuild, run `git am --abort` and then `git reset --hard backup/main-<timestamp>`.
   The push is by hand, after review: `git push --force-with-lease origin main`.
 
 ## The Space pipeline is separate

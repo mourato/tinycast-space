@@ -5,7 +5,7 @@ help:
 	@echo "make status       Where main stands vs Space and upstream"
 	@echo "make check-space  Show new Space patches / upstream commits not in main"
 	@echo "make sync         Rebuild main on Space's main (tested upstream + Space patches)"
-	@echo "make update       Rebuild main on newest upstream + Space patches applied locally"
+	@echo "make update       Preflight and rebuild main on newest upstream + Space patches"
 	@echo "make save         Export commits since mine-base to .mine/patches"
 	@echo "make build        Signed Release build only (no install)"
 	@echo "make install      Release build, replace /Applications/Tinycast.app, relaunch"
