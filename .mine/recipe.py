@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,18 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 PATCH_NAME_RE = re.compile(r"^[0-9]{4}-[A-Za-z0-9][A-Za-z0-9._-]*\.patch$")
 STAGE_PREFIX = ".source-stage-"
 OLD_PREFIX = ".source-old-"
+BACKUP_PREFIX = ".source-backup-"
+GIT_ROUTING_ENV = {
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_OBJECT_DIRECTORY_RELATIVE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_QUARANTINE_PATH",
+    "GIT_NAMESPACE",
+}
 
 
 class RecipeError(RuntimeError):
@@ -223,6 +236,9 @@ def load_inputs() -> dict[str, Any]:
 
 def git_env(*, commit_identity: bool = False) -> dict[str, str]:
     env = os.environ.copy()
+    for name in tuple(env):
+        if name in GIT_ROUTING_ENV or name.startswith("GIT_CONFIG_"):
+            env.pop(name, None)
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
     if commit_identity:
@@ -249,7 +265,7 @@ def run_git(repo: Path, args: list[str], *, check: bool = True) -> str:
 
 
 def run_process(command: list[str], cwd: Path, env: dict[str, str]) -> None:
-    result = subprocess.run(command, cwd=cwd, env=env, check=False)
+    result = subprocess.run(command, cwd=cwd, env=env, check=False, stdout=sys.stderr)
     if result.returncode:
         fail(f"pipeline command failed ({result.returncode}): {' '.join(command)}")
 
@@ -271,7 +287,7 @@ def verify_commit(repo: Path, commit: str, label: str) -> None:
         fail(f"{label} resolved to {actual}, expected locked {commit}")
 
 
-def safe_git_tree(repo: Path) -> list[tuple[str, str, str, str]]:
+def safe_git_tree(repo: Path, revision: str = "HEAD") -> list[tuple[str, str, str, str]]:
     raw = subprocess.run(
         [
             "git",
@@ -282,7 +298,7 @@ def safe_git_tree(repo: Path) -> list[tuple[str, str, str, str]]:
             "-z",
             "--abbrev=40",
             "--full-tree",
-            "HEAD",
+            revision,
             "--",
             ".",
         ],
@@ -307,9 +323,9 @@ def safe_git_tree(repo: Path) -> list[tuple[str, str, str, str]]:
     return records
 
 
-def source_fingerprint(repo: Path) -> str:
+def source_fingerprint(repo: Path, revision: str = "HEAD") -> str:
     records = []
-    for mode, kind, object_id, path in safe_git_tree(repo):
+    for mode, kind, object_id, path in safe_git_tree(repo, revision):
         if path == "Makefile" or path.startswith(".mine/"):
             continue
         records.append(f"{mode} {kind} {object_id}\t{path}".encode("utf-8") + b"\0")
@@ -392,7 +408,21 @@ def validate_receipt(source: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     return receipt
 
 
-def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
+        check=False,
+        env=git_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode not in (0, 1):
+        detail = result.stderr.decode(errors="replace").strip()
+        fail(f"cannot inspect generated source lineage: {detail}")
+    return result.returncode == 0
+
+
+def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, Any]]:
     if source.is_symlink():
         fail("generated source path is a symlink")
     receipt = validate_receipt(source, inputs)
@@ -410,28 +440,33 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
     if len([line for line in worktrees if line.startswith("worktree ")]) != 1:
         fail("generated source has additional Git worktrees")
     status = run_git(source, ["status", "--porcelain=v1", "--untracked-files=all"]).strip()
-    if status:
-        fail("generated source has local changes; commit or discard them before prepare")
-    refs = run_git(source, ["for-each-ref", "--format=%(refname)"]).strip()
-    if refs:
-        fail("generated source has local branches, tags, or stashes; prepare will not replace them")
+    refs = [line for line in run_git(source, ["for-each-ref", "--format=%(refname)"]).splitlines() if line]
     unreachable = run_git(source, ["fsck", "--no-reflogs", "--unreachable"], check=False).strip()
     if any(line.startswith(("unreachable commit ", "unreachable tree ", "unreachable tag ")) for line in unreachable.splitlines()):
         fail("generated source has unreachable Git objects that may contain unexported work")
     head = run_git(source, ["rev-parse", "--verify", "HEAD^{commit}"]).strip()
-    if head != receipt["managed_tip"]:
-        fail(f"generated source HEAD moved from managed tip {receipt['managed_tip']} to {head}")
     for commit_key in ("source_only_base_checkpoint", "managed_tip"):
         verify_commit(source, receipt[commit_key], f"receipt.{commit_key}")
-    actual_fingerprint = source_fingerprint(source)
-    if actual_fingerprint != receipt["source_fingerprint"]:
+    if not is_ancestor(source, receipt["managed_tip"], head):
+        fail(f"generated source HEAD is outside managed lineage: {head}")
+    managed_fingerprint = source_fingerprint(source, receipt["managed_tip"])
+    if managed_fingerprint != receipt["source_fingerprint"]:
         fail("generated source fingerprint disagrees with its receipt")
+    actual_fingerprint = source_fingerprint(source)
     current = inputs["input_digest"] == receipt["input"]["input_digest"]
     current = current and inputs["lock_sha256"] == receipt["input"]["lock_sha256"]
     current = current and inputs["patch_digest"] == receipt["input"]["patch_digest"]
     current = current and inputs["recipe_sha256"] == receipt["input"]["recipe_sha256"]
-    current = current and actual_fingerprint == inputs["lock"]["expected_source"]["fingerprint"]
-    return receipt, current
+    local_state = {
+        "head": head,
+        "head_is_managed": head == receipt["managed_tip"],
+        "head_is_descendant": True,
+        "worktree_dirty": bool(status),
+        "refs": refs,
+        "unexported_changes": bool(status or refs or head != receipt["managed_tip"]),
+        "source_fingerprint": actual_fingerprint,
+    }
+    return receipt, current, local_state
 
 
 def extraction_records(space_repo: Path, commit: str, roots: list[str]) -> list[tuple[int, str, str]]:
@@ -619,6 +654,7 @@ def build_stage(inputs: dict[str, Any], stage: Path) -> tuple[str, str, str]:
             ],
             check=False,
             env=git_env(commit_identity=True),
+            stdout=sys.stderr,
         )
         if result.returncode:
             subprocess.run(
@@ -671,7 +707,29 @@ class RecipeLock:
 
     def __enter__(self) -> "RecipeLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("a+")
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        if not no_follow:
+            fail("recipe lock cannot be opened without following symlinks")
+        fd: int | None = None
+        try:
+            fd = os.open(
+                self.path,
+                os.O_RDWR | os.O_CREAT | no_follow | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK,
+                0o600,
+            )
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                fail(f"recipe lock is not a private regular file: {self.path}")
+            self.handle = os.fdopen(fd, "r+", encoding="utf-8")
+            fd = None
+        except RecipeError:
+            if fd is not None:
+                os.close(fd)
+            raise
+        except OSError as error:
+            if fd is not None:
+                os.close(fd)
+            fail(f"cannot open recipe lock safely: {error}")
         flags = fcntl.LOCK_EX
         if not self.blocking:
             flags |= fcntl.LOCK_NB
@@ -681,6 +739,10 @@ class RecipeLock:
             self.handle.close()
             self.handle = None
             raise
+        except OSError as error:
+            self.handle.close()
+            self.handle = None
+            fail(f"cannot lock recipe lock: {error}")
         self.handle.seek(0)
         self.handle.truncate()
         self.handle.write(json.dumps({"owner": "tinycast-recipe", "operation": self.operation}) + "\n")
@@ -708,22 +770,34 @@ def prepare() -> dict[str, Any]:
         inputs = load_inputs()
         old_backups = sorted(BUILD.glob(OLD_PREFIX + "*"))
         if old_backups:
-            if SOURCE.exists() or SOURCE.is_symlink() or len(old_backups) != 1:
+            if len(old_backups) != 1:
                 fail(f"incomplete publication requires recovery before prepare: {old_backups[0]}")
-            inspect_existing(old_backups[0], inputs)
-            os.replace(old_backups[0], SOURCE)
+            if SOURCE.exists() or SOURCE.is_symlink():
+                inspect_existing(SOURCE, inputs)
+                inspect_existing(old_backups[0], inputs)
+                retained = BUILD / (BACKUP_PREFIX + next(tempfile._get_candidate_names()))
+                os.replace(old_backups[0], retained)
+            else:
+                inspect_existing(old_backups[0], inputs)
+                os.replace(old_backups[0], SOURCE)
         had_source = SOURCE.exists() or SOURCE.is_symlink()
+        existing_receipt: dict[str, Any] | None = None
         if had_source:
-            receipt, fresh = inspect_existing(SOURCE, inputs)
-            if fresh:
+            receipt, inputs_current, local_state = inspect_existing(SOURCE, inputs)
+            existing_receipt = receipt
+            fresh = inputs_current and not local_state["unexported_changes"] and receipt["source_fingerprint"] == inputs["lock"]["expected_source"]["fingerprint"]
+            if inputs_current:
                 return {
                     "source_path": str(SOURCE),
                     "release_version": inputs["lock"]["upstream"]["release_version"],
-                    "fresh": True,
+                    "fresh": fresh,
                     "reused": True,
                     "source_only_base_checkpoint": receipt["source_only_base_checkpoint"],
                     "managed_tip": receipt["managed_tip"],
+                    "source_state": local_state,
                 }
+            if local_state["unexported_changes"]:
+                fail("locked recipe inputs changed while generated source has unexported local changes")
         stage = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=BUILD))
         published = False
         try:
@@ -732,10 +806,16 @@ def prepare() -> dict[str, Any]:
             if current_inputs["input_digest"] != inputs["input_digest"]:
                 fail("locked recipe inputs changed during prepare; previous source was retained")
             if had_source:
-                inspect_existing(SOURCE, current_inputs)
+                current_receipt, _, current_state = inspect_existing(SOURCE, current_inputs)
+                if current_state["unexported_changes"] or any(
+                    current_receipt[key] != existing_receipt[key]
+                    for key in ("source_only_base_checkpoint", "managed_tip")
+                ):
+                    fail("generated source changed during prepare; previous source was retained")
             elif SOURCE.exists() or SOURCE.is_symlink():
                 fail("generated source appeared during prepare; refusing to replace it")
             backup: Path | None = None
+            retained_backup: Path | None = None
             if SOURCE.exists() or SOURCE.is_symlink():
                 backup = BUILD / (OLD_PREFIX + next(tempfile._get_candidate_names()))
                 os.replace(SOURCE, backup)
@@ -747,7 +827,11 @@ def prepare() -> dict[str, Any]:
                     os.replace(backup, SOURCE)
                 raise
             if backup is not None:
-                shutil.rmtree(backup)
+                retained_backup = BUILD / (BACKUP_PREFIX + next(tempfile._get_candidate_names()))
+                try:
+                    os.replace(backup, retained_backup)
+                except OSError as error:
+                    fail(f"source published but predecessor backup requires recovery: {error}")
             return {
                 "source_path": str(SOURCE),
                 "release_version": inputs["lock"]["upstream"]["release_version"],
@@ -756,6 +840,7 @@ def prepare() -> dict[str, Any]:
                 "source_only_base_checkpoint": base,
                 "managed_tip": managed_tip,
                 "source_fingerprint": fingerprint,
+                "predecessor_backup": str(retained_backup) if retained_backup is not None else None,
             }
         finally:
             if not published and stage.exists():
@@ -780,13 +865,16 @@ def status() -> dict[str, Any]:
         "operation_busy": busy,
     }
     if SOURCE.exists() or SOURCE.is_symlink():
-        receipt, fresh = inspect_existing(SOURCE, inputs)
+        receipt, inputs_current, local_state = inspect_existing(SOURCE, inputs)
+        fresh = inputs_current and not local_state["unexported_changes"] and receipt["source_fingerprint"] == inputs["lock"]["expected_source"]["fingerprint"]
         result.update(
             {
                 "fresh": fresh,
+                "inputs_current": inputs_current,
                 "source_only_base_checkpoint": receipt["source_only_base_checkpoint"],
                 "managed_tip": receipt["managed_tip"],
                 "source_fingerprint": receipt["source_fingerprint"],
+                "source_state": local_state,
             }
         )
     return result

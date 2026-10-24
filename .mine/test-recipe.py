@@ -7,10 +7,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 
 
@@ -59,6 +59,7 @@ class Fixture:
         (mine / "patches").mkdir(parents=True)
         shutil.copy2(RECIPE, mine / "recipe.py")
         shutil.copy2(SOURCE_TREE, mine / "source-tree.sh")
+        self.processes: list[subprocess.Popen[str]] = []
         self.upstream = self.root / "upstream.git"
         self.space = self.root / "space.git"
         self._make_upstream()
@@ -67,6 +68,14 @@ class Fixture:
         self._write_lock()
 
     def close(self) -> None:
+        for process in self.processes:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
         self.temp.cleanup()
 
     def _init(self, path: Path) -> None:
@@ -90,10 +99,10 @@ class Fixture:
             self.space / ".space/apply.sh",
             "#!/bin/sh\n"
             "set -eu\n"
-            "if [ \"${RECIPE_TEST_SLEEP:-0}\" = 1 ]; then\n"
-            "  : > \"${RECIPE_TEST_MARKER:?}\"\n"
-            "  sleep 1\n"
+            "if [ \"${RECIPE_TEST_HANDSHAKE:-0}\" = 1 ]; then\n"
+            "  \"${RECIPE_TEST_HELPER:?}\" -c 'import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ[\"RECIPE_TEST_SOCKET\"]); s.sendall(b\"ready\\n\"); s.recv(1); s.close()'\n"
             "fi\n"
+            "printf '%s\\n' applying-space-pipeline\n"
             "printf '%s\\n' generated > generated.txt\n",
             0o755,
         )
@@ -129,7 +138,7 @@ class Fixture:
         shutil.rmtree(workflows)
         shutil.copytree(space_checkout / ".github/workflows", workflows)
         shutil.copytree(space_checkout / ".space", expected / ".space")
-        subprocess.run(["bash", str(expected / ".space/apply.sh")], cwd=expected, check=True)
+        subprocess.run(["bash", str(expected / ".space/apply.sh")], cwd=expected, check=True, capture_output=True)
         git(expected, "add", "-A")
         git(expected, "commit", "--quiet", "-m", "Space base")
         git(expected, "am", "--3way", "--no-verify", str(self.patch))
@@ -168,7 +177,12 @@ class Fixture:
     def source(self) -> Path:
         return self.root / ".build/source"
 
-    def run(self, command: str = "prepare", extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def run(
+        self,
+        command: str = "prepare",
+        extra_env: dict[str, str] | None = None,
+        timeout: float = 120,
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         if extra_env:
             env.update(extra_env)
@@ -180,8 +194,23 @@ class Fixture:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
+
+    def start(self, command: str = "prepare", extra_env: dict[str, str] | None = None) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+        process = subprocess.Popen(
+            [sys.executable, str(self.root / ".mine/recipe.py"), command],
+            cwd=self.root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.processes.append(process)
+        return process
 
     def receipt(self) -> dict[str, object]:
         return json.loads((self.source / ".git/tinycast-recipe-receipt.json").read_text())
@@ -201,6 +230,10 @@ class RecipeTests(unittest.TestCase):
     def test_pristine_repeat_independent_source_and_status(self) -> None:
         first = self.fixture.run()
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_json = json.loads(first.stdout)
+        self.assertTrue(first_json["fresh"])
+        self.assertFalse(first_json["reused"])
+        self.assertIn("applying-space-pipeline", first.stderr)
         first_head = git(self.fixture.source, "rev-parse", "HEAD")
         self.assertTrue((self.fixture.source / ".git").is_dir())
         self.assertEqual(git(self.fixture.source, "remote"), "")
@@ -227,6 +260,34 @@ class RecipeTests(unittest.TestCase):
         self.assertTrue(status_json["fresh"])
         self.assertEqual(status_json["release_version"], "1.2.3")
         self.assertEqual(status_json["operation_owner"], "tinycast-recipe")
+
+    def test_git_environment_cannot_redirect_fixture_operations(self) -> None:
+        victim = self.fixture.root / "victim"
+        self.fixture._init(victim)
+        write(victim / "sentinel.txt", "preserve me\n")
+        git(victim, "add", "sentinel.txt")
+        git(victim, "commit", "--quiet", "-m", "victim baseline")
+        victim_head = git(victim, "rev-parse", "HEAD")
+        victim_config = (victim / ".git/config").read_bytes()
+        contaminated = {
+            "GIT_DIR": str(victim / ".git"),
+            "GIT_WORK_TREE": str(victim),
+            "GIT_COMMON_DIR": str(victim / ".git"),
+            "GIT_INDEX_FILE": str(victim / ".git/index"),
+            "GIT_OBJECT_DIRECTORY": str(victim / ".git/objects"),
+            "GIT_OBJECT_DIRECTORY_RELATIVE": "objects",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(victim / ".git/objects"),
+            "GIT_CONFIG_GLOBAL": str(victim / ".git/config"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": str(victim / "hooks"),
+        }
+        result = self.fixture.run(extra_env=contaminated)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git(victim, "rev-parse", "HEAD"), victim_head)
+        self.assertEqual((victim / "sentinel.txt").read_text(), "preserve me\n")
+        self.assertEqual((victim / ".git/config").read_bytes(), victim_config)
+        self.assertTrue(self.fixture.source.exists())
 
     def test_patch_failure_keeps_previous_published_source(self) -> None:
         self.assertEqual(self.fixture.run().returncode, 0)
@@ -255,7 +316,31 @@ class RecipeTests(unittest.TestCase):
         (build / "source").symlink_to(outside, target_is_directory=True)
         self.assertFailsWith(self.fixture.run(), "generated source path is a symlink")
 
-    def test_missing_receipt_and_dirty_or_committed_unexported_edits_are_rejected(self) -> None:
+    def test_lock_aliases_are_rejected_without_truncation_or_blocking(self) -> None:
+        build = self.fixture.root / ".build"
+        build.mkdir()
+        lock_path = build / ".recipe.lock"
+        sentinel = self.fixture.root / "lock-target.txt"
+        original = b"preserve lock target\n"
+        sentinel.write_bytes(original)
+        for variant in ("symlink", "hardlink", "directory", "fifo"):
+            if lock_path.is_symlink() or lock_path.is_file() or lock_path.is_fifo():
+                lock_path.unlink()
+            elif lock_path.is_dir():
+                lock_path.rmdir()
+            if variant == "symlink":
+                lock_path.symlink_to(sentinel)
+            elif variant == "hardlink":
+                os.link(sentinel, lock_path)
+            elif variant == "directory":
+                lock_path.mkdir()
+            else:
+                os.mkfifo(lock_path)
+            result = self.fixture.run("status", timeout=5)
+            self.assertFailsWith(result, "recipe lock")
+            self.assertEqual(sentinel.read_bytes(), original)
+
+    def test_missing_receipt_and_non_descendant_source_are_rejected(self) -> None:
         self.assertEqual(self.fixture.run().returncode, 0)
         receipt_path = self.fixture.source / ".git/tinycast-recipe-receipt.json"
         saved_receipt = receipt_path.read_bytes()
@@ -268,13 +353,107 @@ class RecipeTests(unittest.TestCase):
         self.assertFailsWith(self.fixture.run(), "malformed recipe receipt")
         receipt_path.write_bytes(saved_receipt)
 
+        git(self.fixture.source, "branch", "managed-anchor")
+        git(self.fixture.source, "checkout", "--quiet", "--orphan", "external")
+        write(self.fixture.source / "external.txt", "external history\n")
+        git(self.fixture.source, "add", "-A")
+        git(self.fixture.source, "commit", "--quiet", "-m", "external replacement")
+        self.assertFailsWith(self.fixture.run(), "outside managed lineage")
+
+    def test_same_input_reuses_dirty_source_and_status_reports_local_state(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
         write(self.fixture.source / "README.md", "user edit\n")
-        self.assertFailsWith(self.fixture.run(), "local changes")
-        git(self.fixture.source, "checkout", "--", "README.md")
-        write(self.fixture.source / "README.md", "committed user edit\n")
-        git(self.fixture.source, "add", "README.md")
-        git(self.fixture.source, "commit", "--quiet", "-m", "unexported user edit")
-        self.assertFailsWith(self.fixture.run(), "HEAD moved from managed tip")
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"reused": true', result.stdout)
+        self.assertIn('"fresh": false', result.stdout)
+        status = self.fixture.run("status")
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        status_json = json.loads(status.stdout)
+        self.assertTrue(status_json["inputs_current"])
+        self.assertTrue(status_json["source_state"]["worktree_dirty"])
+        self.assertTrue(status_json["source_state"]["unexported_changes"])
+        self.assertEqual((self.fixture.source / "README.md").read_text(), "user edit\n")
+
+    def test_same_input_reuses_committed_descendant(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        write(self.fixture.source / "local.txt", "committed local work\n")
+        git(self.fixture.source, "add", "local.txt")
+        git(self.fixture.source, "commit", "--quiet", "-m", "unexported local work")
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"reused": true', result.stdout)
+        self.assertIn('"head_is_managed": false', result.stdout)
+
+    def test_same_input_reuses_branch_and_stash(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        git(self.fixture.source, "checkout", "--quiet", "-b", "user-work")
+        write(self.fixture.source / "README.md", "stashed local work\n")
+        git(self.fixture.source, "stash", "push", "--quiet", "-m", "unexported stash")
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"reused": true', result.stdout)
+        state = json.loads(result.stdout)["source_state"]
+        self.assertIn("refs/heads/user-work", state["refs"])
+        self.assertIn("refs/stash", state["refs"])
+
+    def test_changed_recipe_refuses_dirty_source(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        write(self.fixture.source / "README.md", "unexported edit\n")
+        old_head = git(self.fixture.source, "rev-parse", "HEAD")
+        patch_text = self.fixture.patch.read_text()
+        self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] changed", 1))
+        result = self.fixture.run()
+        self.assertFailsWith(result, "unexported local changes")
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_head)
+        self.assertEqual((self.fixture.source / "README.md").read_text(), "unexported edit\n")
+
+    def test_changed_recipe_refuses_committed_descendant(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        write(self.fixture.source / "local.txt", "unexported commit\n")
+        git(self.fixture.source, "add", "local.txt")
+        git(self.fixture.source, "commit", "--quiet", "-m", "unexported local work")
+        old_head = git(self.fixture.source, "rev-parse", "HEAD")
+        patch_text = self.fixture.patch.read_text()
+        self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] changed", 1))
+        result = self.fixture.run()
+        self.assertFailsWith(result, "unexported local changes")
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_head)
+
+    def test_changed_recipe_refuses_branch_and_stash(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        git(self.fixture.source, "checkout", "--quiet", "-b", "user-work")
+        write(self.fixture.source / "README.md", "stashed local work\n")
+        git(self.fixture.source, "stash", "push", "--quiet", "-m", "unexported stash")
+        patch_text = self.fixture.patch.read_text()
+        self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] changed", 1))
+        result = self.fixture.run()
+        self.assertFailsWith(result, "unexported local changes")
+        self.assertIn("refs/heads/user-work", git(self.fixture.source, "for-each-ref", "--format=%(refname)"))
+        self.assertIn("unexported stash", git(self.fixture.source, "stash", "list"))
+
+    def test_replacement_retains_predecessor_backup_and_ignored_data(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        exclude = self.fixture.source / ".git/info/exclude"
+        exclude.write_text("private-note.txt\n")
+        private_note = self.fixture.source / "private-note.txt"
+        private_note.write_text("keep this user data\n")
+        old_head = git(self.fixture.source, "rev-parse", "HEAD")
+        patch_text = self.fixture.patch.read_text()
+        self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] changed", 1))
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result_json = json.loads(result.stdout)
+        backup = Path(result_json["predecessor_backup"])
+        self.assertTrue(backup.name.startswith(".source-backup-"))
+        self.assertTrue(backup.is_dir())
+        self.assertEqual((backup / ".git/info/exclude").read_text(), "private-note.txt\n")
+        self.assertEqual((backup / "private-note.txt").read_text(), "keep this user data\n")
+        self.assertEqual(git(backup, "rev-parse", "HEAD"), old_head)
+        self.assertFalse(private_note.exists())
+        repeated = self.fixture.run()
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertIn('"reused": true', repeated.stdout)
 
     def test_changed_patch_digest_rebuilds_current_inputs(self) -> None:
         self.assertEqual(self.fixture.run().returncode, 0)
@@ -294,34 +473,51 @@ class RecipeTests(unittest.TestCase):
         old_patch_digest = self.fixture.receipt()["input"]["patch_digest"]
         patch_text = self.fixture.patch.read_text()
         self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] baseline", 1))
-        marker = self.fixture.root / ".build/recipe-running.marker"
-        env = {"RECIPE_TEST_SLEEP": "1", "RECIPE_TEST_MARKER": str(marker)}
-        first = subprocess.Popen(
-            [sys.executable, str(self.fixture.root / ".mine/recipe.py"), "prepare"],
-            cwd=self.fixture.root,
-            env={**os.environ, **env},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        deadline = time.monotonic() + 20
-        while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        if not marker.exists():
-            first_stdout, first_stderr = first.communicate(timeout=120)
-            self.fail(f"first prepare did not enter the long pipeline: {first_stdout}{first_stderr}")
-        patch_text = self.fixture.patch.read_text()
-        self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] overlap", 1))
-        second = self.fixture.run(extra_env=env)
-        first_stdout, first_stderr = first.communicate(timeout=120)
+        handshake_dir = Path(tempfile.mkdtemp(prefix="tc-handshake-", dir=tempfile.gettempdir()))
+        handshake = handshake_dir / "s"
+        server: socket.socket | None = None
+        connection: socket.socket | None = None
+        first: subprocess.Popen[str] | None = None
+        second: subprocess.Popen[str] | None = None
         try:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(handshake))
+            server.listen(1)
+            server.settimeout(20)
+            env = {
+                "RECIPE_TEST_HANDSHAKE": "1",
+                "RECIPE_TEST_HELPER": sys.executable,
+                "RECIPE_TEST_SOCKET": str(handshake),
+            }
+            first = self.fixture.start(extra_env=env)
+            connection, _ = server.accept()
+            connection.settimeout(20)
+            self.assertEqual(connection.recv(6), b"ready\n")
+            patch_text = self.fixture.patch.read_text()
+            self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] overlap", 1))
+            second = self.fixture.start(extra_env={**env, "RECIPE_TEST_HANDSHAKE": "0"})
+            connection.sendall(b"release")
+            first_stdout, first_stderr = first.communicate(timeout=120)
+            second_stdout, second_stderr = second.communicate(timeout=120)
             self.assertNotEqual(first.returncode, 0, first_stdout + first_stderr)
             self.assertIn("inputs changed during prepare", first_stderr)
-            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertEqual(second.returncode, 0, second_stdout + second_stderr)
             self.assertNotEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_head)
             self.assertNotEqual(self.fixture.receipt()["input"]["patch_digest"], old_patch_digest)
         finally:
-            marker.unlink(missing_ok=True)
+            for process in (first, second):
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+            if connection is not None:
+                connection.close()
+            if server is not None:
+                server.close()
+            shutil.rmtree(handshake_dir, ignore_errors=True)
 
 
 def main() -> int:
