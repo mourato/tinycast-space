@@ -168,7 +168,7 @@ class Fixture:
         write(
             self.tools / "git",
             "#!/bin/sh\n"
-            "set -eu\n"
+            "set -euo pipefail\n"
             "for arg in \"$@\"; do\n"
             "  if [ \"${RECIPE_TEST_HANDSHAKE:-0}\" = 1 ] && [ \"$arg\" = fetch ]; then\n"
             "    \"${RECIPE_TEST_HELPER:?}\" -c 'import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ[\"RECIPE_TEST_SOCKET\"]); s.sendall(b\"ready\\n\"); s.recv(1); s.close()'\n"
@@ -543,12 +543,12 @@ class RecipeTests(unittest.TestCase):
     def test_check_space_reads_radar_without_root_mutation(self) -> None:
         old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
         old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        shutil.rmtree(self.fixture.space)
         result = self.fixture.run("check-space")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["url"], self.fixture.space.resolve().as_uri())
         self.assertEqual(report["adopted_commit"], self.fixture.space_commit)
-        self.assertEqual(report["head"], self.fixture.space_commit)
         self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
         self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
         self.assertFalse((self.fixture.root / ".build/source").exists())

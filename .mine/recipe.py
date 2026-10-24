@@ -823,13 +823,7 @@ def load_space_radar() -> dict[str, str]:
 def check_space() -> dict[str, Any]:
     ensure_build_root()
     with RecipeLock(BUILD / ".recipe.lock", "check-space"):
-        radar = load_space_radar()
-        workspace = Path(tempfile.mkdtemp(prefix="tinycast-space-radar-"))
-        try:
-            _repository, head = discover_repository(workspace, radar["url"], "space-radar")
-            return {**radar, "head": head}
-        finally:
-            remove_owned(workspace)
+        return load_space_radar()
 
 
 def open_owned_regular(path: Path, label: str, flags: int) -> int:
