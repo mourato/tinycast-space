@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize and drive Tinycast from the locked upstream, Space, and fork inputs."""
+"""Materialize and drive Tinycast from the locked upstream and fork inputs."""
 
 from __future__ import annotations
 
@@ -29,11 +29,12 @@ LOCK_PATH = MINE / "sources.lock.json"
 PATCH_DIR = MINE / "patches"
 RECIPE_PATH = Path(__file__).resolve()
 RECEIPT_NAME = "tinycast-recipe-receipt.json"
+SPACE_RADAR_PATH = MINE / "space-radar.json"
 DEFAULT_SIGN_IDENTITY = "Apple Development"
 RELEASE_PRODUCT = "Tinycast.app"
 DEBUG_PRODUCT = "Tinycast Dev.app"
 TOOL_COMMANDS = ("build", "build-debug", "install", "test", "lint")
-RECEIPT_SCHEMA = 1
+RECEIPT_SCHEMA = 2
 SAVE_JOURNAL_SCHEMA = 1
 SAVE_JOURNAL_STATES = {
     "prepared",
@@ -136,23 +137,17 @@ def require_url(value: Any, label: str) -> str:
     return value
 
 
-def require_relative_path(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
-        fail(f"malformed {label}: expected a relative POSIX path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or "." in path.parts:
-        fail(f"malformed {label}: path escapes its declared root")
-    return value.rstrip("/")
-
-
 def load_lock() -> tuple[dict[str, Any], bytes, str]:
     data = read_bytes(LOCK_PATH, "sources.lock.json")
+    parsed = parse_json(data, "sources.lock.json")
+    if isinstance(parsed, dict) and parsed.get("schema") == 1:
+        fail("malformed sources.lock.json: schema 1 is no longer supported; remove the space block and use schema 2")
     lock = require_keys(
-        parse_json(data, "sources.lock.json"),
-        {"schema", "original_reference_revision", "upstream", "space", "expected_source"},
+        parsed,
+        {"schema", "original_reference_revision", "upstream", "expected_source"},
         "sources.lock.json",
     )
-    if lock["schema"] != 1:
+    if lock["schema"] != 2:
         fail("malformed sources.lock.json: unsupported schema")
     require_sha(lock["original_reference_revision"], "original_reference_revision")
 
@@ -173,20 +168,6 @@ def load_lock() -> tuple[dict[str, Any], bytes, str]:
         fail("malformed upstream.release_version: expected a semantic version")
     if upstream["release_tag"][1:] != upstream["release_version"]:
         fail("malformed upstream: release_tag and release_version disagree")
-
-    space = require_keys(
-        lock["space"], {"url", "update_url", "commit", "source_paths"}, "space"
-    )
-    require_url(space["url"], "space.url")
-    require_url(space["update_url"], "space.update_url")
-    require_sha(space["commit"], "space.commit")
-    if not isinstance(space["source_paths"], list) or not space["source_paths"]:
-        fail("malformed space.source_paths: expected a non-empty list")
-    source_paths = [require_relative_path(path, "space.source_paths") for path in space["source_paths"]]
-    if len(source_paths) != len(set(source_paths)):
-        fail("malformed space.source_paths: duplicate path")
-    if source_paths != [".space", ".github/workflows"]:
-        fail("malformed space.source_paths: expected .space and .github/workflows")
 
     expected = require_keys(
         lock["expected_source"], {"fingerprint", "record_format", "excluded_paths"}, "expected_source"
@@ -291,12 +272,6 @@ def run_git(repo: Path, args: list[str], *, check: bool = True) -> str:
     return result.stdout
 
 
-def run_process(command: list[str], cwd: Path, env: dict[str, str]) -> None:
-    result = subprocess.run(command, cwd=cwd, env=env, check=False, stdout=sys.stderr)
-    if result.returncode:
-        fail(f"pipeline command failed ({result.returncode}): {' '.join(command)}")
-
-
 def configure_repository(repo: Path) -> None:
     for key, value in (
         ("core.hooksPath", "/dev/null"),
@@ -391,9 +366,8 @@ def validate_receipt(source: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     for key in input_record:
         if not isinstance(input_record[key], str) or not re.fullmatch(r"[0-9a-f]{64}", input_record[key]):
             fail(f"malformed recipe receipt: receipt.input.{key}")
-    require_keys(receipt["locked"], {"upstream", "space", "release_version"}, "receipt.locked")
+    require_keys(receipt["locked"], {"upstream", "release_version"}, "receipt.locked")
     require_sha(receipt["locked"]["upstream"], "receipt.locked.upstream")
-    require_sha(receipt["locked"]["space"], "receipt.locked.space")
     if receipt["locked"]["release_version"] != inputs["lock"]["upstream"]["release_version"] and input_record[
         "lock_sha256"
     ] == inputs["lock_sha256"]:
@@ -425,7 +399,6 @@ def validate_receipt(source: Path, inputs: dict[str, Any]) -> dict[str, Any]:
     if input_matches:
         expected_locked = {
             "upstream": inputs["lock"]["upstream"]["commit"],
-            "space": inputs["lock"]["space"]["commit"],
             "release_version": inputs["lock"]["upstream"]["release_version"],
         }
         if receipt["locked"] != expected_locked:
@@ -532,89 +505,24 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
     return receipt, current, local_state
 
 
-def extraction_records(space_repo: Path, commit: str, roots: list[str]) -> list[tuple[int, str, str]]:
-    result = subprocess.run(
-        ["git", "-C", str(space_repo), "ls-tree", "-r", "-z", "--full-tree", commit, "--", *roots],
-        check=False,
-        env=git_env(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode:
-        fail(f"cannot inspect locked Space tree: {result.stderr.decode(errors='replace').strip()}")
-    records: list[tuple[int, str, str]] = []
-    for raw in result.stdout.split(b"\0"):
-        if not raw:
-            continue
-        try:
-            metadata, path_bytes = raw.split(b"\t", 1)
-            mode_text, kind, object_id = metadata.decode("ascii").split(" ")
-            path = path_bytes.decode("utf-8")
-            mode = int(mode_text, 8)
-        except (UnicodeDecodeError, ValueError):
-            fail("locked Space tree contains a malformed Git record")
-        if kind != "blob" or mode not in (0o100644, 0o100755):
-            fail(f"locked Space tree contains a symlink or non-file at {path}")
-        pure = PurePosixPath(path)
-        if pure.is_absolute() or ".." in pure.parts or not any(
-            path == root or path.startswith(root + "/") for root in roots
-        ):
-            fail(f"locked Space path escapes its declared roots: {path}")
-        records.append((mode, path, object_id))
-    return records
-
-
-def safe_extract_space(space_repo: Path, commit: str, destination: Path, roots: list[str]) -> None:
-    records = extraction_records(space_repo, commit, roots)
-    if not any(path == ".space/apply.sh" for _, path, _ in records):
-        fail("locked Space snapshot has no .space/apply.sh")
-    for root in roots:
-        target_root = destination.joinpath(*PurePosixPath(root).parts)
-        parent = destination
-        for component in PurePosixPath(root).parts[:-1]:
-            parent /= component
-            if parent.is_symlink():
-                fail(f"Space extraction would follow a symlink at {parent}")
-            if parent.exists() and not parent.is_dir():
-                fail(f"Space extraction path is not a directory: {parent}")
-        if target_root.is_symlink():
-            fail(f"Space extraction would replace a symlink: {target_root}")
-        if target_root.exists() and not target_root.is_dir():
-            fail(f"Space extraction root is not a directory: {target_root}")
-        if target_root.is_dir():
-            shutil.rmtree(target_root)
-    for mode, path, object_id in records:
-        relative = PurePosixPath(path)
-        target = destination.joinpath(*relative.parts)
-        current = destination
-        for component in relative.parent.parts:
-            current /= component
-            if current.is_symlink():
-                fail(f"Space extraction would follow a symlink at {current}")
-            if current.exists() and not current.is_dir():
-                fail(f"Space extraction path is not a directory: {current}")
-        if target.is_symlink():
-            fail(f"Space extraction would overwrite a symlink: {target}")
-        if target.exists() and target.is_dir():
-            fail(f"Space extraction target is a directory: {target}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        data = subprocess.run(
-            ["git", "-C", str(space_repo), "show", f"{commit}:{path}"],
-            check=False,
-            env=git_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if data.returncode:
-            fail(f"cannot extract locked Space path {path}: {data.stderr.decode(errors='replace').strip()}")
-        target.write_bytes(data.stdout)
-        target.chmod(mode & 0o777)
-
-
 def repository_commit(repo: Path, message: str) -> str:
     run_git(repo, ["add", "-A", "--", "."], check=True)
     result = subprocess.run(
-        ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-q", "--no-verify", "-m", message],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-q",
+            "--no-verify",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
         check=False,
         env=git_env(commit_identity=True),
         stdout=subprocess.PIPE,
@@ -624,38 +532,6 @@ def repository_commit(repo: Path, message: str) -> str:
     if result.returncode:
         fail(f"generated Git commit failed: {result.stderr.strip()}")
     return run_git(repo, ["rev-parse", "HEAD"]).strip()
-
-
-def run_space_pipeline(stage: Path) -> None:
-    script = stage / ".space" / "apply.sh"
-    if script.is_symlink() or not script.is_file():
-        fail("locked Space apply.sh is missing or is a symlink")
-    script_text = script.read_text(encoding="utf-8")
-    for command in ("npx", "node"):
-        if command in script_text and shutil.which(command) is None:
-            fail(f"required pipeline command is unavailable: {command}")
-    if "xcodegen" in script_text and shutil.which("xcodegen") is None:
-        fail("required pipeline command is unavailable: xcodegen")
-    private_root = stage.parent / (stage.name + "-runtime")
-    private_root.mkdir()
-    env = git_env()
-    env["TMPDIR"] = str(private_root / "tmp")
-    env["HOME"] = str(private_root / "home")
-    env["XDG_CACHE_HOME"] = str(private_root / "cache")
-    env["NPM_CONFIG_CACHE"] = str(private_root / "npm-cache")
-    env["npm_config_cache"] = env["NPM_CONFIG_CACHE"]
-    env["PNPM_HOME"] = str(private_root / "pnpm")
-    for name in ("TMPDIR", "HOME", "XDG_CACHE_HOME", "NPM_CONFIG_CACHE", "PNPM_HOME"):
-        Path(env[name]).mkdir(parents=True, exist_ok=True)
-    try:
-        run_process(["bash", str(script)], stage, env)
-    finally:
-        shutil.rmtree(private_root, ignore_errors=True)
-    node_modules = stage / "Scripts" / "raycast-runtime" / "node_modules"
-    if node_modules.is_symlink() or node_modules.is_file():
-        node_modules.unlink()
-    elif node_modules.is_dir():
-        shutil.rmtree(node_modules)
 
 
 def ensure_independent_source(repo: Path) -> None:
@@ -684,21 +560,10 @@ def build_stage(
     run_git(stage, ["checkout", "--quiet", "--detach", upstream["commit"]])
     run_git(stage, ["remote", "remove", "upstream"])
 
-    space_fetch = Path(tempfile.mkdtemp(prefix=".space-fetch-", dir=stage.parent))
-    try:
-        run_git(space_fetch, ["init", "--bare", "--quiet"])
-        space = inputs["lock"]["space"]
-        run_git(space_fetch, ["fetch", "--no-tags", "--no-prune", space["url"], space["commit"]])
-        verify_commit(space_fetch, space["commit"], "Space")
-        safe_extract_space(space_fetch, space["commit"], stage, space["source_paths"])
-    finally:
-        shutil.rmtree(space_fetch, ignore_errors=True)
-
     if (stage / ".mine").exists() or (stage / "Makefile").exists():
         fail("generated source contains recipe tooling")
-    run_space_pipeline(stage)
     marker.unlink()
-    base = repository_commit(stage, "tinycast-space: materialize source-only base")
+    base = repository_commit(stage, "tinycast: materialize source-only base")
 
     patches = [str(path.resolve()) for path in inputs["patches"]]
     if patches:
@@ -747,7 +612,6 @@ def build_stage(
         },
         "locked": {
             "upstream": inputs["lock"]["upstream"]["commit"],
-            "space": inputs["lock"]["space"]["commit"],
             "release_version": inputs["lock"]["upstream"]["release_version"],
         },
         "patches": inputs["patch_records"],
@@ -808,13 +672,6 @@ def discover_repository(workspace: Path, url: str, label: str) -> tuple[Path, st
     return repository, head
 
 
-def fetch_discovered_commit(
-    repository: Path, commit: str, label: str, *, remote: str = "origin"
-) -> None:
-    run_git(repository, ["fetch", "--no-tags", "--no-prune", remote, commit])
-    verify_commit(repository, commit, label)
-
-
 def fetch_discovered_tags(repository: Path) -> None:
     run_git(repository, ["fetch", "--no-prune", "origin", "refs/tags/*:refs/tags/*"])
 
@@ -834,23 +691,11 @@ def reachable_release(repository: Path, commit: str, label: str) -> tuple[str, s
     return tag, tag[1:]
 
 
-def space_recorded_upstream(repository: Path, commit: str) -> str:
-    try:
-        value = run_git(repository, ["show", f"{commit}:.space/UPSTREAM"]).strip()
-    except RecipeError:
-        fail("Space snapshot has no readable .space/UPSTREAM")
-    return require_sha(value, "Space .space/UPSTREAM")
-
-
-def selected_lock(
-    current: dict[str, Any], upstream_commit: str, release_tag: str, space_commit: str
-) -> dict[str, Any]:
+def selected_lock(current: dict[str, Any], upstream_commit: str, release_tag: str) -> dict[str, Any]:
     lock = json.loads(json.dumps(current["lock"]))
     lock["upstream"]["commit"] = upstream_commit
     lock["upstream"]["release_tag"] = release_tag
     lock["upstream"]["release_version"] = release_tag[1:]
-    lock["space"]["url"] = lock["space"]["update_url"]
-    lock["space"]["commit"] = space_commit
     return lock
 
 
@@ -870,7 +715,7 @@ def source_state_token(inputs: dict[str, Any]) -> tuple[Any, ...] | None:
 
 def reject_pending_update_state() -> None:
     if SAVE_JOURNAL.exists() or source_save_artifacts():
-        fail("source save recovery is pending; resolve it before update or sync")
+        fail("source save recovery is pending; resolve it before update")
     for prefix in (STAGE_PREFIX, OLD_PREFIX):
         pending = sorted(BUILD.glob(prefix + "*"))
         if pending:
@@ -879,7 +724,7 @@ def reject_pending_update_state() -> None:
 
 def lock_has_unstaged_edits() -> bool:
     if staged_export_paths(ROOT):
-        fail("root has staged lock or patch edits; preserve them and retry update or sync")
+        fail("root has staged lock or patch edits; preserve them and retry update")
     status = run_git(
         ROOT,
         ["status", "--porcelain=v1", "--untracked-files=all", "--", ".mine/sources.lock.json"],
@@ -908,38 +753,27 @@ def recheck_update_state(
     return current
 
 
-def select_sources(operation: str, current: dict[str, Any], workspace: Path) -> tuple[str, str, str, str]:
-    space_repository, space_head = discover_repository(workspace, current["lock"]["space"]["update_url"], "space")
+def select_sources(current: dict[str, Any], workspace: Path) -> tuple[str, str, str]:
     upstream_repository, upstream_head = discover_repository(workspace, current["lock"]["upstream"]["url"], "upstream")
-    if operation == "sync":
-        upstream_commit = space_recorded_upstream(space_repository, space_head)
-        fetch_discovered_commit(upstream_repository, upstream_commit, "Space .space/UPSTREAM")
-        if not is_ancestor(upstream_repository, upstream_commit, upstream_head):
-            fail("Space .space/UPSTREAM is not reachable from official Tinycast main")
-    else:
-        upstream_commit = upstream_head
     fetch_discovered_tags(upstream_repository)
-    release_tag, _release_version = reachable_release(upstream_repository, upstream_commit, "official Tinycast upstream")
+    release_tag, _release_version = reachable_release(upstream_repository, upstream_head, "official Tinycast upstream")
     return (
         current["lock"]["upstream"]["url"],
-        upstream_commit,
+        upstream_head,
         release_tag,
-        space_head,
     )
 
 
-def update_or_sync(operation: str) -> dict[str, Any]:
+def update() -> dict[str, Any]:
     ensure_build_root()
-    with RecipeLock(BUILD / ".recipe.lock", operation):
+    with RecipeLock(BUILD / ".recipe.lock", "update"):
         current = load_inputs()
         old_lock_sha, source_token = update_preflight(current)
         operation_root = Path(tempfile.mkdtemp(prefix=OPERATION_PREFIX, dir=BUILD))
         (operation_root / ".recipe-operation-owner").write_text("tinycast-recipe\n", encoding="utf-8")
         try:
-            upstream_url, upstream_commit, release_tag, space_commit = select_sources(
-                operation, current, operation_root
-            )
-            lock = selected_lock(current, upstream_commit, release_tag, space_commit)
+            upstream_url, upstream_commit, release_tag = select_sources(current, operation_root)
+            lock = selected_lock(current, upstream_commit, release_tag)
             lock["upstream"]["url"] = upstream_url
             candidate_lock_bytes = encode_lock(lock)
             candidate_inputs = inputs_for_lock(current, lock, candidate_lock_bytes)
@@ -951,23 +785,21 @@ def update_or_sync(operation: str) -> dict[str, Any]:
             current = recheck_update_state(current, old_lock_sha, current["patch_digest"], source_token)
             if lock == current["lock"] and fingerprint == current["lock"]["expected_source"]["fingerprint"]:
                 return {
-                    "operation": operation,
+                    "operation": "update",
                     "changed": False,
                     "upstream_commit": upstream_commit,
-                    "space_commit": space_commit,
                     "release_tag": release_tag,
                     "release_version": release_tag[1:],
                     "expected_source": fingerprint,
                     "cache": "unchanged",
                 }
             if lock_has_unstaged_edits():
-                fail("sources.lock.json has pre-existing edits; preserve them and retry update or sync")
+                fail("sources.lock.json has pre-existing edits; preserve them and retry update")
             atomic_write(LOCK_PATH, new_lock_bytes)
             return {
-                "operation": operation,
+                "operation": "update",
                 "changed": True,
                 "upstream_commit": upstream_commit,
-                "space_commit": space_commit,
                 "release_tag": release_tag,
                 "release_version": release_tag[1:],
                 "expected_source": fingerprint,
@@ -977,64 +809,25 @@ def update_or_sync(operation: str) -> dict[str, Any]:
             remove_owned(operation_root)
 
 
+def load_space_radar() -> dict[str, str]:
+    radar = require_keys(
+        parse_json(read_bytes(SPACE_RADAR_PATH, "space-radar.json"), "space-radar.json"),
+        {"url", "adopted_commit"},
+        "space-radar.json",
+    )
+    require_url(radar["url"], "space-radar.url")
+    require_sha(radar["adopted_commit"], "space-radar.adopted_commit")
+    return radar
+
+
 def check_space() -> dict[str, Any]:
     ensure_build_root()
     with RecipeLock(BUILD / ".recipe.lock", "check-space"):
-        current = load_inputs()
-        workspace = Path(tempfile.mkdtemp(prefix="tinycast-space-discovery-"))
+        radar = load_space_radar()
+        workspace = Path(tempfile.mkdtemp(prefix="tinycast-space-radar-"))
         try:
-            upstream_repository, upstream_head = discover_repository(
-                workspace, current["lock"]["upstream"]["url"], "upstream"
-            )
-            fetch_discovered_tags(upstream_repository)
-            available_release_tag, available_release_version = reachable_release(
-                upstream_repository, upstream_head, "official Tinycast upstream"
-            )
-            available_space_repository, available_space_head = discover_repository(
-                workspace, current["lock"]["space"]["update_url"], "space"
-            )
-            snapshot_remote = "snapshot"
-            run_git(available_space_repository, ["remote", "add", snapshot_remote, current["lock"]["space"]["url"]])
-            fetch_discovered_commit(
-                available_space_repository,
-                current["lock"]["space"]["commit"],
-                "current Space snapshot",
-                remote=snapshot_remote,
-            )
-            space_changes = run_git(
-                available_space_repository,
-                [
-                    "diff",
-                    "--name-status",
-                    current["lock"]["space"]["commit"],
-                    available_space_head,
-                    "--",
-                    ".space",
-                    ".github/workflows",
-                ],
-            ).splitlines()
-            bounded_changes = space_changes[:40]
-            return {
-                "current": {
-                    "upstream_commit": current["lock"]["upstream"]["commit"],
-                    "release_tag": current["lock"]["upstream"]["release_tag"],
-                    "release_version": current["lock"]["upstream"]["release_version"],
-                    "space_url": current["lock"]["space"]["url"],
-                    "space_commit": current["lock"]["space"]["commit"],
-                },
-                "available": {
-                    "upstream_commit": upstream_head,
-                    "release_tag": available_release_tag,
-                    "release_version": available_release_version,
-                    "space_url": current["lock"]["space"]["update_url"],
-                    "space_commit": available_space_head,
-                    "space_recorded_upstream": space_recorded_upstream(
-                        available_space_repository, available_space_head
-                    ),
-                    "space_changes": bounded_changes,
-                    "space_changes_truncated": len(space_changes) > len(bounded_changes),
-                },
-            }
+            _repository, head = discover_repository(workspace, radar["url"], "space-radar")
+            return {**radar, "head": head}
         finally:
             remove_owned(workspace)
 
@@ -1484,7 +1277,6 @@ def receipt_bytes(
         },
         "locked": {
             "upstream": inputs["lock"]["upstream"]["commit"],
-            "space": inputs["lock"]["space"]["commit"],
             "release_version": inputs["lock"]["upstream"]["release_version"],
         },
         "patches": patch_records,
@@ -1512,7 +1304,6 @@ def validate_source_for_save(
         fail("authoritative lock or patch inputs changed since the generated source was prepared")
     expected_locked = {
         "upstream": inputs["lock"]["upstream"]["commit"],
-        "space": inputs["lock"]["space"]["commit"],
         "release_version": inputs["lock"]["upstream"]["release_version"],
     }
     if receipt["locked"] != expected_locked:
@@ -2088,7 +1879,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("prepare", "status", "save", "finish-guard", "check-space", "sync", "update", "command"),
+        choices=("prepare", "status", "save", "finish-guard", "check-space", "update", "command"),
     )
     parser.add_argument("name", nargs="?")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
@@ -2107,8 +1898,8 @@ def main(argv: list[str]) -> int:
             return 0
         elif args.command == "check-space":
             result = check_space()
-        elif args.command in ("sync", "update"):
-            result = update_or_sync(args.command)
+        elif args.command == "update":
+            result = update()
         else:
             result = prepare() if args.command == "prepare" else status()
         print(json.dumps(result, indent=2, sort_keys=True))

@@ -94,11 +94,11 @@ class Fixture:
         self._make_shims()
         self.upstream = self.root / "upstream.git"
         self.space = self.root / "space.git"
-        self.space_update = self.root / "space-update.git"
         self._make_upstream()
         self._make_space()
         self._make_patch()
         self._write_lock()
+        self._write_space_radar()
         self._tag_recipe_root()
 
     def close(self) -> None:
@@ -165,6 +165,19 @@ class Fixture:
 
     def _make_shims(self) -> None:
         self.tools.mkdir()
+        write(
+            self.tools / "git",
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "for arg in \"$@\"; do\n"
+            "  if [ \"${RECIPE_TEST_HANDSHAKE:-0}\" = 1 ] && [ \"$arg\" = fetch ]; then\n"
+            "    \"${RECIPE_TEST_HELPER:?}\" -c 'import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ[\"RECIPE_TEST_SOCKET\"]); s.sendall(b\"ready\\n\"); s.recv(1); s.close()'\n"
+            "    break\n"
+            "  fi\n"
+            "done\n"
+            "exec \"${RECIPE_TEST_REAL_GIT:?}\" \"$@\"\n",
+            0o755,
+        )
         write(
             self.tools / "xcodebuild",
             "#!/bin/bash\n"
@@ -247,28 +260,11 @@ class Fixture:
     def _make_space(self) -> None:
         self._init(self.space)
         git(self.space, "branch", "-M", "main")
-        write(
-            self.space / ".space/apply.sh",
-            "#!/bin/sh\n"
-            "set -eu\n"
-            "if [ \"${RECIPE_TEST_HANDSHAKE:-0}\" = 1 ]; then\n"
-            "  \"${RECIPE_TEST_HELPER:?}\" -c 'import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ[\"RECIPE_TEST_SOCKET\"]); s.sendall(b\"ready\\n\"); s.recv(1); s.close()'\n"
-            "fi\n"
-            "printf '%s\\n' applying-space-pipeline\n"
-            "printf '%s\\n' generated > generated.txt\n",
-            0o755,
-        )
-        write(self.space / ".space/README.md", "fixture Space\n")
         write(self.space / ".space/UPSTREAM", f"{self.upstream_commit}\n")
-        write(self.space / ".github/workflows/space.yml", "name: space\n")
+        write(self.space / ".space/patches/0001-fixture.patch", "fixture patch\n")
         git(self.space, "add", "-A")
-        git(self.space, "commit", "--quiet", "-m", "Space snapshot")
+        git(self.space, "commit", "--quiet", "-m", "Space radar snapshot")
         self.space_commit = git(self.space, "rev-parse", "HEAD")
-        git(self.root, "clone", "--quiet", str(self.space), str(self.space_update))
-        write(self.space_update / ".space/README.md", "maintained fixture Space\n")
-        git(self.space_update, "add", ".space/README.md")
-        git(self.space_update, "commit", "--quiet", "-m", "Space maintained snapshot")
-        self.space_update_commit = git(self.space_update, "rev-parse", "HEAD")
 
     def _make_patch(self) -> None:
         patch_work = self.root / "patch-work"
@@ -291,16 +287,6 @@ class Fixture:
         expected = self.root / "expected"
         git(self.root, "clone", "--quiet", str(self.upstream), str(expected))
         git(expected, "checkout", "--quiet", "--detach", self.upstream_commit)
-        space_checkout = self.root / "space-checkout"
-        git(self.root, "clone", "--quiet", str(self.space), str(space_checkout))
-        git(space_checkout, "checkout", "--quiet", "--detach", self.space_commit)
-        workflows = expected / ".github/workflows"
-        shutil.rmtree(workflows)
-        shutil.copytree(space_checkout / ".github/workflows", workflows)
-        shutil.copytree(space_checkout / ".space", expected / ".space")
-        subprocess.run(["bash", str(expected / ".space/apply.sh")], cwd=expected, check=True, capture_output=True)
-        git(expected, "add", "-A")
-        git(expected, "commit", "--quiet", "-m", "Space base")
         git(expected, "am", "--3way", "--no-verify", str(self.patch))
         fingerprint = subprocess.run(
             ["bash", str(SOURCE_TREE), str(expected), "HEAD"],
@@ -312,19 +298,13 @@ class Fixture:
 
     def _write_lock(self) -> None:
         lock = {
-            "schema": 1,
+            "schema": 2,
             "original_reference_revision": self.upstream_commit,
             "upstream": {
                 "url": self.upstream.resolve().as_uri(),
                 "commit": self.upstream_commit,
                 "release_tag": "v1.2.3",
                 "release_version": "1.2.3",
-            },
-            "space": {
-                "url": self.space.resolve().as_uri(),
-                "update_url": self.space_update.resolve().as_uri(),
-                "commit": self.space_commit,
-                "source_paths": [".space", ".github/workflows"],
             },
             "expected_source": {
                 "fingerprint": self._expected_fingerprint(),
@@ -333,6 +313,16 @@ class Fixture:
             },
         }
         write(self.root / ".mine/sources.lock.json", json.dumps(lock, indent=2) + "\n")
+
+    def _write_space_radar(self) -> None:
+        write(
+            self.root / ".mine/space-radar.json",
+            json.dumps(
+                {"url": self.space.resolve().as_uri(), "adopted_commit": self.space_commit},
+                indent=2,
+            )
+            + "\n",
+        )
 
     @property
     def source(self) -> Path:
@@ -376,6 +366,7 @@ class Fixture:
     def tool_env(self, **extra: str) -> dict[str, str]:
         env = {
             "PATH": f"{self.tools}:{os.environ.get('PATH', '')}",
+            "RECIPE_TEST_REAL_GIT": shutil.which("git") or "/usr/bin/git",
             "RECIPE_TEST_TOOL_LOG": str(self.logs / "xcodebuild.log"),
             "RECIPE_TEST_SECURITY_LOG": str(self.logs / "security.log"),
             "RECIPE_TEST_CODESIGN_LOG": str(self.logs / "codesign.log"),
@@ -488,13 +479,19 @@ class RecipeTests(unittest.TestCase):
         first_json = json.loads(first.stdout)
         self.assertTrue(first_json["fresh"])
         self.assertFalse(first_json["reused"])
-        self.assertIn("applying-space-pipeline", first.stderr)
         first_head = git(self.fixture.source, "rev-parse", "HEAD")
         self.assertTrue((self.fixture.source / ".git").is_dir())
+        self.assertFalse((self.fixture.source / ".space").exists())
+        self.assertFalse((self.fixture.source / "generated.txt").exists())
         self.assertEqual(git(self.fixture.source, "remote"), "")
         self.assertEqual(git(self.fixture.source, "for-each-ref", "--format=%(refname)"), "")
         self.assertFalse((self.fixture.source / ".git/objects/info/alternates").exists())
         receipt = self.fixture.receipt()
+        self.assertEqual(receipt["schema"], 2)
+        self.assertEqual(
+            receipt["locked"],
+            {"upstream": self.fixture.upstream_commit, "release_version": "1.2.3"},
+        )
         self.assertEqual(receipt["managed_tip"], first_head)
         self.assertNotEqual(receipt["source_only_base_checkpoint"], first_head)
         fingerprint = subprocess.run(
@@ -516,12 +513,13 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(status_json["release_version"], "1.2.3")
         self.assertEqual(status_json["operation_owner"], "tinycast-recipe")
 
-    def test_update_selects_official_main_and_maintained_space_without_replacing_cache(self) -> None:
+    def test_update_selects_official_main_and_release_tag_without_space(self) -> None:
         prepared = self.fixture.run()
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
         old_source_head = git(self.fixture.source, "rev-parse", "HEAD")
         old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
         old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+        shutil.rmtree(self.fixture.space)
 
         updated = self.fixture.run("update")
         self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
@@ -532,37 +530,25 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(lock["upstream"]["release_tag"], "v1.3.0")
         self.assertEqual(lock["upstream"]["release_version"], "1.3.0")
         self.assertNotEqual(lock["upstream"]["release_version"], "9.9.9")
-        self.assertEqual(lock["space"]["url"], self.fixture.space_update.resolve().as_uri())
-        self.assertEqual(lock["space"]["update_url"], self.fixture.space_update.resolve().as_uri())
-        self.assertEqual(lock["space"]["commit"], self.fixture.space_update_commit)
+        self.assertEqual(lock["schema"], 2)
+        self.assertNotIn("space", lock)
+        self.assertEqual(result["operation"], "update")
+        self.assertNotIn("space_commit", result)
         self.assertIn("run make prepare", result["cache"])
         self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_source_head)
         self.assertFalse((self.fixture.source / "upstream-latest.txt").exists())
         self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
         self.assertNotEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
 
-    def test_sync_uses_space_recorded_upstream_and_official_release_tags(self) -> None:
-        synced = self.fixture.run("sync")
-        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
-        lock = json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())
-        self.assertEqual(lock["upstream"]["commit"], self.fixture.upstream_commit)
-        self.assertEqual(lock["upstream"]["release_tag"], "v1.2.3")
-        self.assertEqual(lock["upstream"]["release_version"], "1.2.3")
-        self.assertEqual(lock["space"]["commit"], self.fixture.space_update_commit)
-        self.assertNotEqual(lock["upstream"]["commit"], self.fixture.upstream_latest)
-
-    def test_check_space_reports_current_and_available_without_root_mutation(self) -> None:
+    def test_check_space_reads_radar_without_root_mutation(self) -> None:
         old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
         old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
         result = self.fixture.run("check-space")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads(result.stdout)
-        self.assertEqual(report["current"]["upstream_commit"], self.fixture.upstream_commit)
-        self.assertEqual(report["current"]["space_commit"], self.fixture.space_commit)
-        self.assertEqual(report["available"]["upstream_commit"], self.fixture.upstream_latest)
-        self.assertEqual(report["available"]["space_commit"], self.fixture.space_update_commit)
-        self.assertEqual(report["available"]["space_recorded_upstream"], self.fixture.upstream_commit)
-        self.assertTrue(any(".space/README.md" in change for change in report["available"]["space_changes"]))
+        self.assertEqual(report["url"], self.fixture.space.resolve().as_uri())
+        self.assertEqual(report["adopted_commit"], self.fixture.space_commit)
+        self.assertEqual(report["head"], self.fixture.space_commit)
         self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
         self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
         self.assertFalse((self.fixture.root / ".build/source").exists())
@@ -597,7 +583,7 @@ class RecipeTests(unittest.TestCase):
 
         (self.fixture.source / "local-authoring.txt").unlink()
         lock = json.loads(old_lock)
-        lock["space"]["update_url"] = lock["space"]["update_url"]
+        lock["original_reference_revision"] = lock["original_reference_revision"]
         (self.fixture.root / ".mine/sources.lock.json").write_text(json.dumps(lock) + "\n")
         git(self.fixture.root, "add", ".mine/sources.lock.json")
         staged_bytes = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
@@ -701,6 +687,9 @@ class RecipeTests(unittest.TestCase):
 
         lock["schema"] = 1
         lock_path.write_text(json.dumps(lock))
+        self.assertFailsWith(self.fixture.run(), "schema 1 is no longer supported")
+        lock["schema"] = 2
+        lock_path.write_text(json.dumps(lock))
         outside = self.fixture.root / "outside"
         outside.mkdir()
         build = self.fixture.root / ".build"
@@ -740,9 +729,9 @@ class RecipeTests(unittest.TestCase):
         self.assertFailsWith(self.fixture.run(), "recipe receipt is missing")
         receipt_path.write_bytes(saved_receipt)
         receipt = json.loads(saved_receipt)
-        receipt["locked"]["space"] = "0" * 40
+        receipt["schema"] = 1
         receipt_path.write_text(json.dumps(receipt))
-        self.assertFailsWith(self.fixture.run(), "malformed recipe receipt")
+        self.assertFailsWith(self.fixture.run(), "unsupported schema")
         receipt_path.write_bytes(saved_receipt)
 
         git(self.fixture.source, "branch", "managed-anchor")
@@ -880,6 +869,8 @@ class RecipeTests(unittest.TestCase):
                 "RECIPE_TEST_HANDSHAKE": "1",
                 "RECIPE_TEST_HELPER": sys.executable,
                 "RECIPE_TEST_SOCKET": str(handshake),
+                "RECIPE_TEST_REAL_GIT": shutil.which("git") or "/usr/bin/git",
+                "PATH": f"{self.fixture.tools}:{os.environ.get('PATH', '')}",
             }
             first = self.fixture.start(extra_env=env)
             connection, _ = server.accept()
