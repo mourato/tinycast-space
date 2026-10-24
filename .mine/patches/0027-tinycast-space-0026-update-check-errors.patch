@@ -8,7 +8,7 @@ Content-Transfer-Encoding: 8bit
 
 A failed *Check for Updates* reports the check and its cause — offline or another URL error, GitHub's rate limit (429, or 403 with `X-RateLimit-Remaining: 0` / `Retry-After`), or the HTTP status — instead of a failed download (`UpdateFailure.checkFailed`, `check()` throws); a check already running says so. The message half of [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/0fee6712).
 
-Origin: tinycast-space 0026-update-check-errors.patch @ ffccfc3
+Origin: tinycast-space 0026-update-check-errors.patch @ bd9d7fe04efd117946bc588dcaf341efb2010333
 ---
  Scripts/run-tests.sh                          |  1 +
  Tests/update-check-test.swift                 | 63 ++++++++++++++++---
