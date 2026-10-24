@@ -50,6 +50,7 @@ STAGE_PREFIX = ".source-stage-"
 OLD_PREFIX = ".source-old-"
 BACKUP_PREFIX = ".source-backup-"
 SAVE_PREFIX = ".source-save-"
+OPERATION_PREFIX = ".recipe-operation-"
 SAVE_JOURNAL = BUILD / ".source-save-journal.json"
 GIT_ROUTING_ENV = {
     "GIT_DIR",
@@ -174,9 +175,10 @@ def load_lock() -> tuple[dict[str, Any], bytes, str]:
         fail("malformed upstream: release_tag and release_version disagree")
 
     space = require_keys(
-        lock["space"], {"url", "commit", "source_paths"}, "space"
+        lock["space"], {"url", "update_url", "commit", "source_paths"}, "space"
     )
     require_url(space["url"], "space.url")
+    require_url(space["update_url"], "space.update_url")
     require_sha(space["commit"], "space.commit")
     if not isinstance(space["source_paths"], list) or not space["source_paths"]:
         fail("malformed space.source_paths: expected a non-empty list")
@@ -667,7 +669,9 @@ def ensure_independent_source(repo: Path) -> None:
         fail("generated source retains a source remote")
 
 
-def build_stage(inputs: dict[str, Any], stage: Path) -> tuple[str, str, str]:
+def build_stage(
+    inputs: dict[str, Any], stage: Path, *, expected_fingerprint: str | None
+) -> tuple[str, str, str]:
     marker = stage / ".recipe-stage-owner"
     marker.write_text("tinycast-recipe\n", encoding="utf-8")
     stage.mkdir(exist_ok=True)
@@ -731,9 +735,8 @@ def build_stage(inputs: dict[str, Any], stage: Path) -> tuple[str, str, str]:
     ensure_independent_source(stage)
     managed_tip = run_git(stage, ["rev-parse", "HEAD"]).strip()
     fingerprint = source_fingerprint(stage)
-    expected = inputs["lock"]["expected_source"]["fingerprint"]
-    if fingerprint != expected:
-        fail(f"generated source fingerprint {fingerprint} does not match locked {expected}")
+    if expected_fingerprint is not None and fingerprint != expected_fingerprint:
+        fail(f"generated source fingerprint {fingerprint} does not match locked {expected_fingerprint}")
     receipt = {
         "schema": RECEIPT_SCHEMA,
         "input": {
@@ -757,6 +760,283 @@ def build_stage(inputs: dict[str, Any], stage: Path) -> tuple[str, str, str]:
     temporary_receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary_receipt, receipt_path)
     return base, managed_tip, fingerprint
+
+
+def encode_lock(lock: dict[str, Any]) -> bytes:
+    return (json.dumps(lock, indent=2, sort_keys=False) + "\n").encode("utf-8")
+
+
+def inputs_for_lock(base: dict[str, Any], lock: dict[str, Any], lock_bytes: bytes) -> dict[str, Any]:
+    return {
+        "lock": lock,
+        "lock_sha256": sha256_bytes(lock_bytes),
+        "patches": base["patches"],
+        "patch_records": base["patch_records"],
+        "patch_digest": base["patch_digest"],
+        "recipe_sha256": base["recipe_sha256"],
+        "input_digest": input_digest(lock_bytes, base["patch_digest"], base["recipe_sha256"]),
+    }
+
+
+def semantic_version_key(version: str) -> tuple[Any, ...]:
+    core, separator, prerelease = version.partition("-")
+    numbers = tuple(int(part) for part in core.split("."))
+    if not separator:
+        return numbers + ((1, ()),)
+    identifiers: list[tuple[int, Any]] = []
+    for identifier in prerelease.split("."):
+        if identifier.isdigit():
+            identifiers.append((0, int(identifier)))
+        else:
+            identifiers.append((1, identifier))
+    return numbers + ((0, tuple(identifiers)),)
+
+
+def discover_repository(workspace: Path, url: str, label: str) -> tuple[Path, str]:
+    repository = workspace / f"{label}.git"
+    repository.mkdir()
+    run_git(repository, ["init", "--bare", "--quiet"])
+    configure_repository(repository)
+    run_git(repository, ["remote", "add", "origin", url])
+    lines = run_git(repository, ["ls-remote", "--exit-code", "origin", "refs/heads/main"]).splitlines()
+    records = [line.split() for line in lines if line.split() and line.split()[-1] == "refs/heads/main"]
+    if len(records) != 1 or len(records[0]) != 2:
+        fail(f"{label} discovery did not return exactly one main commit")
+    head = require_sha(records[0][0], f"{label} main")
+    run_git(repository, ["fetch", "--no-tags", "--no-prune", "origin", head])
+    verify_commit(repository, head, f"{label} main")
+    return repository, head
+
+
+def fetch_discovered_commit(
+    repository: Path, commit: str, label: str, *, remote: str = "origin"
+) -> None:
+    run_git(repository, ["fetch", "--no-tags", "--no-prune", remote, commit])
+    verify_commit(repository, commit, label)
+
+
+def fetch_discovered_tags(repository: Path) -> None:
+    run_git(repository, ["fetch", "--no-prune", "origin", "refs/tags/*:refs/tags/*"])
+
+
+def reachable_release(repository: Path, commit: str, label: str) -> tuple[str, str]:
+    candidates: list[tuple[tuple[Any, ...], str, str]] = []
+    for tag in run_git(repository, ["tag", "--merged", commit, "--list", "v*"]).splitlines():
+        if not isinstance(tag, str) or not tag.startswith("v") or not VERSION_RE.fullmatch(tag[1:]):
+            continue
+        tag_commit = revision_commit(repository, tag)
+        if tag_commit is None or not is_ancestor(repository, tag_commit, commit):
+            continue
+        candidates.append((semantic_version_key(tag[1:]), tag, tag_commit))
+    if not candidates:
+        fail(f"{label} has no reachable semantic release tag")
+    _, tag, _ = max(candidates, key=lambda item: (item[0], item[1]))
+    return tag, tag[1:]
+
+
+def space_recorded_upstream(repository: Path, commit: str) -> str:
+    try:
+        value = run_git(repository, ["show", f"{commit}:.space/UPSTREAM"]).strip()
+    except RecipeError:
+        fail("Space snapshot has no readable .space/UPSTREAM")
+    return require_sha(value, "Space .space/UPSTREAM")
+
+
+def selected_lock(
+    current: dict[str, Any], upstream_commit: str, release_tag: str, space_commit: str
+) -> dict[str, Any]:
+    lock = json.loads(json.dumps(current["lock"]))
+    lock["upstream"]["commit"] = upstream_commit
+    lock["upstream"]["release_tag"] = release_tag
+    lock["upstream"]["release_version"] = release_tag[1:]
+    lock["space"]["url"] = lock["space"]["update_url"]
+    lock["space"]["commit"] = space_commit
+    return lock
+
+
+def source_state_token(inputs: dict[str, Any]) -> tuple[Any, ...] | None:
+    if not SOURCE.exists() and not SOURCE.is_symlink():
+        return None
+    _, _, state = inspect_existing(SOURCE, inputs)
+    if state["unexported_changes"]:
+        fail("generated source has unexported local changes; save or preserve them before update")
+    return (
+        state["head"],
+        state["worktree_dirty"],
+        tuple(state["refs"]),
+        tuple(state["unrepresented_refs"]),
+    )
+
+
+def reject_pending_update_state() -> None:
+    if SAVE_JOURNAL.exists() or source_save_artifacts():
+        fail("source save recovery is pending; resolve it before update or sync")
+    for prefix in (STAGE_PREFIX, OLD_PREFIX):
+        pending = sorted(BUILD.glob(prefix + "*"))
+        if pending:
+            fail(f"source preparation recovery is pending: {pending[0]}")
+
+
+def lock_has_unstaged_edits() -> bool:
+    if staged_export_paths(ROOT):
+        fail("root has staged lock or patch edits; preserve them and retry update or sync")
+    status = run_git(
+        ROOT,
+        ["status", "--porcelain=v1", "--untracked-files=all", "--", ".mine/sources.lock.json"],
+    ).splitlines()
+    return any(line and not line.startswith("?? ") for line in status)
+
+
+def update_preflight(inputs: dict[str, Any]) -> tuple[str, tuple[Any, ...] | None]:
+    reject_pending_update_state()
+    lock_has_unstaged_edits()
+    token = source_state_token(inputs)
+    return inputs["lock_sha256"], token
+
+
+def recheck_update_state(
+    inputs: dict[str, Any], old_lock_sha: str, old_patch_sha: str, source_token: tuple[Any, ...] | None
+) -> dict[str, Any]:
+    reject_pending_update_state()
+    lock_has_unstaged_edits()
+    current = load_inputs()
+    if current["lock_sha256"] != old_lock_sha or current["patch_digest"] != old_patch_sha:
+        fail("locked recipe inputs changed during update; previous lock was retained")
+    current_token = source_state_token(current)
+    if current_token != source_token:
+        fail("generated source ownership changed during update; previous lock was retained")
+    return current
+
+
+def select_sources(operation: str, current: dict[str, Any], workspace: Path) -> tuple[str, str, str, str]:
+    space_repository, space_head = discover_repository(workspace, current["lock"]["space"]["update_url"], "space")
+    upstream_repository, upstream_head = discover_repository(workspace, current["lock"]["upstream"]["url"], "upstream")
+    if operation == "sync":
+        upstream_commit = space_recorded_upstream(space_repository, space_head)
+        fetch_discovered_commit(upstream_repository, upstream_commit, "Space .space/UPSTREAM")
+        if not is_ancestor(upstream_repository, upstream_commit, upstream_head):
+            fail("Space .space/UPSTREAM is not reachable from official Tinycast main")
+    else:
+        upstream_commit = upstream_head
+    fetch_discovered_tags(upstream_repository)
+    release_tag, _release_version = reachable_release(upstream_repository, upstream_commit, "official Tinycast upstream")
+    return (
+        current["lock"]["upstream"]["url"],
+        upstream_commit,
+        release_tag,
+        space_head,
+    )
+
+
+def update_or_sync(operation: str) -> dict[str, Any]:
+    ensure_build_root()
+    with RecipeLock(BUILD / ".recipe.lock", operation):
+        current = load_inputs()
+        old_lock_sha, source_token = update_preflight(current)
+        operation_root = Path(tempfile.mkdtemp(prefix=OPERATION_PREFIX, dir=BUILD))
+        (operation_root / ".recipe-operation-owner").write_text("tinycast-recipe\n", encoding="utf-8")
+        try:
+            upstream_url, upstream_commit, release_tag, space_commit = select_sources(
+                operation, current, operation_root
+            )
+            lock = selected_lock(current, upstream_commit, release_tag, space_commit)
+            lock["upstream"]["url"] = upstream_url
+            candidate_lock_bytes = encode_lock(lock)
+            candidate_inputs = inputs_for_lock(current, lock, candidate_lock_bytes)
+            stage = operation_root / "candidate"
+            stage.mkdir()
+            _, _, fingerprint = build_stage(candidate_inputs, stage, expected_fingerprint=None)
+            lock["expected_source"]["fingerprint"] = fingerprint
+            new_lock_bytes = encode_lock(lock)
+            current = recheck_update_state(current, old_lock_sha, current["patch_digest"], source_token)
+            if lock == current["lock"] and fingerprint == current["lock"]["expected_source"]["fingerprint"]:
+                return {
+                    "operation": operation,
+                    "changed": False,
+                    "upstream_commit": upstream_commit,
+                    "space_commit": space_commit,
+                    "release_tag": release_tag,
+                    "release_version": release_tag[1:],
+                    "expected_source": fingerprint,
+                    "cache": "unchanged",
+                }
+            if lock_has_unstaged_edits():
+                fail("sources.lock.json has pre-existing edits; preserve them and retry update or sync")
+            atomic_write(LOCK_PATH, new_lock_bytes)
+            return {
+                "operation": operation,
+                "changed": True,
+                "upstream_commit": upstream_commit,
+                "space_commit": space_commit,
+                "release_tag": release_tag,
+                "release_version": release_tag[1:],
+                "expected_source": fingerprint,
+                "cache": "stale; run make prepare",
+            }
+        finally:
+            remove_owned(operation_root)
+
+
+def check_space() -> dict[str, Any]:
+    ensure_build_root()
+    with RecipeLock(BUILD / ".recipe.lock", "check-space"):
+        current = load_inputs()
+        workspace = Path(tempfile.mkdtemp(prefix="tinycast-space-discovery-"))
+        try:
+            upstream_repository, upstream_head = discover_repository(
+                workspace, current["lock"]["upstream"]["url"], "upstream"
+            )
+            fetch_discovered_tags(upstream_repository)
+            available_release_tag, available_release_version = reachable_release(
+                upstream_repository, upstream_head, "official Tinycast upstream"
+            )
+            available_space_repository, available_space_head = discover_repository(
+                workspace, current["lock"]["space"]["update_url"], "space"
+            )
+            snapshot_remote = "snapshot"
+            run_git(available_space_repository, ["remote", "add", snapshot_remote, current["lock"]["space"]["url"]])
+            fetch_discovered_commit(
+                available_space_repository,
+                current["lock"]["space"]["commit"],
+                "current Space snapshot",
+                remote=snapshot_remote,
+            )
+            space_changes = run_git(
+                available_space_repository,
+                [
+                    "diff",
+                    "--name-status",
+                    current["lock"]["space"]["commit"],
+                    available_space_head,
+                    "--",
+                    ".space",
+                    ".github/workflows",
+                ],
+            ).splitlines()
+            bounded_changes = space_changes[:40]
+            return {
+                "current": {
+                    "upstream_commit": current["lock"]["upstream"]["commit"],
+                    "release_tag": current["lock"]["upstream"]["release_tag"],
+                    "release_version": current["lock"]["upstream"]["release_version"],
+                    "space_url": current["lock"]["space"]["url"],
+                    "space_commit": current["lock"]["space"]["commit"],
+                },
+                "available": {
+                    "upstream_commit": upstream_head,
+                    "release_tag": available_release_tag,
+                    "release_version": available_release_version,
+                    "space_url": current["lock"]["space"]["update_url"],
+                    "space_commit": available_space_head,
+                    "space_recorded_upstream": space_recorded_upstream(
+                        available_space_repository, available_space_head
+                    ),
+                    "space_changes": bounded_changes,
+                    "space_changes_truncated": len(space_changes) > len(bounded_changes),
+                },
+            }
+        finally:
+            remove_owned(workspace)
 
 
 def open_owned_regular(path: Path, label: str, flags: int) -> int:
@@ -1509,7 +1789,11 @@ def prepare_locked() -> dict[str, Any]:
     stage = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=BUILD))
     published = False
     try:
-        base, managed_tip, fingerprint = build_stage(inputs, stage)
+        base, managed_tip, fingerprint = build_stage(
+            inputs,
+            stage,
+            expected_fingerprint=inputs["lock"]["expected_source"]["fingerprint"],
+        )
         current_inputs = load_inputs()
         if current_inputs["input_digest"] != inputs["input_digest"]:
             fail("locked recipe inputs changed during prepare; previous source was retained")
@@ -1802,7 +2086,10 @@ def status() -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "status", "save", "finish-guard", "command"))
+    parser.add_argument(
+        "command",
+        choices=("prepare", "status", "save", "finish-guard", "check-space", "sync", "update", "command"),
+    )
     parser.add_argument("name", nargs="?")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -1818,6 +2105,10 @@ def main(argv: list[str]) -> int:
         elif args.command == "finish-guard":
             finish_guard()
             return 0
+        elif args.command == "check-space":
+            result = check_space()
+        elif args.command in ("sync", "update"):
+            result = update_or_sync(args.command)
         else:
             result = prepare() if args.command == "prepare" else status()
         print(json.dumps(result, indent=2, sort_keys=True))

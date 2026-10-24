@@ -94,6 +94,7 @@ class Fixture:
         self._make_shims()
         self.upstream = self.root / "upstream.git"
         self.space = self.root / "space.git"
+        self.space_update = self.root / "space-update.git"
         self._make_upstream()
         self._make_space()
         self._make_patch()
@@ -119,6 +120,7 @@ class Fixture:
 
     def _make_upstream(self) -> None:
         self._init(self.upstream)
+        git(self.upstream, "branch", "-M", "main")
         write(self.upstream / "README.md", "upstream\n")
         write(self.upstream / "project.yml", "name: Fixture\n")
         write(self.upstream / ".github/workflows/upstream.yml", "name: upstream\n")
@@ -154,6 +156,12 @@ class Fixture:
         git(self.upstream, "add", "-A")
         git(self.upstream, "commit", "--quiet", "-m", "upstream base")
         self.upstream_commit = git(self.upstream, "rev-parse", "HEAD")
+        git(self.upstream, "tag", "v1.2.3", self.upstream_commit)
+        write(self.upstream / "upstream-latest.txt", "latest upstream\n")
+        git(self.upstream, "add", "upstream-latest.txt")
+        git(self.upstream, "commit", "--quiet", "-m", "upstream latest")
+        self.upstream_latest = git(self.upstream, "rev-parse", "HEAD")
+        git(self.upstream, "tag", "v1.3.0", self.upstream_latest)
 
     def _make_shims(self) -> None:
         self.tools.mkdir()
@@ -230,13 +238,15 @@ class Fixture:
 
     def _tag_recipe_root(self) -> None:
         self._init(self.root)
+        git(self.root, "branch", "-M", "main")
         write(self.root / "recipe-root.txt", "unrelated recipe tag\n")
-        git(self.root, "add", "--", "recipe-root.txt")
+        git(self.root, "add", "--", ".mine/sources.lock.json", ".mine/patches", "recipe-root.txt")
         git(self.root, "commit", "--quiet", "-m", "recipe root")
         git(self.root, "tag", "v9.9.9")
 
     def _make_space(self) -> None:
         self._init(self.space)
+        git(self.space, "branch", "-M", "main")
         write(
             self.space / ".space/apply.sh",
             "#!/bin/sh\n"
@@ -249,16 +259,23 @@ class Fixture:
             0o755,
         )
         write(self.space / ".space/README.md", "fixture Space\n")
+        write(self.space / ".space/UPSTREAM", f"{self.upstream_commit}\n")
         write(self.space / ".github/workflows/space.yml", "name: space\n")
         git(self.space, "add", "-A")
         git(self.space, "commit", "--quiet", "-m", "Space snapshot")
         self.space_commit = git(self.space, "rev-parse", "HEAD")
+        git(self.root, "clone", "--quiet", str(self.space), str(self.space_update))
+        write(self.space_update / ".space/README.md", "maintained fixture Space\n")
+        git(self.space_update, "add", ".space/README.md")
+        git(self.space_update, "commit", "--quiet", "-m", "Space maintained snapshot")
+        self.space_update_commit = git(self.space_update, "rev-parse", "HEAD")
 
     def _make_patch(self) -> None:
         patch_work = self.root / "patch-work"
         git(self.root, "clone", "--quiet", str(self.upstream), str(patch_work))
         git(patch_work, "config", "user.name", "Recipe Fixture")
         git(patch_work, "config", "user.email", "fixture@localhost")
+        git(patch_work, "checkout", "--quiet", "--detach", self.upstream_commit)
         write(patch_work / "fork.txt", "fork patch\n")
         git(patch_work, "add", "fork.txt")
         git(patch_work, "commit", "--quiet", "-m", "fork patch")
@@ -273,6 +290,7 @@ class Fixture:
     def _expected_fingerprint(self) -> str:
         expected = self.root / "expected"
         git(self.root, "clone", "--quiet", str(self.upstream), str(expected))
+        git(expected, "checkout", "--quiet", "--detach", self.upstream_commit)
         space_checkout = self.root / "space-checkout"
         git(self.root, "clone", "--quiet", str(self.space), str(space_checkout))
         git(space_checkout, "checkout", "--quiet", "--detach", self.space_commit)
@@ -304,6 +322,7 @@ class Fixture:
             },
             "space": {
                 "url": self.space.resolve().as_uri(),
+                "update_url": self.space_update.resolve().as_uri(),
                 "commit": self.space_commit,
                 "source_paths": [".space", ".github/workflows"],
             },
@@ -496,6 +515,143 @@ class RecipeTests(unittest.TestCase):
         self.assertTrue(status_json["fresh"])
         self.assertEqual(status_json["release_version"], "1.2.3")
         self.assertEqual(status_json["operation_owner"], "tinycast-recipe")
+
+    def test_update_selects_official_main_and_maintained_space_without_replacing_cache(self) -> None:
+        prepared = self.fixture.run()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        old_source_head = git(self.fixture.source, "rev-parse", "HEAD")
+        old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+
+        updated = self.fixture.run("update")
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        result = json.loads(updated.stdout)
+        lock = json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())
+        self.assertTrue(result["changed"])
+        self.assertEqual(lock["upstream"]["commit"], self.fixture.upstream_latest)
+        self.assertEqual(lock["upstream"]["release_tag"], "v1.3.0")
+        self.assertEqual(lock["upstream"]["release_version"], "1.3.0")
+        self.assertNotEqual(lock["upstream"]["release_version"], "9.9.9")
+        self.assertEqual(lock["space"]["url"], self.fixture.space_update.resolve().as_uri())
+        self.assertEqual(lock["space"]["update_url"], self.fixture.space_update.resolve().as_uri())
+        self.assertEqual(lock["space"]["commit"], self.fixture.space_update_commit)
+        self.assertIn("run make prepare", result["cache"])
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_source_head)
+        self.assertFalse((self.fixture.source / "upstream-latest.txt").exists())
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
+        self.assertNotEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
+
+    def test_sync_uses_space_recorded_upstream_and_official_release_tags(self) -> None:
+        synced = self.fixture.run("sync")
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        lock = json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())
+        self.assertEqual(lock["upstream"]["commit"], self.fixture.upstream_commit)
+        self.assertEqual(lock["upstream"]["release_tag"], "v1.2.3")
+        self.assertEqual(lock["upstream"]["release_version"], "1.2.3")
+        self.assertEqual(lock["space"]["commit"], self.fixture.space_update_commit)
+        self.assertNotEqual(lock["upstream"]["commit"], self.fixture.upstream_latest)
+
+    def test_check_space_reports_current_and_available_without_root_mutation(self) -> None:
+        old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+        old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        result = self.fixture.run("check-space")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["current"]["upstream_commit"], self.fixture.upstream_commit)
+        self.assertEqual(report["current"]["space_commit"], self.fixture.space_commit)
+        self.assertEqual(report["available"]["upstream_commit"], self.fixture.upstream_latest)
+        self.assertEqual(report["available"]["space_commit"], self.fixture.space_update_commit)
+        self.assertEqual(report["available"]["space_recorded_upstream"], self.fixture.upstream_commit)
+        self.assertTrue(any(".space/README.md" in change for change in report["available"]["space_changes"]))
+        self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
+        self.assertFalse((self.fixture.root / ".build/source").exists())
+
+    def test_update_conflict_preserves_lock_patch_source_and_root_state(self) -> None:
+        prepared = self.fixture.run()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+        old_patch = self.fixture.patch.read_bytes()
+        old_source_head = git(self.fixture.source, "rev-parse", "HEAD")
+        old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        self.fixture.patch.write_text("not a mail patch\n")
+        changed_patch = self.fixture.patch.read_bytes()
+
+        result = self.fixture.run("update")
+        self.assertFailsWith(result, "fork patch replay failed")
+        self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
+        self.assertEqual(self.fixture.patch.read_bytes(), changed_patch)
+        self.assertNotEqual(changed_patch, old_patch)
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_source_head)
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
+
+    def test_update_rejects_source_authoring_and_staged_lock_state(self) -> None:
+        prepared = self.fixture.run()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        write(self.fixture.source / "local-authoring.txt", "preserve\n")
+        old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+        rejected_source = self.fixture.run("update")
+        self.assertFailsWith(rejected_source, "unexported local changes")
+        self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
+        self.assertTrue((self.fixture.source / "local-authoring.txt").exists())
+
+        (self.fixture.source / "local-authoring.txt").unlink()
+        lock = json.loads(old_lock)
+        lock["space"]["update_url"] = lock["space"]["update_url"]
+        (self.fixture.root / ".mine/sources.lock.json").write_text(json.dumps(lock) + "\n")
+        git(self.fixture.root, "add", ".mine/sources.lock.json")
+        staged_bytes = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+        staged_index = git(self.fixture.root, "ls-files", "-s", "--", ".mine/sources.lock.json")
+        rejected_lock = self.fixture.run("update")
+        self.assertFailsWith(rejected_lock, "staged lock or patch edits")
+        self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), staged_bytes)
+        self.assertEqual(
+            git(self.fixture.root, "ls-files", "-s", "--", ".mine/sources.lock.json"), staged_index
+        )
+
+    def test_repeated_update_is_a_noop_and_does_not_create_predecessor(self) -> None:
+        first = self.fixture.run("update")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        lock_path = self.fixture.root / ".mine/sources.lock.json"
+        first_lock = lock_path.read_bytes()
+        root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        root_index = git(self.fixture.root, "ls-files", "-s")
+        self.assertEqual(git(self.fixture.root, "diff", "--name-only"), ".mine/sources.lock.json")
+        second = self.fixture.run("update")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertFalse(json.loads(second.stdout)["changed"])
+        self.assertEqual(lock_path.read_bytes(), first_lock)
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), root_head)
+        self.assertEqual(git(self.fixture.root, "ls-files", "-s"), root_index)
+        self.assertFalse(self.fixture.source.exists())
+
+        manual = json.loads(first_lock)
+        manual["upstream"]["release_tag"] = "v1.2.3"
+        manual["upstream"]["release_version"] = "1.2.3"
+        lock_path.write_text(json.dumps(manual, indent=2) + "\n")
+        manual_bytes = lock_path.read_bytes()
+        conflicting = self.fixture.run("update")
+        self.assertFailsWith(conflicting, "pre-existing edits")
+        self.assertEqual(lock_path.read_bytes(), manual_bytes)
+        self.assertEqual(git(self.fixture.root, "ls-files", "-s"), root_index)
+        self.assertEqual(list((self.fixture.root / ".build").glob(".source-backup-*")), [])
+
+    def test_prepare_materializes_new_pin_then_save_preserves_fingerprint(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        updated = self.fixture.run("update")
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        lock = json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())
+        stale_head = git(self.fixture.source, "rev-parse", "HEAD")
+        self.assertFalse((self.fixture.source / "upstream-latest.txt").exists())
+
+        prepared = self.fixture.run()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        self.assertNotEqual(git(self.fixture.source, "rev-parse", "HEAD"), stale_head)
+        self.assertTrue((self.fixture.source / "upstream-latest.txt").exists())
+        self.assertEqual(self.fixture.source_fingerprint(), lock["expected_source"]["fingerprint"])
+        saved = self.fixture.run("save")
+        self.assertEqual(saved.returncode, 0, saved.stdout + saved.stderr)
+        self.assertFalse(json.loads(saved.stdout)["exported"])
 
     def test_git_environment_cannot_redirect_fixture_operations(self) -> None:
         victim = self.fixture.root / "victim"
@@ -1052,7 +1208,7 @@ class RecipeTests(unittest.TestCase):
         committed_paths = git(self.fixture.root, "show", "--format=", "--name-only", "HEAD").splitlines()
         self.assertEqual(
             committed_paths,
-            [".mine/patches/0001-fork-patch.patch", ".mine/patches/0002-saved-source-edit.patch", ".mine/sources.lock.json"],
+            [".mine/patches/0002-saved-source-edit.patch", ".mine/sources.lock.json"],
         )
         self.assertEqual(git(self.fixture.root, "ls-files", "-s", "--", "unrelated-staged.txt"), before_index)
         self.assertEqual(git(self.fixture.root, "diff", "--cached", "--name-only"), "unrelated-staged.txt")
@@ -1164,11 +1320,7 @@ class RecipeTests(unittest.TestCase):
         committed_paths = git(self.fixture.root, "show", "--format=", "--name-only", "HEAD").splitlines()
         self.assertEqual(
             committed_paths,
-            [
-                ".mine/patches/0001-fork-patch.patch",
-                ".mine/patches/0002-recover-source-edit.patch",
-                ".mine/sources.lock.json",
-            ],
+            [".mine/patches/0002-recover-source-edit.patch", ".mine/sources.lock.json"],
         )
         self.assertEqual(git(self.fixture.root, "ls-files", "-s", "--", "unrelated-staged.txt"), before_index)
         self.assertEqual(git(self.fixture.root, "diff", "--cached", "--name-only"), "unrelated-staged.txt")

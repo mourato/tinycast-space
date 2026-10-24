@@ -13,9 +13,9 @@ help:
 	@echo "make install      Release build, replace /Applications/Tinycast.app, relaunch"
 	@echo "make test         Run every standalone harness from .build/source (ARGS=<harness>)"
 	@echo "make lint         Lint .build/source (ARGS=--fix auto-corrects the mechanical subset)"
-	@echo "make check-space  Show new Space patches / upstream commits not in main"
-	@echo "make sync         Rebuild main on Space's main (tested upstream + Space patches)"
-	@echo "make update       Preflight and rebuild main on newest upstream + Space patches"
+	@echo "make check-space  Show current and available source pins and Space changes"
+	@echo "make sync         Select Space's maintained snapshot and its tested upstream"
+	@echo "make update       Select official Tinycast main and Space's maintained snapshot"
 	@echo "make save         Export committed .build/source edits to .mine/patches"
 	@echo "make finish-task  Merge this task worktree into main, push origin/main, then clean up"
 	@echo "make prune-derived  List Xcode DerivedData of deleted worktrees (ARGS=--apply removes)"
@@ -24,17 +24,13 @@ status:
 	@python3 "$(RECIPE)" status
 
 check-space:
-	@git fetch --quiet space && git fetch --quiet tinycast
-	@echo "== Space patch changes since main's base =="
-	@git diff --stat mine-base~1 space/main -- .space || true
-	@echo "== Upstream commits not yet in Space =="
-	@git log --oneline "$$(git show space/main:.space/UPSTREAM)"..tinycast/main || true
+	@python3 "$(RECIPE)" check-space
 
 sync:
-	@.mine/rebuild.sh space
+	@python3 "$(RECIPE)" sync
 
 update:
-	@.mine/rebuild.sh upstream
+	@python3 "$(RECIPE)" update
 
 save:
 	@python3 "$(RECIPE)" save

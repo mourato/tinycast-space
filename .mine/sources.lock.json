@@ -9,6 +9,7 @@
   },
   "space": {
     "url": "https://github.com/mourato/tinycast-space.git",
+    "update_url": "https://github.com/sermelipharo/tinycast-space.git",
     "commit": "ffccfc3dac1af79c7a4b82a94e8227510ca4ca89",
     "source_paths": [".space", ".github/workflows"]
   },
