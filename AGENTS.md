@@ -14,7 +14,7 @@ doc names it.
 | Change | Where | How |
 | --- | --- | --- |
 | Recipe tooling, docs, editor config, `Makefile`, `.github/` | Root | Ordinary root commit on the task branch. |
-| Pins, patches, `.mine/sources.lock.json` | Root, written by commands | Never edit by hand. `make save` writes patches; `make update` and `make sync` write the lock. |
+| Pins, patches, `.mine/sources.lock.json` | Root, written by commands | Never edit by hand. `make save` writes patches; `make update` writes the lock. The one exception is `.mine/space-radar.json`, edited by hand; see `.mine/README.md`. |
 | Product Swift, tests, product docs | `.build/source` | Run `make prepare`, then read `.build/source/AGENTS.md`. Edit and commit in `.build/source`, then run `make save` at root. |
 
 Product invariants live in `.build/source/AGENTS.md` and its `docs/`. This file does not restate them.

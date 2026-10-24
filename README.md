@@ -6,12 +6,10 @@ that build them. It does not hold Tinycast's source.
 
 ## How the source is built
 
-The source comes from three inputs, applied in order:
+The source comes from two inputs, applied in order:
 
 1. **Upstream.** Tinycast at a pinned commit and release tag.
-2. **Space.** A pinned snapshot of the Space pipeline: its `.space/` tools and its workflow files. Its
-   transforms run against the upstream tree.
-3. **Local patches.** Saved patches in `.mine/patches/`, applied with `git am`.
+2. **Local patches.** Saved patches in `.mine/patches/`, applied with `git am`.
 
 `make prepare` materializes the result in `.build/source`, a separate Git repository that is
 git-ignored here. Build, test and lint run from there. Exact pins and the expected source fingerprint are
@@ -50,14 +48,12 @@ Run `make help` for every target. [`.mine/README.md`](.mine/README.md) is the fu
 
 Updates are intentional. Nothing updates on its own.
 
-- `make check-space` reports the current and available pins. It changes nothing.
-- `make update` selects the latest official Tinycast `main` and Space's maintained snapshot.
-- `make sync` selects Space's maintained snapshot and the upstream commit that its `.space/UPSTREAM`
-  records. That commit must be reachable from official `main`.
-- Both resolve the release version as the newest reachable semantic version tag (`v*`) on the selected
-  upstream commit.
+- `make update` selects the latest official Tinycast `main`. The release version is the newest reachable
+  semantic version tag (`v*`) on that commit.
+- `make check-space` reports what the [Space](https://github.com/sermelipharo/tinycast-space) fork changed
+  since the patches we adopted from it. It changes nothing. See [Space radar](.mine/README.md#space-radar).
 
-Both validate a complete candidate before they change anything. Each changes only
+`make update` validates a complete candidate before it changes anything. It changes only
 `.mine/sources.lock.json`. Review that diff and commit it. The existing `.build/source` stays as it was
 until you run `make prepare` again.
 

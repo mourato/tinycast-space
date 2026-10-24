@@ -10,8 +10,7 @@ run.
   change is the target's purpose.
 - `.mine/recipe.py` is the only writer of the lock, the patches and the source receipt. Edit it only
   with a recipe change, and run `make recipe-test` after.
-- Do not hand-edit `.mine/sources.lock.json` or `.mine/patches/`. Use `make update`, `make sync` or
-  `make save`.
+- Do not hand-edit `.mine/sources.lock.json` or `.mine/patches/`. Use `make update` or `make save`.
 - Edit product code in `.build/source` directly. Commit product changes there, then export them with
   `make save`. A dirty source is not exportable.
 - Product behaviour is owned by `.build/source`: its tests, lint rules and invariants live there. Exported
@@ -20,7 +19,7 @@ run.
 
 ## Ownership and save lifecycle
 
-1. `prepare` materializes `.build/source` from the lock, applies the Space transforms, then the patches.
+1. `prepare` materializes `.build/source` from the lock: the upstream commit, then the patches.
    It writes a receipt into the source's `.git` directory.
 2. A product edit is a commit in `.build/source`. A dirty tree is not exportable.
 3. `save` checks the committed work against the receipt, replays it independently, and publishes the

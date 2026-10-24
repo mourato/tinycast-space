@@ -7,8 +7,9 @@ source. Nothing here is Tinycast product code.
 
 | Path | Role |
 | --- | --- |
-| `recipe.py` | Owns every recipe operation: prepare, status, save, update, sync, check-space, and the build, test, lint and install commands. |
-| `sources.lock.json` | The pins and the expected source fingerprint. Written by `update`, `sync` and `save`. |
+| `recipe.py` | Owns every recipe operation: prepare, status, save, update, check-space, and the build, test, lint and install commands. |
+| `sources.lock.json` | The pins and the expected source fingerprint. Written by `update` and `save`. |
+| `space-radar.json` | The Space fork URL and the Space commit our Space-origin patches were adopted from. Read by `check-space`; edited by hand. |
 | `patches/` | The saved patches, applied in name order. Written only by `save`. |
 | `test-recipe.py` | Real-CLI tests for `recipe.py`. |
 | `install.sh` | Replaces `/Applications/Tinycast.app` with a built Release app. Called by `make install`. |
@@ -30,9 +31,8 @@ Run each from the repository root. [`AGENTS.md`](../AGENTS.md) names the owners.
 | `make test` | Runs every harness in `.build/source`. `ARGS=<harness>` runs one. |
 | `make lint` | Lints `.build/source`. `ARGS=--fix` applies the mechanical fixes. |
 | `make save` | Exports committed `.build/source` work to `.mine/patches/` and the lock. |
-| `make check-space` | Reads the current and available Space pins. Changes nothing. |
-| `make update` | Selects the latest official Tinycast `main` and Space's maintained snapshot. |
-| `make sync` | Selects Space's maintained snapshot and the upstream commit its `.space/UPSTREAM` records. The release version is the newest reachable `v*` semantic version tag on that commit. |
+| `make check-space` | Reports Space patch changes since the adopted commit. See [Space radar](#space-radar). Changes nothing. |
+| `make update` | Selects the latest official Tinycast `main`. The release version is the newest reachable `v*` semantic version tag on that commit. |
 | `make recipe-test` | Runs `test-recipe.py`. |
 | `make finish-task` | Integrates the current task branch. See [Integration](#integration). |
 | `make prune-derived` | Lists stale legacy DerivedData. `ARGS=--apply` removes it. |
@@ -62,13 +62,39 @@ recipe works now.
 
 ## Updating the pins
 
-1. Run `make check-space` to see what is available.
-2. Run `make update` or `make sync`. Each validates a complete candidate first.
-3. Review `.mine/sources.lock.json`, then commit it.
-4. Run `make prepare` to materialize the new pins. Then build, test and lint.
+1. Run `make update`. It validates a complete candidate first.
+2. Review `.mine/sources.lock.json`, then commit it.
+3. Run `make prepare` to materialize the new pins. Then build, test and lint.
 
 Only the lock changes. `.build/source` stays on the old pins until `make prepare` runs. A patch that does
 not apply stops `prepare`, and the previously published source stays in place.
+
+A patch that no longer applies after `make update` stops the candidate, and nothing changes. Rebase it:
+run `make prepare` on the old lock, rebase the managed commits in `.build/source` onto the new upstream
+commit, resolve the conflicts, commit, run `make save`, then run `make update` and `make prepare`.
+
+Some patches carry generated files: `Tinycast.xcodeproj/project.pbxproj` and
+`Tinycast/Resources/RaycastRuntime.generated.js`. Do not merge their conflicts by hand. Regenerate them
+in `.build/source`: `xcodegen generate` for the project, or `pnpm install` and then `node build.mjs` in
+`Scripts/raycast-runtime` for the runtime bundle. Then commit and continue.
+
+## Space radar
+
+Patches 0001–0028 came from the [Space](https://github.com/sermelipharo/tinycast-space) fork. Space is
+no longer an input; we track it to adopt new work by choice.
+
+`make check-space` reads `.mine/space-radar.json`, fetches the Space head read-only, and prints JSON:
+the head, the upstream commit its `.space/UPSTREAM` records, and the `.space/patches` files added,
+modified or removed since `adopted_commit`. It never changes the lock, the patches or `.build/source`.
+
+To adopt a Space patch:
+
+1. Apply or port it in `.build/source` and commit it. Add the trailer
+   `Origin: tinycast-space <patch file> @ <Space commit>` to the commit message. The trailer is a
+   convention for people; the recipe does not read it.
+2. Run `make save`. It commits the patches and the lock.
+3. When you have reviewed every change up to a Space commit, set `adopted_commit` in
+   `.mine/space-radar.json` to it and commit that file. It is the only recipe input edited by hand.
 
 ## Recovery
 
@@ -84,7 +110,7 @@ not apply stops `prepare`, and the previously published source stays in place.
   copied out anything you need.
 - **Prepare refuses changed inputs while source work is unexported.** `make prepare` fails when the lock
   or patches changed and `.build/source` has unexported commits. Export before you change the inputs:
-  commit the work in `.build/source`, run `make save`, then run `make update` or `make sync`, and run
+  commit the work in `.build/source`, run `make save`, then run `make update`, and run
   `make prepare`.
 - **Save refuses stale inputs.** `make save` rejects a source whose receipt records a different lock or
   patch digest. Committing source work does not clear this. Keep `.build/source`, its refs and every
@@ -96,7 +122,7 @@ not apply stops `prepare`, and the previously published source stays in place.
      with `git show <commit>:.mine/sources.lock.json | shasum -a 256`, and each patch the same way.
   4. Copy any uncommitted lock or patch edits aside. `git restore --source <commit>` overwrites them.
   5. Run `git restore --source <commit> -- .mine/sources.lock.json .mine/patches`, then `make save`.
-  6. Reapply the intended pin change with `make update` or `make sync`, then run `make prepare`. Do not
+  6. Reapply the intended pin change with `make update`, then run `make prepare`. Do not
      copy the saved lock or patches back: `make save` just rewrote both.
 
   If no committed input set matches the receipt, stop. Do not reset `main`, re-tag, or delete the
