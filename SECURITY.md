@@ -1,29 +1,18 @@
-# Security Policy
+# Security policy
 
-## Reporting a Vulnerability
+This repository holds build inputs and commands. It has no product code of its own and runs no service.
+It is not a supported distribution of Tinycast, and it makes no response or support commitment.
 
-Report privately through GitHub: **Security** tab → **Report a vulnerability**.
+## Reporting
 
-Include your macOS version, the Tinycast version and channel, reproduction steps, and the impact.
-Please don't disclose publicly until it's fixed.
-
-We'll respond as quickly as we can and keep you posted.
-
-## Supported Versions
-
-Current stable and beta only. Update (`brew upgrade --cask tinycast`) before reporting.
+- **Tinycast itself**, the app and its upstream code: report to the upstream project,
+  [abue-ammar/tinycast](https://github.com/abue-ammar/tinycast), through its own security policy. After
+  `make prepare`, that policy is in `.build/source/SECURITY.md`.
+- **This recipe**: the pins, the patches, `Makefile` and `.mine/`. Do not open a public issue or pull
+  request. Report it privately to the repository owner, and include the affected file, the command and
+  the impact.
 
 ## Scope
 
-Of particular interest:
-
-- **Accessibility (TCC)** — anything that widens what the paste grant enables.
-- **Clipboard history** — text and images cached on disk; unintended exposure or capture.
-- **Network** — Tinycast is offline by default and every networked feature is consent-gated. A path
-  that reaches the network without consent, or survives consent being withdrawn, is high severity.
-- **Hotkeys** — the in-house hotkey stack and the Input Monitoring grant.
-- **Signing and distribution** — the DMG and Homebrew cask chain.
-
-Out of scope: builds being self-signed rather than notarized (known, see
-[`docs/signing.md`](docs/signing.md)), and anything needing existing code execution or admin rights on
-the machine.
+A patch in `.mine/patches/` can change how upstream behaves, including code that handles the clipboard,
+accessibility permissions or network access. Treat such a patch as product code when you assess it.

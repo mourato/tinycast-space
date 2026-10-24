@@ -1,5 +1,3 @@
 {
-  // The official Swift extension is the only one this setup needs — it drives SourceKit-LSP for code
-  // intelligence.
   "recommendations": ["swiftlang.swift-vscode"]
 }

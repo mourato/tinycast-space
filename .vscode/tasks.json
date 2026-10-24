@@ -2,37 +2,35 @@
   "version": "2.0.0",
   "tasks": [
     {
-      // Build the .app with xcodebuild into a fixed path (build/DerivedData) so the app
-      // location is stable — that's what lets F5 find it and keeps the Accessibility grant.
-      // DEVELOPER_DIR forces Xcode's toolchain (the SwiftUI macros aren't in the CLT).
-      // The build log is handed to Scripts/sync-lsp.sh, which rebuilds SourceKit-LSP's flag
-      // database from it — that's what keeps cross-file symbols resolving in VS Code as you
-      // add and rename files. pipefail preserves the xcodebuild exit code so a failed build
-      // still blocks F5 / the run step.
-      "label": "Build Tinycast.app (debug)",
+      "label": "Build Tinycast (debug)",
       "type": "shell",
-      "command": "bash -c 'set -o pipefail; xcodebuild -project Tinycast.xcodeproj -scheme Tinycast -configuration Debug -derivedDataPath build/DerivedData build 2>&1 | tee \"${TMPDIR:-/tmp}/tinycast-build.log\"; ec=$?; ./Scripts/sync-lsp.sh \"${TMPDIR:-/tmp}/tinycast-build.log\" >/dev/null 2>&1 || true; exit $ec'",
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": { "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer" }
-      },
-      "group": "build",
+      "command": "make",
+      "args": ["-C", "${workspaceFolder}", "build-debug"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
       "problemMatcher": ["$swiftc"]
     },
     {
-      // Rebuild, then relaunch the menu-bar app. Default build task (⌘⇧B).
-      "label": "Build & Run Tinycast (debug)",
+      "label": "Prepare Tinycast source",
       "type": "shell",
-      "command": "killall 'Tinycast Dev' 2>/dev/null; open 'build/DerivedData/Build/Products/Debug/Tinycast Dev.app'",
+      "command": "make",
+      "args": ["-C", "${workspaceFolder}", "prepare"],
       "options": { "cwd": "${workspaceFolder}" },
-      "dependsOn": "Build Tinycast.app (debug)",
-      "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
     },
     {
-      "label": "Lint project",
+      "label": "Test Tinycast",
       "type": "shell",
-      "command": "./Scripts/lint.sh",
+      "command": "make",
+      "args": ["-C", "${workspaceFolder}", "test"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint Tinycast",
+      "type": "shell",
+      "command": "make",
+      "args": ["-C", "${workspaceFolder}", "lint"],
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     }

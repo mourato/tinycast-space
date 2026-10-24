@@ -4,7 +4,7 @@ ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 RECIPE := $(ROOT)/.mine/recipe.py
 
 help:
-	@echo "Tinycast (mourato fork) — main = base + .mine/patches"
+	@echo "Tinycast recipe — builds .build/source from the locked upstream, Space and .mine/patches inputs"
 	@echo "make status       Recipe and .build/source state, from the locked inputs (no fetching)"
 	@echo "make prepare      Materialize or validate .build/source from the locked inputs"
 	@echo "make recipe-test  Test the recipe and its command surface"
