@@ -8,7 +8,7 @@
     "release_version": "0.12.2-beta.125"
   },
   "expected_source": {
-    "fingerprint": "sha256:1f9781e76348ed52fd1333f55f9772a15f57fd4d26c0595cc40721353fa369d3",
+    "fingerprint": "sha256:2c8411115e39e4898c6dff06a4725cdcab04dcd89616ab50bcec9daa797868dd",
     "record_format": "git-ls-tree-z-v1",
     "excluded_paths": [
       ".mine/",
