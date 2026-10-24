@@ -13,7 +13,7 @@ help:
 	@echo "make install      Release build, replace /Applications/Tinycast.app, relaunch"
 	@echo "make test         Run every standalone harness from .build/source (ARGS=<harness>)"
 	@echo "make lint         Lint .build/source (ARGS=--fix auto-corrects the mechanical subset)"
-	@echo "make check-space  Show the Space radar head and adopted commit"
+	@echo "make check-space  Show the Space radar URL and adopted commit"
 	@echo "make update       Select official Tinycast main and its reachable release tag"
 	@echo "make save         Export committed .build/source edits to .mine/patches"
 	@echo "make finish-task  Merge this task worktree into main, push origin/main, then clean up"
