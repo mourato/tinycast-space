@@ -35,6 +35,13 @@ DEBUG_PRODUCT = "Tinycast Dev.app"
 TOOL_COMMANDS = ("build", "build-debug", "install", "test", "lint")
 RECEIPT_SCHEMA = 1
 SAVE_JOURNAL_SCHEMA = 1
+SAVE_JOURNAL_STATES = {
+    "prepared",
+    "old-patches-moved",
+    "patches-published",
+    "lock-published",
+    "receipt-published",
+}
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
@@ -922,9 +929,14 @@ def validate_save_journal(journal: Any) -> dict[str, Any]:
     )
     if value["schema"] != SAVE_JOURNAL_SCHEMA:
         fail("unsupported source save journal")
+    if value["state"] not in SAVE_JOURNAL_STATES:
+        fail("malformed source save journal: unsupported state")
     for key in ("source_head",):
         require_sha(value[key], f"source save journal.{key}")
     paths = require_keys(value["paths"], {"transaction", "patch_dir", "lock", "receipt"}, "source save journal.paths")
+    for key in ("transaction", "patch_dir", "lock", "receipt"):
+        if not isinstance(paths[key], str) or not Path(paths[key]).is_absolute():
+            fail(f"malformed source save journal.paths.{key}: expected an absolute path")
     transaction = Path(paths["transaction"])
     if transaction.parent.resolve() != BUILD.resolve() or not transaction.name.startswith(SAVE_PREFIX):
         fail("source save journal transaction is outside .build")
@@ -952,6 +964,48 @@ def source_save_artifacts() -> list[Path]:
     ]
 
 
+def read_verified_snapshot(path: Path, label: str, expected: str) -> bytes:
+    if not path.is_file():
+        fail(f"interrupted source save is missing its {label}")
+    descriptor = open_owned_regular(path, label, os.O_RDONLY)
+    with os.fdopen(descriptor, "rb") as handle:
+        data = handle.read()
+    if sha256_bytes(data) != expected:
+        fail(f"interrupted source save has a corrupt {label}; previous files were retained")
+    return data
+
+
+def stage_verified_patch_snapshot(source: Path, expected: str, transaction: Path) -> Path:
+    if source.is_symlink() or not source.is_dir():
+        fail("interrupted source save is missing its rollback patch snapshot")
+    staging = Path(tempfile.mkdtemp(prefix="verified-patches-", dir=transaction))
+    try:
+        staging.chmod(stat.S_IMODE(source.stat().st_mode))
+        digest = hashlib.sha256()
+        for entry in sorted(source.iterdir(), key=lambda item: item.name):
+            if entry.is_symlink() or not entry.is_file():
+                fail(f"interrupted source save rollback patch snapshot has an unsafe entry: {entry.name}")
+            if entry.name != ".gitkeep" and not PATCH_NAME_RE.fullmatch(entry.name):
+                fail(f"interrupted source save rollback patch snapshot has an unexpected file: {entry.name}")
+            descriptor = open_owned_regular(entry, f"rollback patch {entry.name}", os.O_RDONLY)
+            with os.fdopen(descriptor, "rb") as handle:
+                data = handle.read()
+            target = staging / entry.name
+            target.write_bytes(data)
+            target.chmod(stat.S_IMODE(entry.stat().st_mode))
+            name = entry.name.encode("utf-8")
+            digest.update(len(name).to_bytes(8, "big"))
+            digest.update(name)
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+        if digest.hexdigest() != expected:
+            fail("interrupted source save has a corrupt rollback patch snapshot; previous files were retained")
+        return staging
+    except BaseException:
+        remove_owned(staging)
+        raise
+
+
 def recover_save_transaction() -> None:
     if SAVE_JOURNAL.is_symlink():
         fail("source save journal is a symlink")
@@ -971,41 +1025,59 @@ def recover_save_transaction() -> None:
         fail(f"multiple source save transactions require recovery: {extra[0]}")
     if revision_commit(SOURCE, "HEAD") != journal["source_head"]:
         fail("source changed during interrupted save; recover manually before retrying")
-    if run_git(SOURCE, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]).strip():
+    if run_git(SOURCE, ["status", "--porcelain=v1", "--untracked-files=all"]).strip():
         fail("source has newer working-tree data during interrupted save; recover manually before retrying")
-
+    if PATCH_DIR.is_symlink() or (PATCH_DIR.exists() and not PATCH_DIR.is_dir()):
+        fail("source patch directory is unsafe during interrupted save")
+    patch_missing = not PATCH_DIR.exists() and not PATCH_DIR.is_symlink()
+    current_patch_tree = None if patch_missing else directory_digest(PATCH_DIR)
+    if not patch_missing and current_patch_tree is None:
+        fail("source patch directory is unsafe during interrupted save")
+    receipt_path = source_receipt_path(SOURCE)
     current = {
-        "patch_tree": directory_digest(PATCH_DIR),
+        "patch_tree": current_patch_tree,
         "lock": sha256_bytes(read_bytes(LOCK_PATH, "sources.lock.json")) if LOCK_PATH.is_file() else None,
-        "receipt": sha256_bytes(read_bytes(source_receipt_path(SOURCE), "recipe receipt"))
-        if source_receipt_path(SOURCE).is_file()
-        else None,
+        "receipt": sha256_bytes(read_bytes(receipt_path, "recipe receipt")) if receipt_path.is_file() else None,
     }
     old = journal["old"]
     new = journal["new"]
     old_match = all(current[key] == old[key] for key in current)
     new_match = all(current[key] == new[key] for key in current)
-    if not old_match and not new_match and not all(
+    missing_patch_window = (
+        current["patch_tree"] is None
+        and current["lock"] == old["lock"]
+        and current["receipt"] == old["receipt"]
+    )
+    if not old_match and not new_match and not missing_patch_window and not all(
         current[key] in (old[key], new[key]) for key in current
     ):
         fail("interrupted source save has newer edits; refusing to overwrite them")
     if old_match or new_match:
-        remove_owned(transaction)
         SAVE_JOURNAL.unlink()
+        remove_owned(transaction)
         return
     if staged_export_paths(ROOT):
         fail("interrupted source save has staged export-owned files; resolve them before recovery")
     previous_patches = transaction / "previous-patches"
     old_lock = transaction / "old-lock"
     old_receipt = transaction / "old-receipt"
-    if not previous_patches.is_dir() or not old_lock.is_file() or not old_receipt.is_file():
-        fail("interrupted source save is missing its rollback snapshot")
-    remove_owned(PATCH_DIR)
-    os.replace(previous_patches, PATCH_DIR)
-    atomic_write(LOCK_PATH, old_lock.read_bytes())
-    atomic_write(source_receipt_path(SOURCE), old_receipt.read_bytes())
-    remove_owned(transaction)
-    SAVE_JOURNAL.unlink()
+    old_lock_bytes = read_verified_snapshot(old_lock, "rollback lock snapshot", old["lock"])
+    old_receipt_bytes = read_verified_snapshot(old_receipt, "rollback receipt snapshot", old["receipt"])
+    staged_patches = stage_verified_patch_snapshot(previous_patches, old["patch_tree"], transaction)
+    try:
+        if PATCH_DIR.exists() or PATCH_DIR.is_symlink():
+            if directory_digest(PATCH_DIR) != current["patch_tree"]:
+                fail("source patch directory changed during recovery; previous files were retained")
+            remove_owned(PATCH_DIR)
+        os.replace(staged_patches, PATCH_DIR)
+        staged_patches = None
+        atomic_write(LOCK_PATH, old_lock_bytes)
+        atomic_write(receipt_path, old_receipt_bytes)
+        SAVE_JOURNAL.unlink()
+        remove_owned(transaction)
+    finally:
+        if staged_patches is not None:
+            remove_owned(staged_patches)
 
 
 def export_candidate(source: Path, base: str, head: str, destination: Path) -> list[Path]:
@@ -1149,10 +1221,8 @@ def validate_source_for_save(
     if not source.exists() or source.is_symlink():
         fail("generated source is missing; run make prepare before make save")
     receipt, _inputs_current, state = inspect_existing(source, inputs)
-    if state["worktree_dirty"] or state["ignored_paths"]:
-        ignored = ", ".join(state["ignored_paths"])
-        detail = f" (ignored: {ignored})" if ignored else ""
-        fail(f"generated source has uncommitted, untracked, or ignored changes{detail}; commit product edits first")
+    if state["worktree_dirty"]:
+        fail("generated source has uncommitted, untracked changes; commit product edits first")
     if state["unrepresented_refs"]:
         fail(
             "generated source has unique branches or stashes; preserve them and export only the current committed source: "

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +20,30 @@ RECIPE = HERE / ".mine" / "recipe.py"
 SOURCE_TREE = HERE / ".mine" / "source-tree.sh"
 IDENTITY_HASH = "0123456789abcdef0123456789abcdef01234567"
 SECOND_IDENTITY_HASH = "89abcdef0123456789abcdef0123456789abcdef"
+SAVE_FAULT_DRIVER = '''\
+import importlib.util
+import os
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("recipe_under_test", sys.argv[1])
+recipe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(recipe)
+real_replace = os.replace
+mode = sys.argv[2]
+
+
+def replace(source, destination):
+    if os.path.basename(os.fspath(source)) == "new-patches" and os.fspath(destination) == os.fspath(recipe.PATCH_DIR):
+        if mode == "exit":
+            os._exit(23)
+        raise OSError("injected source save publication fault")
+    return real_replace(source, destination)
+
+
+os.replace = replace
+raise SystemExit(recipe.main(["save"]))
+'''
 
 
 def git(cwd: Path, *args: str, check: bool = True) -> str:
@@ -407,17 +430,6 @@ class Fixture:
         git(self.source, "commit", "--quiet", "-m", message)
         return git(self.source, "rev-parse", "HEAD")
 
-    def patch_tree_digest(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        for entry in sorted(path.iterdir(), key=lambda item: item.name):
-            data = entry.read_bytes()
-            name = entry.name.encode("utf-8")
-            digest.update(len(name).to_bytes(8, "big"))
-            digest.update(name)
-            digest.update(len(data).to_bytes(8, "big"))
-            digest.update(data)
-        return digest.hexdigest()
-
 
 class RecipeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -429,6 +441,27 @@ class RecipeTests(unittest.TestCase):
     def assertFailsWith(self, result: subprocess.CompletedProcess[str], text: str) -> None:
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(text, result.stderr)
+
+    def run_save_with_publication_fault(self, mode: str) -> subprocess.CompletedProcess[str]:
+        driver = Path(self.fixture.temp.name) / "save-fault.py"
+        driver.write_text(SAVE_FAULT_DRIVER, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(driver), str(self.fixture.root / ".mine/recipe.py"), mode],
+            cwd=self.fixture.root,
+            env=os.environ.copy(),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+
+    def save_transaction(self) -> Path:
+        transactions = [
+            path for path in (self.fixture.root / ".build").glob(".source-save-*") if path.is_dir()
+        ]
+        self.assertEqual(len(transactions), 1)
+        return transactions[0]
 
     def test_pristine_repeat_independent_source_and_status(self) -> None:
         first = self.fixture.run()
@@ -1073,52 +1106,208 @@ class RecipeTests(unittest.TestCase):
 
     def test_interrupted_save_recovers_old_patch_bytes_before_export(self) -> None:
         self.assertEqual(self.fixture.run().returncode, 0)
-        source_head = self.fixture.commit_source("recover.txt", "recover\n", "recover source edit")
         build = self.fixture.root / ".build"
         patch_dir = self.fixture.root / ".mine/patches"
-        transaction = build / ".source-save-interrupted"
-        transaction.mkdir()
-        (transaction / ".recipe-save-owner").write_text("tinycast-recipe-save\n")
-        previous = transaction / "previous-patches"
-        shutil.move(str(patch_dir), str(previous))
-        patch_dir.mkdir()
-        if (previous / ".gitkeep").exists():
-            shutil.copy2(previous / ".gitkeep", patch_dir / ".gitkeep")
-        write(patch_dir / "9999-interrupted.patch", "interrupted\n")
         lock_path = self.fixture.root / ".mine/sources.lock.json"
         receipt_path = self.fixture.source / ".git/tinycast-recipe-receipt.json"
+        old_patch = (patch_dir / "0001-fork-patch.patch").read_bytes()
+        old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        staged = self.fixture.root / "unrelated-staged.txt"
+        write(staged, "must remain staged\n")
+        git(self.fixture.root, "add", "--", "unrelated-staged.txt")
+        before_index = git(self.fixture.root, "ls-files", "-s", "--", "unrelated-staged.txt")
+        source_head = self.fixture.commit_source("recover.txt", "recover\n", "recover source edit")
         old_lock = lock_path.read_bytes()
         old_receipt = receipt_path.read_bytes()
-        old_patch = (previous / "0001-fork-patch.patch").read_bytes()
-        journal = {
-            "schema": 1,
-            "state": "patches-published",
-            "source_head": source_head,
-            "paths": {
-                "transaction": str(transaction),
-                "patch_dir": str(patch_dir),
-                "lock": str(lock_path),
-                "receipt": str(receipt_path),
-            },
-            "old": {
-                "patch_tree": self.fixture.patch_tree_digest(previous),
-                "lock": hashlib.sha256(old_lock).hexdigest(),
-                "receipt": hashlib.sha256(old_receipt).hexdigest(),
-            },
-            "new": {
-                "patch_tree": self.fixture.patch_tree_digest(patch_dir),
-                "lock": "1" * 64,
-                "receipt": "2" * 64,
-            },
-        }
-        (build / ".source-save-journal.json").write_text(json.dumps(journal, indent=2) + "\n")
+
+        interrupted = self.run_save_with_publication_fault("exit")
+        self.assertEqual(interrupted.returncode, 23, interrupted.stdout + interrupted.stderr)
+        journal_path = build / ".source-save-journal.json"
+        transaction = self.save_transaction()
+        journal = json.loads(journal_path.read_text())
+        self.assertEqual(journal["state"], "old-patches-moved")
+        self.assertEqual(Path(journal["paths"]["transaction"]).resolve(), transaction.resolve())
+        self.assertFalse(patch_dir.exists())
+        self.assertEqual((transaction / "old-lock").read_bytes(), old_lock)
+        self.assertEqual((transaction / "old-receipt").read_bytes(), old_receipt)
+        self.assertEqual(
+            (transaction / "previous-patches/0001-fork-patch.patch").read_bytes(), old_patch
+        )
+
+        exclude = self.fixture.source / ".git/info/exclude"
+        exclude.write_text("local-build-server.json\n")
+        ignored = self.fixture.source / "local-build-server.json"
+        ignored.write_text('{"local": true}\n')
+
         result = self.fixture.run("save")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(json.loads(result.stdout)["exported"])
-        self.assertEqual((self.fixture.root / ".mine/patches/0001-fork-patch.patch").read_bytes(), old_patch)
-        self.assertFalse((build / ".source-save-journal.json").exists())
+        saved = json.loads(result.stdout)
+        self.assertTrue(saved["exported"])
+        self.assertTrue(saved["committed"])
+        self.assertEqual(saved["source_head"], source_head)
+        self.assertEqual((patch_dir / "0001-fork-patch.patch").read_bytes(), old_patch)
+        self.assertEqual(
+            sorted(path.name for path in patch_dir.glob("*.patch")),
+            ["0001-fork-patch.patch", "0002-recover-source-edit.patch"],
+        )
+        for patch_path in patch_dir.glob("*.patch"):
+            self.assertNotIn("local-build-server", patch_path.read_text())
+        self.assertEqual(ignored.read_text(), '{"local": true}\n')
+        self.assertFalse(journal_path.exists())
         self.assertFalse(transaction.exists())
         self.assertEqual(self.fixture.receipt()["managed_tip"], source_head)
+        self.assertEqual(
+            self.fixture.source_fingerprint(),
+            json.loads(lock_path.read_text())["expected_source"]["fingerprint"],
+        )
+        self.assertNotEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
+        committed_paths = git(self.fixture.root, "show", "--format=", "--name-only", "HEAD").splitlines()
+        self.assertEqual(
+            committed_paths,
+            [
+                ".mine/patches/0001-fork-patch.patch",
+                ".mine/patches/0002-recover-source-edit.patch",
+                ".mine/sources.lock.json",
+            ],
+        )
+        self.assertEqual(git(self.fixture.root, "ls-files", "-s", "--", "unrelated-staged.txt"), before_index)
+        self.assertEqual(git(self.fixture.root, "diff", "--cached", "--name-only"), "unrelated-staged.txt")
+
+        saved_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        repeated = self.fixture.run("save")
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertFalse(json.loads(repeated.stdout)["exported"])
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), saved_root_head)
+        guard = self.fixture.run("finish-guard")
+        self.assertFailsWith(guard, "ignored files")
+        self.assertEqual(ignored.read_text(), '{"local": true}\n')
+
+        fault_head = self.fixture.commit_source("fault.txt", "fault\n", "fault source edit")
+        current_lock = lock_path.read_bytes()
+        current_receipt = receipt_path.read_bytes()
+        failing = self.run_save_with_publication_fault("raise")
+        self.assertEqual(failing.returncode, 1, failing.stdout + failing.stderr)
+        self.assertIn("previous state was restored", failing.stderr)
+        self.assertFalse(journal_path.exists())
+        self.assertEqual([path for path in build.glob(".source-save-*") if path.is_dir()], [])
+        self.assertEqual((patch_dir / "0001-fork-patch.patch").read_bytes(), old_patch)
+        self.assertEqual(
+            sorted(path.name for path in patch_dir.glob("*.patch")),
+            ["0001-fork-patch.patch", "0002-recover-source-edit.patch"],
+        )
+        self.assertEqual(lock_path.read_bytes(), current_lock)
+        self.assertEqual(receipt_path.read_bytes(), current_receipt)
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), fault_head)
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), saved_root_head)
+        self.assertEqual(git(self.fixture.root, "diff", "--cached", "--name-only"), "unrelated-staged.txt")
+        self.assertEqual(ignored.read_text(), '{"local": true}\n')
+
+    def test_save_preserves_ignored_local_data_without_exporting_it(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        exclude = self.fixture.source / ".git/info/exclude"
+        exclude.write_text("local-build-server.json\nlocal-cache/\n")
+        ignored_file = self.fixture.source / "local-build-server.json"
+        ignored_file.write_text('{"local": true}\n')
+        ignored_dir = self.fixture.source / "local-cache"
+        ignored_dir.mkdir()
+        (ignored_dir / "cache.bin").write_text("cache\n")
+        source_head = self.fixture.commit_source(
+            "saved-with-ignored.txt", "saved\n", "saved with ignored data"
+        )
+        result = self.fixture.run("save")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertTrue(saved["exported"])
+        self.assertTrue(saved["committed"])
+        self.assertEqual(saved["source_head"], source_head)
+        patch_dir = self.fixture.root / ".mine/patches"
+        self.assertEqual(
+            sorted(path.name for path in patch_dir.glob("*.patch")),
+            ["0001-fork-patch.patch", "0002-saved-with-ignored-data.patch"],
+        )
+        for patch_path in patch_dir.glob("*.patch"):
+            text = patch_path.read_text()
+            self.assertNotIn("local-build-server", text)
+            self.assertNotIn("local-cache", text)
+        self.assertEqual(ignored_file.read_text(), '{"local": true}\n')
+        self.assertEqual((ignored_dir / "cache.bin").read_text(), "cache\n")
+        self.assertEqual(self.fixture.receipt()["managed_tip"], source_head)
+        saved_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        repeated = self.fixture.run("save")
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertFalse(json.loads(repeated.stdout)["exported"])
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), saved_root_head)
+        self.assertEqual(ignored_file.read_text(), '{"local": true}\n')
+        guard = self.fixture.run("finish-guard")
+        self.assertFailsWith(guard, "ignored files")
+        self.assertEqual(ignored_file.read_text(), '{"local": true}\n')
+
+    def test_interrupted_save_rejects_corrupt_or_missing_rollback_snapshots_before_restore(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        build = self.fixture.root / ".build"
+        patch_dir = self.fixture.root / ".mine/patches"
+        lock_path = self.fixture.root / ".mine/sources.lock.json"
+        receipt_path = self.fixture.source / ".git/tinycast-recipe-receipt.json"
+        sentinel = self.fixture.root / "snapshot-sentinel.txt"
+        cases = (
+            ("old-lock", "corrupt", "rollback lock snapshot"),
+            ("old-receipt", "corrupt", "rollback receipt snapshot"),
+            ("previous-patches", "corrupt", "rollback patch snapshot"),
+            ("old-lock", "missing", "rollback lock snapshot"),
+            ("old-lock", "symlink", "rollback lock snapshot"),
+        )
+        for target, mutation, expected in cases:
+            with self.subTest(target=target, mutation=mutation):
+                source_head = self.fixture.commit_source(
+                    f"recover-{target}-{mutation}.txt", "recover\n", f"recover {target} {mutation}"
+                )
+                old_lock = lock_path.read_bytes()
+                old_receipt = receipt_path.read_bytes()
+                interrupted = self.run_save_with_publication_fault("exit")
+                self.assertEqual(interrupted.returncode, 23, interrupted.stdout + interrupted.stderr)
+                journal_path = build / ".source-save-journal.json"
+                transaction = self.save_transaction()
+                self.assertTrue(journal_path.exists())
+                self.assertFalse(patch_dir.exists())
+                snapshot = transaction / target
+                sentinel.write_text("preserve me\n")
+                original = b""
+                if mutation == "corrupt":
+                    if target == "previous-patches":
+                        snapshot = snapshot / "0001-fork-patch.patch"
+                    original = snapshot.read_bytes()
+                    snapshot.write_bytes(original + b"tampered\n")
+                elif mutation == "missing":
+                    original = snapshot.read_bytes()
+                    snapshot.unlink()
+                else:
+                    original = snapshot.read_bytes()
+                    snapshot.unlink()
+                    snapshot.symlink_to(sentinel)
+
+                rejected = self.fixture.run("save")
+                self.assertFailsWith(rejected, expected)
+                if mutation == "corrupt":
+                    self.assertIn("corrupt", rejected.stderr)
+                elif mutation == "missing":
+                    self.assertIn("missing", rejected.stderr)
+                else:
+                    self.assertIn("safely", rejected.stderr)
+                self.assertTrue(journal_path.exists())
+                self.assertTrue(transaction.exists())
+                self.assertFalse(patch_dir.exists())
+                self.assertEqual(lock_path.read_bytes(), old_lock)
+                self.assertEqual(receipt_path.read_bytes(), old_receipt)
+                self.assertEqual(sentinel.read_text(), "preserve me\n")
+
+                if mutation == "symlink":
+                    snapshot.unlink()
+                snapshot.write_bytes(original)
+                completed = self.fixture.run("save")
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                self.assertEqual(self.fixture.receipt()["managed_tip"], source_head)
+                self.assertFalse(journal_path.exists())
+                self.assertFalse(transaction.exists())
 
     def test_finish_guard_allows_tooling_only_and_refuses_source_loss(self) -> None:
         tooling_only = self.fixture.run("finish-guard")
