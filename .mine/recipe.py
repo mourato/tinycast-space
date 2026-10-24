@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize Tinycast from the locked upstream, Space, and fork inputs."""
+"""Materialize and drive Tinycast from the locked upstream, Space, and fork inputs."""
 
 from __future__ import annotations
 
@@ -23,10 +23,16 @@ ROOT = Path(__file__).resolve().parent.parent
 MINE = ROOT / ".mine"
 BUILD = ROOT / ".build"
 SOURCE = BUILD / "source"
+DERIVED_DATA = BUILD / "DerivedData"
+LOG_DIR = BUILD / "logs"
 LOCK_PATH = MINE / "sources.lock.json"
 PATCH_DIR = MINE / "patches"
 RECIPE_PATH = Path(__file__).resolve()
 RECEIPT_NAME = "tinycast-recipe-receipt.json"
+DEFAULT_SIGN_IDENTITY = "Apple Development"
+RELEASE_PRODUCT = "Tinycast.app"
+DEBUG_PRODUCT = "Tinycast Dev.app"
+TOOL_COMMANDS = ("build", "build-debug", "test", "lint")
 RECEIPT_SCHEMA = 1
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -234,11 +240,16 @@ def load_inputs() -> dict[str, Any]:
     }
 
 
-def git_env(*, commit_identity: bool = False) -> dict[str, str]:
+def command_env() -> dict[str, str]:
     env = os.environ.copy()
     for name in tuple(env):
         if name in GIT_ROUTING_ENV or name.startswith("GIT_CONFIG_"):
             env.pop(name, None)
+    return env
+
+
+def git_env(*, commit_identity: bool = False) -> dict[str, str]:
+    env = command_env()
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
     if commit_identity:
@@ -758,133 +769,328 @@ class RecipeLock:
             self.handle.close()
 
 
-def prepare() -> dict[str, Any]:
+def ensure_build_root() -> None:
     if BUILD.is_symlink():
         fail(".build is a symlink")
     BUILD.mkdir(exist_ok=True)
-    with RecipeLock(BUILD / ".recipe.lock", "prepare"):
-        for stale in sorted(BUILD.glob(STAGE_PREFIX + "*")):
-            if not stale.is_dir() or (stale / ".recipe-stage-owner").read_text(encoding="utf-8") != "tinycast-recipe\n":
-                fail(f"unowned or malformed staging directory requires recovery: {stale}")
-            shutil.rmtree(stale)
-        inputs = load_inputs()
-        old_backups = sorted(BUILD.glob(OLD_PREFIX + "*"))
-        if old_backups:
-            if len(old_backups) != 1:
-                fail(f"incomplete publication requires recovery before prepare: {old_backups[0]}")
-            if SOURCE.exists() or SOURCE.is_symlink():
-                inspect_existing(SOURCE, inputs)
-                inspect_existing(old_backups[0], inputs)
-                retained = BUILD / (BACKUP_PREFIX + next(tempfile._get_candidate_names()))
-                os.replace(old_backups[0], retained)
-            else:
-                inspect_existing(old_backups[0], inputs)
-                os.replace(old_backups[0], SOURCE)
-        had_source = SOURCE.exists() or SOURCE.is_symlink()
-        existing_receipt: dict[str, Any] | None = None
-        if had_source:
-            receipt, inputs_current, local_state = inspect_existing(SOURCE, inputs)
-            existing_receipt = receipt
-            fresh = inputs_current and not local_state["unexported_changes"] and receipt["source_fingerprint"] == inputs["lock"]["expected_source"]["fingerprint"]
-            if inputs_current:
-                return {
-                    "source_path": str(SOURCE),
-                    "release_version": inputs["lock"]["upstream"]["release_version"],
-                    "fresh": fresh,
-                    "reused": True,
-                    "source_only_base_checkpoint": receipt["source_only_base_checkpoint"],
-                    "managed_tip": receipt["managed_tip"],
-                    "source_state": local_state,
-                }
-            if local_state["unexported_changes"]:
-                fail("locked recipe inputs changed while generated source has unexported local changes")
-        stage = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=BUILD))
-        published = False
-        try:
-            base, managed_tip, fingerprint = build_stage(inputs, stage)
-            current_inputs = load_inputs()
-            if current_inputs["input_digest"] != inputs["input_digest"]:
-                fail("locked recipe inputs changed during prepare; previous source was retained")
-            if had_source:
-                current_receipt, _, current_state = inspect_existing(SOURCE, current_inputs)
-                if current_state["unexported_changes"] or any(
-                    current_receipt[key] != existing_receipt[key]
-                    for key in ("source_only_base_checkpoint", "managed_tip")
-                ):
-                    fail("generated source changed during prepare; previous source was retained")
-            elif SOURCE.exists() or SOURCE.is_symlink():
-                fail("generated source appeared during prepare; refusing to replace it")
-            backup: Path | None = None
-            retained_backup: Path | None = None
-            if SOURCE.exists() or SOURCE.is_symlink():
-                backup = BUILD / (OLD_PREFIX + next(tempfile._get_candidate_names()))
-                os.replace(SOURCE, backup)
-            try:
-                os.replace(stage, SOURCE)
-                published = True
-            except OSError:
-                if backup is not None and not SOURCE.exists():
-                    os.replace(backup, SOURCE)
-                raise
-            if backup is not None:
-                retained_backup = BUILD / (BACKUP_PREFIX + next(tempfile._get_candidate_names()))
-                try:
-                    os.replace(backup, retained_backup)
-                except OSError as error:
-                    fail(f"source published but predecessor backup requires recovery: {error}")
+
+
+def prepare_locked() -> dict[str, Any]:
+    for stale in sorted(BUILD.glob(STAGE_PREFIX + "*")):
+        if not stale.is_dir() or (stale / ".recipe-stage-owner").read_text(encoding="utf-8") != "tinycast-recipe\n":
+            fail(f"unowned or malformed staging directory requires recovery: {stale}")
+        shutil.rmtree(stale)
+    inputs = load_inputs()
+    old_backups = sorted(BUILD.glob(OLD_PREFIX + "*"))
+    if old_backups:
+        if len(old_backups) != 1:
+            fail(f"incomplete publication requires recovery before prepare: {old_backups[0]}")
+        if SOURCE.exists() or SOURCE.is_symlink():
+            inspect_existing(SOURCE, inputs)
+            inspect_existing(old_backups[0], inputs)
+            retained = BUILD / (BACKUP_PREFIX + next(tempfile._get_candidate_names()))
+            os.replace(old_backups[0], retained)
+        else:
+            inspect_existing(old_backups[0], inputs)
+            os.replace(old_backups[0], SOURCE)
+    had_source = SOURCE.exists() or SOURCE.is_symlink()
+    existing_receipt: dict[str, Any] | None = None
+    if had_source:
+        receipt, inputs_current, local_state = inspect_existing(SOURCE, inputs)
+        existing_receipt = receipt
+        fresh = inputs_current and not local_state["unexported_changes"] and receipt["source_fingerprint"] == inputs["lock"]["expected_source"]["fingerprint"]
+        if inputs_current:
             return {
                 "source_path": str(SOURCE),
                 "release_version": inputs["lock"]["upstream"]["release_version"],
-                "fresh": True,
-                "reused": False,
-                "source_only_base_checkpoint": base,
-                "managed_tip": managed_tip,
-                "source_fingerprint": fingerprint,
-                "predecessor_backup": str(retained_backup) if retained_backup is not None else None,
+                "fresh": fresh,
+                "reused": True,
+                "source_only_base_checkpoint": receipt["source_only_base_checkpoint"],
+                "managed_tip": receipt["managed_tip"],
+                "source_state": local_state,
             }
+        if local_state["unexported_changes"]:
+            fail("locked recipe inputs changed while generated source has unexported local changes")
+    stage = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=BUILD))
+    published = False
+    try:
+        base, managed_tip, fingerprint = build_stage(inputs, stage)
+        current_inputs = load_inputs()
+        if current_inputs["input_digest"] != inputs["input_digest"]:
+            fail("locked recipe inputs changed during prepare; previous source was retained")
+        if had_source:
+            current_receipt, _, current_state = inspect_existing(SOURCE, current_inputs)
+            if current_state["unexported_changes"] or any(
+                current_receipt[key] != existing_receipt[key]
+                for key in ("source_only_base_checkpoint", "managed_tip")
+            ):
+                fail("generated source changed during prepare; previous source was retained")
+        elif SOURCE.exists() or SOURCE.is_symlink():
+            fail("generated source appeared during prepare; refusing to replace it")
+        backup: Path | None = None
+        retained_backup: Path | None = None
+        if SOURCE.exists() or SOURCE.is_symlink():
+            backup = BUILD / (OLD_PREFIX + next(tempfile._get_candidate_names()))
+            os.replace(SOURCE, backup)
+        try:
+            os.replace(stage, SOURCE)
+            published = True
+        except OSError:
+            if backup is not None and not SOURCE.exists():
+                os.replace(backup, SOURCE)
+            raise
+        if backup is not None:
+            retained_backup = BUILD / (BACKUP_PREFIX + next(tempfile._get_candidate_names()))
+            try:
+                os.replace(backup, retained_backup)
+            except OSError as error:
+                fail(f"source published but predecessor backup requires recovery: {error}")
+        return {
+            "source_path": str(SOURCE),
+            "release_version": inputs["lock"]["upstream"]["release_version"],
+            "fresh": True,
+            "reused": False,
+            "source_only_base_checkpoint": base,
+            "managed_tip": managed_tip,
+            "source_fingerprint": fingerprint,
+            "source_state": {
+                "head": managed_tip,
+                "head_is_managed": True,
+                "head_is_descendant": True,
+                "worktree_dirty": False,
+                "refs": [],
+                "unexported_changes": False,
+                "source_fingerprint": fingerprint,
+            },
+            "predecessor_backup": str(retained_backup) if retained_backup is not None else None,
+        }
+    finally:
+        if not published and stage.exists():
+            shutil.rmtree(stage)
+
+
+def prepare() -> dict[str, Any]:
+    ensure_build_root()
+    with RecipeLock(BUILD / ".recipe.lock", "prepare"):
+        return prepare_locked()
+
+
+def source_file(relative: str, label: str) -> Path:
+    path = SOURCE.joinpath(*PurePosixPath(relative).parts)
+    if path.is_symlink() or not path.is_file():
+        fail(f"generated source is missing {label}: {relative}")
+    return path
+
+
+def run_logged(command: list[str], log_name: str) -> int:
+    if LOG_DIR.is_symlink():
+        fail(".build/logs is a symlink")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / log_name
+    if log_path.is_symlink():
+        fail(f"log path is a symlink: {log_name}")
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write(f"$ {' '.join(command)}\n")
+        log.flush()
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(SOURCE),
+                env=command_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as error:
+            fail(f"cannot run {command[0]}: {error}")
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                log.write(line)
+                sys.stderr.write(line)
+        except BaseException:
+            process.terminate()
+            process.wait()
+            raise
         finally:
-            if not published and stage.exists():
-                shutil.rmtree(stage)
+            process.stdout.close()
+        return process.wait()
+
+
+def resolve_sign_identity() -> str:
+    requested = os.environ.get("TINYCAST_SIGN_IDENTITY") or DEFAULT_SIGN_IDENTITY
+    try:
+        result = subprocess.run(
+            ["security", "find-identity", "-v", "-p", "codesigning"],
+            check=False,
+            env=command_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as error:
+        fail(f"cannot inspect code-signing identities: {error}")
+    if result.returncode:
+        fail(f"cannot inspect code-signing identities: {result.stderr.strip()}")
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r'\s*\d+\)\s+([0-9A-Fa-f]+)\s+"(.*)"\s*', line)
+        if match is None:
+            continue
+        identity, name = match.groups()
+        if identity == requested or name == requested or name.startswith(requested + ":"):
+            print(f"signing with {identity}", file=sys.stderr)
+            return identity
+    fail(f"no codesigning identity matches {requested!r}")
+
+
+def verify_signature(product: Path) -> int:
+    try:
+        result = subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", str(product)],
+            check=False,
+            cwd=str(SOURCE),
+            env=command_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as error:
+        fail(f"cannot verify the built signature: {error}")
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        print(f"recipe: signature verification failed ({result.returncode}): {detail}", file=sys.stderr)
+    return result.returncode
+
+
+def build_source(debug: bool, prepared: dict[str, Any]) -> int:
+    configuration = "Debug" if debug else "Release"
+    product_name = DEBUG_PRODUCT if debug else RELEASE_PRODUCT
+    if not (SOURCE / "Tinycast.xcodeproj" / "project.pbxproj").is_file():
+        fail("generated source has no Tinycast.xcodeproj")
+    if DERIVED_DATA.is_symlink():
+        fail(".build/DerivedData is a symlink")
+    command = [
+        "xcodebuild",
+        "-project",
+        str(SOURCE / "Tinycast.xcodeproj"),
+        "-scheme",
+        "Tinycast",
+        "-configuration",
+        configuration,
+        "-derivedDataPath",
+        str(DERIVED_DATA),
+        f"MARKETING_VERSION={prepared['release_version']}",
+    ]
+    if debug:
+        command.append("CODE_SIGNING_ALLOWED=NO")
+    else:
+        identity = resolve_sign_identity()
+        command.extend(
+            [
+                "ARCHS=arm64",
+                "ONLY_ACTIVE_ARCH=NO",
+                "CODE_SIGN_STYLE=Manual",
+                f"CODE_SIGN_IDENTITY={identity}",
+                "OTHER_CODE_SIGN_FLAGS=--timestamp=none",
+            ]
+        )
+    command.append("build")
+    log_name = "debug-build.log" if debug else "release-build.log"
+    status = run_logged(command, log_name)
+    if status:
+        print(f"recipe: {configuration} build failed ({status}); log: {LOG_DIR / log_name}", file=sys.stderr)
+        return status
+    product = DERIVED_DATA / "Build" / "Products" / configuration / product_name
+    if product.is_symlink() or not product.is_dir():
+        fail(f"{configuration} build did not produce {product}")
+    if not debug:
+        status = verify_signature(product)
+        if status:
+            return status
+    print(product)
+    return 0
+
+
+def run_project_tool(name: str, arguments: list[str]) -> int:
+    relative = "Scripts/run-tests.sh" if name == "test" else "Scripts/lint.sh"
+    script = source_file(relative, f"{name} script")
+    log_name = f"{name}.log"
+    status = run_logged(["/bin/bash", str(script), *arguments], log_name)
+    if status:
+        print(f"recipe: {name} failed ({status}); log: {LOG_DIR / log_name}", file=sys.stderr)
+    return status
+
+
+def report_source(prepared: dict[str, Any]) -> None:
+    state = prepared.get("source_state") or {}
+    phase = "reused" if prepared.get("reused") else "published"
+    changes = "local changes" if state.get("unexported_changes") else "clean"
+    print(
+        f"source: {prepared['source_path']} ({phase}, {changes}, locked {prepared['release_version']})",
+        file=sys.stderr,
+    )
+
+
+def run_command(name: str, arguments: list[str]) -> int:
+    ensure_build_root()
+    with RecipeLock(BUILD / ".recipe.lock", f"command:{name}"):
+        prepared = prepare_locked()
+        report_source(prepared)
+        if name in ("build", "build-debug"):
+            return build_source(name == "build-debug", prepared)
+        return run_project_tool(name, arguments)
 
 
 def status() -> dict[str, Any]:
+    if BUILD.is_symlink():
+        fail(".build is a symlink")
     inputs = load_inputs()
-    busy = False
-    if BUILD.exists() and not BUILD.is_symlink():
-        try:
-            with RecipeLock(BUILD / ".recipe.lock", "status", blocking=False):
-                pass
-        except BlockingIOError:
-            busy = True
     result: dict[str, Any] = {
         "source_path": str(SOURCE),
         "release_version": inputs["lock"]["upstream"]["release_version"],
         "fresh": False,
         "operation_owner": "tinycast-recipe",
         "operation_lock": str(BUILD / ".recipe.lock"),
-        "operation_busy": busy,
+        "operation_busy": False,
     }
-    if SOURCE.exists() or SOURCE.is_symlink():
-        receipt, inputs_current, local_state = inspect_existing(SOURCE, inputs)
-        fresh = inputs_current and not local_state["unexported_changes"] and receipt["source_fingerprint"] == inputs["lock"]["expected_source"]["fingerprint"]
-        result.update(
-            {
-                "fresh": fresh,
-                "inputs_current": inputs_current,
-                "source_only_base_checkpoint": receipt["source_only_base_checkpoint"],
-                "managed_tip": receipt["managed_tip"],
-                "source_fingerprint": receipt["source_fingerprint"],
-                "source_state": local_state,
-            }
-        )
+    if not BUILD.exists():
+        return result
+    try:
+        with RecipeLock(BUILD / ".recipe.lock", "status", blocking=False):
+            if not (SOURCE.exists() or SOURCE.is_symlink()):
+                return result
+            receipt, inputs_current, local_state = inspect_existing(SOURCE, inputs)
+            fresh = inputs_current and not local_state["unexported_changes"] and receipt["source_fingerprint"] == inputs["lock"]["expected_source"]["fingerprint"]
+            result.update(
+                {
+                    "fresh": fresh,
+                    "inputs_current": inputs_current,
+                    "source_only_base_checkpoint": receipt["source_only_base_checkpoint"],
+                    "managed_tip": receipt["managed_tip"],
+                    "source_fingerprint": receipt["source_fingerprint"],
+                    "source_state": local_state,
+                }
+            )
+    except BlockingIOError:
+        result["operation_busy"] = True
     return result
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "status"))
+    parser.add_argument("command", choices=("prepare", "status", "command"))
+    parser.add_argument("name", nargs="?")
+    parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
+        if args.command == "command":
+            if args.name not in TOOL_COMMANDS:
+                parser.error("command must be one of: " + ", ".join(TOOL_COMMANDS))
+            return run_command(args.name, args.arguments)
+        if args.name is not None:
+            parser.error(f"{args.command} takes no arguments")
         result = prepare() if args.command == "prepare" else status()
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0

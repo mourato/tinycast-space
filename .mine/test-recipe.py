@@ -17,6 +17,8 @@ import unittest
 HERE = Path(__file__).resolve().parent.parent
 RECIPE = HERE / ".mine" / "recipe.py"
 SOURCE_TREE = HERE / ".mine" / "source-tree.sh"
+IDENTITY_HASH = "0123456789abcdef0123456789abcdef01234567"
+SECOND_IDENTITY_HASH = "89abcdef0123456789abcdef0123456789abcdef"
 
 
 def git(cwd: Path, *args: str, check: bool = True) -> str:
@@ -60,12 +62,17 @@ class Fixture:
         shutil.copy2(RECIPE, mine / "recipe.py")
         shutil.copy2(SOURCE_TREE, mine / "source-tree.sh")
         self.processes: list[subprocess.Popen[str]] = []
+        self.tools = self.root / "test-tools"
+        self.logs = self.root / "tool-logs"
+        self.logs.mkdir()
+        self._make_shims()
         self.upstream = self.root / "upstream.git"
         self.space = self.root / "space.git"
         self._make_upstream()
         self._make_space()
         self._make_patch()
         self._write_lock()
+        self._tag_recipe_root()
 
     def close(self) -> None:
         for process in self.processes:
@@ -79,7 +86,7 @@ class Fixture:
         self.temp.cleanup()
 
     def _init(self, path: Path) -> None:
-        path.mkdir(parents=True)
+        path.mkdir(parents=True, exist_ok=True)
         git(path, "init", "--quiet")
         git(path, "config", "user.name", "Recipe Fixture")
         git(path, "config", "user.email", "fixture@localhost")
@@ -89,9 +96,91 @@ class Fixture:
         write(self.upstream / "README.md", "upstream\n")
         write(self.upstream / "project.yml", "name: Fixture\n")
         write(self.upstream / ".github/workflows/upstream.yml", "name: upstream\n")
+        write(self.upstream / "Tinycast.xcodeproj/project.pbxproj", "// fixture project\n")
+        write(
+            self.upstream / "Scripts/run-tests.sh",
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "{\n"
+            "  printf 'script=%s\\n' run-tests\n"
+            "  printf 'cwd=%s\\n' \"$PWD\"\n"
+            "  printf 'args=%s\\n' \"$*\"\n"
+            "  if [ -f local-authoring.txt ]; then printf 'local=yes\\n'; fi\n"
+            "} > \"${RECIPE_TEST_SCRIPT_LOG:?}\"\n"
+            "if [ \"${RECIPE_TEST_HANDSHAKE:-0}\" = 1 ]; then\n"
+            "  \"${RECIPE_TEST_HELPER:?}\" -c 'import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ[\"RECIPE_TEST_SOCKET\"]); s.sendall(b\"ready\\n\"); s.recv(1); s.close()'\n"
+            "fi\n"
+            "exit \"${RECIPE_TEST_TEST_STATUS:-0}\"\n",
+            0o755,
+        )
+        write(
+            self.upstream / "Scripts/lint.sh",
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "{\n"
+            "  printf 'script=%s\\n' lint\n"
+            "  printf 'cwd=%s\\n' \"$PWD\"\n"
+            "  printf 'args=%s\\n' \"$*\"\n"
+            "} > \"${RECIPE_TEST_SCRIPT_LOG:?}\"\n"
+            "exit \"${RECIPE_TEST_LINT_STATUS:-0}\"\n",
+            0o755,
+        )
         git(self.upstream, "add", "-A")
         git(self.upstream, "commit", "--quiet", "-m", "upstream base")
         self.upstream_commit = git(self.upstream, "rev-parse", "HEAD")
+
+    def _make_shims(self) -> None:
+        self.tools.mkdir()
+        write(
+            self.tools / "xcodebuild",
+            "#!/bin/bash\n"
+            "set -eu\n"
+            "{\n"
+            "  printf 'tool=xcodebuild\\n'\n"
+            "  printf 'cwd=%s\\n' \"$PWD\"\n"
+            "  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n"
+            "} > \"${RECIPE_TEST_TOOL_LOG:?}\"\n"
+            "dd=''\n"
+            "configuration=Release\n"
+            "previous=''\n"
+            "for arg in \"$@\"; do\n"
+            "  case \"$previous\" in\n"
+            "    -configuration) configuration=\"$arg\" ;;\n"
+            "    -derivedDataPath) dd=\"$arg\" ;;\n"
+            "  esac\n"
+            "  previous=\"$arg\"\n"
+            "done\n"
+            "[ -n \"$dd\" ] || { echo 'xcodebuild shim: no derived data' >&2; exit 64; }\n"
+            "product=Tinycast.app\n"
+            "[ \"$configuration\" = Debug ] && product='Tinycast Dev.app'\n"
+            "mkdir -p \"$dd/Build/Products/$configuration/$product\"\n"
+            "exit \"${RECIPE_TEST_XCODEBUILD_STATUS:-0}\"\n",
+            0o755,
+        )
+        write(
+            self.tools / "security",
+            "#!/bin/bash\n"
+            "set -eu\n"
+            "printf 'arg=%s\\n' \"$@\" > \"${RECIPE_TEST_SECURITY_LOG:?}\"\n"
+            "printf '  1) %s \"Apple Development: Fixture (TEAM123456)\"\\n' \"${RECIPE_TEST_IDENTITY_HASH:?}\"\n"
+            "printf '  2) %s \"Tinycast Self-Signed\"\\n' \"${RECIPE_TEST_SECOND_IDENTITY:?}\"\n",
+            0o755,
+        )
+        write(
+            self.tools / "codesign",
+            "#!/bin/bash\n"
+            "set -eu\n"
+            "printf 'arg=%s\\n' \"$@\" > \"${RECIPE_TEST_CODESIGN_LOG:?}\"\n"
+            "exit \"${RECIPE_TEST_CODESIGN_STATUS:-0}\"\n",
+            0o755,
+        )
+
+    def _tag_recipe_root(self) -> None:
+        self._init(self.root)
+        write(self.root / "recipe-root.txt", "unrelated recipe tag\n")
+        git(self.root, "add", "--", "recipe-root.txt")
+        git(self.root, "commit", "--quiet", "-m", "recipe root")
+        git(self.root, "tag", "v9.9.9")
 
     def _make_space(self) -> None:
         self._init(self.space)
@@ -203,6 +292,63 @@ class Fixture:
             env.update(extra_env)
         process = subprocess.Popen(
             [sys.executable, str(self.root / ".mine/recipe.py"), command],
+            cwd=self.root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.processes.append(process)
+        return process
+
+    def tool_env(self, **extra: str) -> dict[str, str]:
+        env = {
+            "PATH": f"{self.tools}:{os.environ.get('PATH', '')}",
+            "RECIPE_TEST_TOOL_LOG": str(self.logs / "xcodebuild.log"),
+            "RECIPE_TEST_SECURITY_LOG": str(self.logs / "security.log"),
+            "RECIPE_TEST_CODESIGN_LOG": str(self.logs / "codesign.log"),
+            "RECIPE_TEST_SCRIPT_LOG": str(self.logs / "project-script.log"),
+            "RECIPE_TEST_IDENTITY_HASH": IDENTITY_HASH,
+            "RECIPE_TEST_SECOND_IDENTITY": SECOND_IDENTITY_HASH,
+        }
+        env.update(extra)
+        return env
+
+    def command(
+        self,
+        name: str,
+        arguments: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+        timeout: float = 120,
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.update(self.tool_env())
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            [sys.executable, str(self.root / ".mine/recipe.py"), "command", name, *(arguments or [])],
+            cwd=cwd or self.root,
+            env=env,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+
+    def start_command(
+        self,
+        name: str,
+        arguments: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env.update(self.tool_env())
+        if extra_env:
+            env.update(extra_env)
+        process = subprocess.Popen(
+            [sys.executable, str(self.root / ".mine/recipe.py"), "command", name, *(arguments or [])],
             cwd=self.root,
             env=env,
             stdout=subprocess.PIPE,
@@ -518,6 +664,163 @@ class RecipeTests(unittest.TestCase):
             if server is not None:
                 server.close()
             shutil.rmtree(handshake_dir, ignore_errors=True)
+
+    def test_build_commands_use_source_locked_version_and_owned_paths(self) -> None:
+        release = self.fixture.command("build")
+        self.assertEqual(release.returncode, 0, release.stdout + release.stderr)
+        lines = release.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 1, release.stdout)
+        artifact = Path(lines[0])
+        self.assertEqual(
+            artifact.resolve(),
+            (self.fixture.root / ".build/DerivedData/Build/Products/Release/Tinycast.app").resolve(),
+        )
+        self.assertTrue(artifact.is_dir())
+        self.assertIn("locked 1.2.3", release.stderr)
+
+        log = (self.fixture.logs / "xcodebuild.log").read_text()
+        self.assertIn(f"cwd={self.fixture.source.resolve()}", log)
+        self.assertIn("arg=-configuration\narg=Release\n", log)
+        self.assertIn("arg=MARKETING_VERSION=1.2.3", log)
+        self.assertNotIn("9.9.9", log)
+        self.assertIn("arg=CODE_SIGN_STYLE=Manual", log)
+        self.assertIn("arg=OTHER_CODE_SIGN_FLAGS=--timestamp=none", log)
+        self.assertIn(f"arg=CODE_SIGN_IDENTITY={IDENTITY_HASH}", log)
+        self.assertNotIn("CODE_SIGNING_ALLOWED=NO", log)
+        self.assertNotIn("PRODUCT_NAME=", log)
+        self.assertNotIn("PRODUCT_BUNDLE_IDENTIFIER=", log)
+
+        codesign = (self.fixture.logs / "codesign.log").read_text()
+        self.assertIn("arg=--verify", codesign)
+        self.assertNotIn("arg=--force", codesign)
+        self.assertNotIn("arg=--sign", codesign)
+        self.assertIn(f"arg={artifact}", codesign)
+
+        selected = self.fixture.command("build", extra_env={"TINYCAST_SIGN_IDENTITY": SECOND_IDENTITY_HASH})
+        self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
+        selected_log = (self.fixture.logs / "xcodebuild.log").read_text()
+        self.assertIn(f"arg=CODE_SIGN_IDENTITY={SECOND_IDENTITY_HASH}", selected_log)
+
+        (self.fixture.logs / "security.log").unlink()
+        debug = self.fixture.command("build-debug")
+        self.assertEqual(debug.returncode, 0, debug.stdout + debug.stderr)
+        debug_artifact = Path(debug.stdout.strip().splitlines()[-1])
+        self.assertEqual(
+            debug_artifact.resolve(),
+            (self.fixture.root / ".build/DerivedData/Build/Products/Debug/Tinycast Dev.app").resolve(),
+        )
+        self.assertTrue(debug_artifact.is_dir())
+        debug_log = (self.fixture.logs / "xcodebuild.log").read_text()
+        self.assertIn("arg=-configuration\narg=Debug\n", debug_log)
+        self.assertIn("arg=MARKETING_VERSION=1.2.3", debug_log)
+        self.assertIn("arg=CODE_SIGNING_ALLOWED=NO", debug_log)
+        self.assertNotIn("CODE_SIGN_IDENTITY=", debug_log)
+        self.assertFalse((self.fixture.logs / "security.log").exists())
+
+        failed = self.fixture.command("build", extra_env={"RECIPE_TEST_XCODEBUILD_STATUS": "7"})
+        self.assertEqual(failed.returncode, 7, failed.stdout + failed.stderr)
+        self.assertEqual(failed.stdout.strip(), "")
+        self.assertIn("Release build failed (7)", failed.stderr)
+
+    def test_test_and_lint_inherit_source_scripts_and_preserve_status(self) -> None:
+        test = self.fixture.command("test", ["calc-test"], cwd=Path("/"))
+        self.assertEqual(test.returncode, 0, test.stdout + test.stderr)
+        self.assertEqual(test.stdout, "")
+        log = (self.fixture.logs / "project-script.log").read_text()
+        self.assertIn("script=run-tests", log)
+        self.assertIn(f"cwd={self.fixture.source.resolve()}", log)
+        self.assertIn("args=calc-test", log)
+
+        lint = self.fixture.command("lint", ["--fix"])
+        self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
+        log = (self.fixture.logs / "project-script.log").read_text()
+        self.assertIn("script=lint", log)
+        self.assertIn(f"cwd={self.fixture.source.resolve()}", log)
+        self.assertIn("args=--fix", log)
+
+        failing_test = self.fixture.command("test", extra_env={"RECIPE_TEST_TEST_STATUS": "7"})
+        self.assertEqual(failing_test.returncode, 7, failing_test.stdout + failing_test.stderr)
+        self.assertIn("test failed (7)", failing_test.stderr)
+        failing_lint = self.fixture.command("lint", extra_env={"RECIPE_TEST_LINT_STATUS": "9"})
+        self.assertEqual(failing_lint.returncode, 9, failing_lint.stdout + failing_lint.stderr)
+        self.assertIn("lint failed (9)", failing_lint.stderr)
+
+    def test_command_reuses_dirty_source_and_holds_lock_during_tool(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        authoring = self.fixture.source / "local-authoring.txt"
+        write(authoring, "unexported authoring state\n")
+        handshake_dir = Path(tempfile.mkdtemp(prefix="tc-command-handshake-", dir=tempfile.gettempdir()))
+        handshake = handshake_dir / "s"
+        server: socket.socket | None = None
+        connection: socket.socket | None = None
+        command: subprocess.Popen[str] | None = None
+        try:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(handshake))
+            server.listen(1)
+            server.settimeout(20)
+            command = self.fixture.start_command(
+                "test",
+                extra_env={
+                    "RECIPE_TEST_HANDSHAKE": "1",
+                    "RECIPE_TEST_HELPER": sys.executable,
+                    "RECIPE_TEST_SOCKET": str(handshake),
+                },
+            )
+            connection, _ = server.accept()
+            connection.settimeout(20)
+            self.assertEqual(connection.recv(6), b"ready\n")
+
+            status = self.fixture.run("status")
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+            busy = json.loads(status.stdout)
+            self.assertTrue(busy["operation_busy"])
+            self.assertNotIn("source_state", busy)
+            self.assertEqual(authoring.read_text(), "unexported authoring state\n")
+
+            connection.sendall(b"release")
+            stdout, stderr = command.communicate(timeout=120)
+            self.assertEqual(command.returncode, 0, stdout + stderr)
+            self.assertIn("local changes", stderr)
+            log = (self.fixture.logs / "project-script.log").read_text()
+            self.assertIn("local=yes", log)
+            self.assertIn(f"cwd={self.fixture.source.resolve()}", log)
+
+            settled = self.fixture.run("status")
+            self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
+            self.assertFalse(json.loads(settled.stdout)["operation_busy"])
+            self.assertEqual(authoring.read_text(), "unexported authoring state\n")
+        finally:
+            if command is not None and command.poll() is None:
+                command.terminate()
+                try:
+                    command.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    command.kill()
+                    command.communicate()
+            if connection is not None:
+                connection.close()
+            if server is not None:
+                server.close()
+            shutil.rmtree(handshake_dir, ignore_errors=True)
+
+    def test_commands_reject_corrupt_and_stale_source_without_running_tools(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        script_log = self.fixture.logs / "project-script.log"
+        receipt_path = self.fixture.source / ".git/tinycast-recipe-receipt.json"
+        saved_receipt = receipt_path.read_bytes()
+        receipt_path.write_text("not a receipt\n")
+        corrupt = self.fixture.command("test")
+        self.assertFailsWith(corrupt, "malformed recipe receipt")
+        self.assertFalse(script_log.exists())
+
+        receipt_path.write_bytes(saved_receipt)
+        write(self.fixture.source / "local-authoring.txt", "unexported authoring state\n")
+        patch_text = self.fixture.patch.read_text()
+        self.fixture.patch.write_text(patch_text.replace("Subject: [PATCH]", "Subject: [PATCH] changed", 1))
+        stale = self.fixture.command("test")
+        self.assertFailsWith(stale, "unexported local changes")
+        self.assertFalse(script_log.exists())
 
 
 def main() -> int:

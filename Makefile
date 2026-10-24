@@ -1,24 +1,27 @@
-.PHONY: help status check-space sync update save install build test finish-task prune-derived prepare recipe-test
+.PHONY: help status check-space sync update save install build build-debug test lint finish-task prune-derived prepare recipe-test
+
+ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+RECIPE := $(ROOT)/.mine/recipe.py
 
 help:
 	@echo "Tinycast (mourato fork) — main = base + .mine/patches"
-	@echo "make status       Where main stands vs Space and upstream"
+	@echo "make status       Recipe and .build/source state, from the locked inputs (no fetching)"
+	@echo "make prepare      Materialize or validate .build/source from the locked inputs"
+	@echo "make recipe-test  Test the recipe and its command surface"
+	@echo "make build        Signed Release build from .build/source (no install)"
+	@echo "make build-debug  Unsigned Debug build from .build/source (Tinycast Dev)"
+	@echo "make install      Release build, replace /Applications/Tinycast.app, relaunch"
+	@echo "make test         Run every standalone harness from .build/source (ARGS=<harness>)"
+	@echo "make lint         Lint .build/source (ARGS=--fix auto-corrects the mechanical subset)"
 	@echo "make check-space  Show new Space patches / upstream commits not in main"
 	@echo "make sync         Rebuild main on Space's main (tested upstream + Space patches)"
 	@echo "make update       Preflight and rebuild main on newest upstream + Space patches"
 	@echo "make save         Export commits since mine-base to .mine/patches"
-	@echo "make build        Signed Release build only (no install)"
-	@echo "make install      Release build, replace /Applications/Tinycast.app, relaunch"
-	@echo "make test         Upstream test harnesses"
 	@echo "make finish-task  Merge this task worktree into main, push origin/main, then clean up"
 	@echo "make prune-derived  List Xcode DerivedData of deleted worktrees (ARGS=--apply removes)"
 
 status:
-	@git fetch --quiet space && git fetch --quiet tinycast
-	@echo "main base:   $$(git log -1 --format='%h %s' mine-base~1 2>/dev/null || echo 'no mine-base')"
-	@echo "space/main:  $$(git log -1 --format='%h %s' space/main)"
-	@echo "upstream:    $$(git log -1 --format='%h %s' tinycast/main)"
-	@echo "my patches:  $$(git rev-list --count mine-base..HEAD -- . ':!.mine' ':!Makefile' 2>/dev/null || echo 0)"
+	@python3 "$(RECIPE)" status
 
 check-space:
 	@git fetch --quiet space && git fetch --quiet tinycast
@@ -37,19 +40,25 @@ save:
 	@.mine/save-patches.sh
 
 build:
-	@.mine/build.sh
+	@python3 "$(RECIPE)" command build
+
+build-debug:
+	@python3 "$(RECIPE)" command build-debug
 
 install:
-	@.mine/install.sh
+	@"$(ROOT)/.mine/install.sh"
 
 test:
-	@./Scripts/run-tests.sh
+	@python3 "$(RECIPE)" command test $(ARGS)
+
+lint:
+	@python3 "$(RECIPE)" command lint $(ARGS)
 
 prepare:
-	@python3 .mine/recipe.py prepare
+	@python3 "$(RECIPE)" prepare
 
 recipe-test:
-	@python3 .mine/test-recipe.py
+	@python3 "$(ROOT)/.mine/test-recipe.py"
 
 finish-task:
 	@./.mine/finish-task.sh
