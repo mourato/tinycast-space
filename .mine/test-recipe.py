@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -239,11 +240,11 @@ class Fixture:
         git(patch_work, "add", "fork.txt")
         git(patch_work, "commit", "--quiet", "-m", "fork patch")
         patch = subprocess.run(
-            ["git", "-C", str(patch_work), "format-patch", "--stdout", "--no-stat", f"{self.upstream_commit}..HEAD"],
+            ["git", "-C", str(patch_work), "format-patch", "--stdout", "--zero-commit", f"{self.upstream_commit}..HEAD"],
             check=True,
             stdout=subprocess.PIPE,
         ).stdout
-        self.patch = self.root / ".mine/patches/0001-fork.patch"
+        self.patch = self.root / ".mine/patches/0001-fork-patch.patch"
         self.patch.write_bytes(patch)
 
     def _expected_fingerprint(self) -> str:
@@ -390,6 +391,32 @@ class Fixture:
 
     def receipt(self) -> dict[str, object]:
         return json.loads((self.source / ".git/tinycast-recipe-receipt.json").read_text())
+
+    def source_fingerprint(self, revision: str = "HEAD") -> str:
+        result = subprocess.run(
+            ["bash", str(SOURCE_TREE), str(self.source), revision],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        return f"sha256:{result.stdout.strip()}"
+
+    def commit_source(self, relative: str, content: str, message: str) -> str:
+        write(self.source / relative, content)
+        git(self.source, "add", "--", relative)
+        git(self.source, "commit", "--quiet", "-m", message)
+        return git(self.source, "rev-parse", "HEAD")
+
+    def patch_tree_digest(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        for entry in sorted(path.iterdir(), key=lambda item: item.name):
+            data = entry.read_bytes()
+            name = entry.name.encode("utf-8")
+            digest.update(len(name).to_bytes(8, "big"))
+            digest.update(name)
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+        return digest.hexdigest()
 
 
 class RecipeTests(unittest.TestCase):
@@ -970,6 +997,151 @@ class RecipeTests(unittest.TestCase):
         stale = self.fixture.command("test")
         self.assertFailsWith(stale, "unexported local changes")
         self.assertFalse(script_log.exists())
+
+    def test_save_exports_committed_source_and_preserves_unrelated_index(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        old_patch = (self.fixture.root / ".mine/patches/0001-fork-patch.patch").read_bytes()
+        old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        staged = self.fixture.root / "unrelated-staged.txt"
+        write(staged, "must remain staged\n")
+        git(self.fixture.root, "add", "--", "unrelated-staged.txt")
+        before_index = git(self.fixture.root, "ls-files", "-s", "--", "unrelated-staged.txt")
+        source_head = self.fixture.commit_source("saved.txt", "saved source\n", "saved source edit")
+
+        result = self.fixture.run("save")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertTrue(saved["exported"])
+        self.assertTrue(saved["committed"])
+        self.assertEqual(saved["source_head"], source_head)
+        self.assertEqual(git(self.fixture.root, "log", "-1", "--format=%s"), "mine: save patches")
+        self.assertNotEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
+        committed_paths = git(self.fixture.root, "show", "--format=", "--name-only", "HEAD").splitlines()
+        self.assertEqual(
+            committed_paths,
+            [".mine/patches/0001-fork-patch.patch", ".mine/patches/0002-saved-source-edit.patch", ".mine/sources.lock.json"],
+        )
+        self.assertEqual(git(self.fixture.root, "ls-files", "-s", "--", "unrelated-staged.txt"), before_index)
+        self.assertEqual(git(self.fixture.root, "diff", "--cached", "--name-only"), "unrelated-staged.txt")
+        self.assertEqual((self.fixture.root / ".mine/patches/0001-fork-patch.patch").read_bytes(), old_patch)
+        self.assertEqual(self.fixture.source_fingerprint(), json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())["expected_source"]["fingerprint"])
+        receipt = self.fixture.receipt()
+        self.assertEqual(receipt["managed_tip"], source_head)
+        self.assertEqual(receipt["source_fingerprint"], self.fixture.source_fingerprint())
+
+        saved_root_head = git(self.fixture.root, "rev-parse", "HEAD")
+        repeated = self.fixture.run("save")
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertFalse(json.loads(repeated.stdout)["exported"])
+        self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), saved_root_head)
+
+        shutil.rmtree(self.fixture.source)
+        rebuilt = self.fixture.run()
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stdout + rebuilt.stderr)
+        self.assertEqual(self.fixture.source_fingerprint(), json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())["expected_source"]["fingerprint"])
+
+    def test_save_allows_represented_branch_but_rejects_unique_stash(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        git(self.fixture.source, "checkout", "--quiet", "-b", "already-exported")
+        no_change = self.fixture.run("save")
+        self.assertEqual(no_change.returncode, 0, no_change.stdout + no_change.stderr)
+        self.assertFalse(json.loads(no_change.stdout)["exported"])
+
+        write(self.fixture.source / "README.md", "stashed\n")
+        git(self.fixture.source, "stash", "push", "--quiet", "-m", "unique unexported stash")
+        rejected = self.fixture.run("save")
+        self.assertFailsWith(rejected, "unique branches or stashes")
+        self.assertIn("refs/stash", git(self.fixture.source, "for-each-ref", "--format=%(refname)"))
+        self.assertIn("unique unexported stash", git(self.fixture.source, "stash", "list"))
+
+    def test_save_rejects_dirty_source_and_stale_authoritative_inputs(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        write(self.fixture.source / "uncommitted.txt", "do not export\n")
+        dirty = self.fixture.run("save")
+        self.assertFailsWith(dirty, "uncommitted, untracked")
+        self.assertTrue((self.fixture.source / "uncommitted.txt").exists())
+
+        (self.fixture.source / "uncommitted.txt").unlink()
+        source_head = self.fixture.commit_source("committed.txt", "committed\n", "committed source edit")
+        patch = self.fixture.root / ".mine/patches/0001-fork-patch.patch"
+        original = patch.read_text()
+        patch.write_text(original.replace("Subject: [PATCH]", "Subject: [PATCH] stale", 1))
+        stale = self.fixture.run("save")
+        self.assertFailsWith(stale, "authoritative lock or patch inputs changed")
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), source_head)
+        self.assertIn("stale", patch.read_text())
+
+    def test_interrupted_save_recovers_old_patch_bytes_before_export(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        source_head = self.fixture.commit_source("recover.txt", "recover\n", "recover source edit")
+        build = self.fixture.root / ".build"
+        patch_dir = self.fixture.root / ".mine/patches"
+        transaction = build / ".source-save-interrupted"
+        transaction.mkdir()
+        (transaction / ".recipe-save-owner").write_text("tinycast-recipe-save\n")
+        previous = transaction / "previous-patches"
+        shutil.move(str(patch_dir), str(previous))
+        patch_dir.mkdir()
+        if (previous / ".gitkeep").exists():
+            shutil.copy2(previous / ".gitkeep", patch_dir / ".gitkeep")
+        write(patch_dir / "9999-interrupted.patch", "interrupted\n")
+        lock_path = self.fixture.root / ".mine/sources.lock.json"
+        receipt_path = self.fixture.source / ".git/tinycast-recipe-receipt.json"
+        old_lock = lock_path.read_bytes()
+        old_receipt = receipt_path.read_bytes()
+        old_patch = (previous / "0001-fork-patch.patch").read_bytes()
+        journal = {
+            "schema": 1,
+            "state": "patches-published",
+            "source_head": source_head,
+            "paths": {
+                "transaction": str(transaction),
+                "patch_dir": str(patch_dir),
+                "lock": str(lock_path),
+                "receipt": str(receipt_path),
+            },
+            "old": {
+                "patch_tree": self.fixture.patch_tree_digest(previous),
+                "lock": hashlib.sha256(old_lock).hexdigest(),
+                "receipt": hashlib.sha256(old_receipt).hexdigest(),
+            },
+            "new": {
+                "patch_tree": self.fixture.patch_tree_digest(patch_dir),
+                "lock": "1" * 64,
+                "receipt": "2" * 64,
+            },
+        }
+        (build / ".source-save-journal.json").write_text(json.dumps(journal, indent=2) + "\n")
+        result = self.fixture.run("save")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(json.loads(result.stdout)["exported"])
+        self.assertEqual((self.fixture.root / ".mine/patches/0001-fork-patch.patch").read_bytes(), old_patch)
+        self.assertFalse((build / ".source-save-journal.json").exists())
+        self.assertFalse(transaction.exists())
+        self.assertEqual(self.fixture.receipt()["managed_tip"], source_head)
+
+    def test_finish_guard_allows_tooling_only_and_refuses_source_loss(self) -> None:
+        tooling_only = self.fixture.run("finish-guard")
+        self.assertEqual(tooling_only.returncode, 0, tooling_only.stdout + tooling_only.stderr)
+        self.assertIn("no prepared source", tooling_only.stdout)
+
+        self.assertEqual(self.fixture.run().returncode, 0)
+        self.fixture.source.joinpath(".git/info/exclude").write_text("ignored-note.txt\n")
+        write(self.fixture.source / "ignored-note.txt", "must survive cleanup\n")
+        ignored = self.fixture.run("finish-guard")
+        self.assertFailsWith(ignored, "ignored files")
+
+        (self.fixture.source / "ignored-note.txt").unlink()
+        (self.fixture.source / ".git/info/exclude").write_text("")
+        write(self.fixture.source / "unexported.txt", "not saved\n")
+        git(self.fixture.source, "add", "unexported.txt")
+        git(self.fixture.source, "commit", "--quiet", "-m", "unexported source")
+        unexported = self.fixture.run("finish-guard")
+        self.assertFailsWith(unexported, "unexported source changes")
+
+        (self.fixture.root / ".build/.source-backup-manual").mkdir()
+        predecessor = self.fixture.run("finish-guard")
+        self.assertFailsWith(predecessor, "retained or incomplete predecessor")
 
 
 def main() -> int:

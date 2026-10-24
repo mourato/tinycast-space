@@ -16,7 +16,7 @@ help:
 	@echo "make check-space  Show new Space patches / upstream commits not in main"
 	@echo "make sync         Rebuild main on Space's main (tested upstream + Space patches)"
 	@echo "make update       Preflight and rebuild main on newest upstream + Space patches"
-	@echo "make save         Export commits since mine-base to .mine/patches"
+	@echo "make save         Export committed .build/source edits to .mine/patches"
 	@echo "make finish-task  Merge this task worktree into main, push origin/main, then clean up"
 	@echo "make prune-derived  List Xcode DerivedData of deleted worktrees (ARGS=--apply removes)"
 
@@ -37,7 +37,7 @@ update:
 	@.mine/rebuild.sh upstream
 
 save:
-	@.mine/save-patches.sh
+	@python3 "$(RECIPE)" save
 
 build:
 	@python3 "$(RECIPE)" command build

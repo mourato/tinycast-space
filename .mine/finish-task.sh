@@ -11,6 +11,7 @@ task="$(git rev-parse --show-toplevel)"
 branch="$(git -C "$task" symbolic-ref --quiet --short HEAD)" || fail "detached HEAD"
 [ "$branch" != main ] || fail "run from a task worktree, not main"
 [[ "$branch" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || fail "branch must be lowercase-kebab-case"
+python3 "$task/.mine/recipe.py" finish-guard || fail "source-saved guard failed"
 [ -z "$(git -C "$task" status --porcelain)" ] || fail "task worktree is dirty; commit first"
 
 primary="$(git -C "$task" worktree list --porcelain \

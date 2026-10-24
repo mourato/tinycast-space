@@ -34,6 +34,7 @@ RELEASE_PRODUCT = "Tinycast.app"
 DEBUG_PRODUCT = "Tinycast Dev.app"
 TOOL_COMMANDS = ("build", "build-debug", "install", "test", "lint")
 RECEIPT_SCHEMA = 1
+SAVE_JOURNAL_SCHEMA = 1
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
@@ -41,6 +42,8 @@ PATCH_NAME_RE = re.compile(r"^[0-9]{4}-[A-Za-z0-9][A-Za-z0-9._-]*\.patch$")
 STAGE_PREFIX = ".source-stage-"
 OLD_PREFIX = ".source-old-"
 BACKUP_PREFIX = ".source-backup-"
+SAVE_PREFIX = ".source-save-"
+SAVE_JOURNAL = BUILD / ".source-save-journal.json"
 GIT_ROUTING_ENV = {
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -216,12 +219,8 @@ def patch_digest(paths: list[Path]) -> tuple[str, list[dict[str, Any]]]:
     return digest.hexdigest(), records
 
 
-def load_inputs() -> dict[str, Any]:
-    lock, lock_bytes, lock_sha = load_lock()
-    patches = patch_files()
-    patch_sha, patch_records = patch_digest(patches)
-    recipe_sha = sha256_bytes(read_bytes(RECIPE_PATH, "recipe.py"))
-    input_digest = sha256_bytes(
+def input_digest(lock_bytes: bytes, patch_sha: str, recipe_sha: str) -> str:
+    return sha256_bytes(
         b"tinycast-recipe-inputs-v1\0"
         + lock_bytes
         + b"\0"
@@ -229,6 +228,14 @@ def load_inputs() -> dict[str, Any]:
         + b"\0"
         + recipe_sha.encode("ascii")
     )
+
+
+def load_inputs() -> dict[str, Any]:
+    lock, lock_bytes, lock_sha = load_lock()
+    patches = patch_files()
+    patch_sha, patch_records = patch_digest(patches)
+    recipe_sha = sha256_bytes(read_bytes(RECIPE_PATH, "recipe.py"))
+    input_digest_value = input_digest(lock_bytes, patch_sha, recipe_sha)
     return {
         "lock": lock,
         "lock_sha256": lock_sha,
@@ -236,7 +243,7 @@ def load_inputs() -> dict[str, Any]:
         "patch_records": patch_records,
         "patch_digest": patch_sha,
         "recipe_sha256": recipe_sha,
-        "input_digest": input_digest,
+        "input_digest": input_digest_value,
     }
 
 
@@ -433,6 +440,37 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return result.returncode == 0
 
 
+def revision_commit(repo: Path, revision: str) -> str | None:
+    value = run_git(repo, ["rev-parse", "--verify", f"{revision}^{{commit}}"], check=False).strip()
+    return value or None
+
+
+def stash_is_represented(repo: Path, stash: str, head_fingerprint: str, head: str) -> bool:
+    if source_fingerprint(repo, stash) != head_fingerprint:
+        return False
+    parents = []
+    for suffix in ("^1", "^2", "^3"):
+        parent = revision_commit(repo, f"{stash}{suffix}")
+        if parent is not None:
+            parents.append(parent)
+    if not parents or not is_ancestor(repo, parents[0], head):
+        return False
+    return all(source_fingerprint(repo, parent) == head_fingerprint for parent in parents)
+
+
+def represented_refs(repo: Path, refs: list[str], head: str, head_fingerprint: str) -> list[str]:
+    unrepresented: list[str] = []
+    for ref in refs:
+        if ref == "refs/stash":
+            represented = stash_is_represented(repo, ref, head_fingerprint, head)
+        else:
+            tip = revision_commit(repo, ref)
+            represented = tip is not None and is_ancestor(repo, tip, head)
+        if not represented:
+            unrepresented.append(ref)
+    return unrepresented
+
+
 def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, Any]]:
     if source.is_symlink():
         fail("generated source path is a symlink")
@@ -451,6 +489,8 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
     if len([line for line in worktrees if line.startswith("worktree ")]) != 1:
         fail("generated source has additional Git worktrees")
     status = run_git(source, ["status", "--porcelain=v1", "--untracked-files=all"]).strip()
+    ignored_status = run_git(source, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]).strip()
+    ignored = [line[3:] for line in ignored_status.splitlines() if line.startswith("!! ")]
     refs = [line for line in run_git(source, ["for-each-ref", "--format=%(refname)"]).splitlines() if line]
     unreachable = run_git(source, ["fsck", "--no-reflogs", "--unreachable"], check=False).strip()
     if any(line.startswith(("unreachable commit ", "unreachable tree ", "unreachable tag ")) for line in unreachable.splitlines()):
@@ -464,6 +504,7 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
     if managed_fingerprint != receipt["source_fingerprint"]:
         fail("generated source fingerprint disagrees with its receipt")
     actual_fingerprint = source_fingerprint(source)
+    unrepresented = represented_refs(source, refs, head, actual_fingerprint)
     current = inputs["input_digest"] == receipt["input"]["input_digest"]
     current = current and inputs["lock_sha256"] == receipt["input"]["lock_sha256"]
     current = current and inputs["patch_digest"] == receipt["input"]["patch_digest"]
@@ -473,8 +514,10 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
         "head_is_managed": head == receipt["managed_tip"],
         "head_is_descendant": True,
         "worktree_dirty": bool(status),
+        "ignored_paths": ignored,
         "refs": refs,
-        "unexported_changes": bool(status or refs or head != receipt["managed_tip"]),
+        "unrepresented_refs": unrepresented,
+        "unexported_changes": bool(status or unrepresented or head != receipt["managed_tip"]),
         "source_fingerprint": actual_fingerprint,
     }
     return receipt, current, local_state
@@ -768,6 +811,587 @@ class RecipeLock:
             self.handle.flush()
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
             self.handle.close()
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def remove_owned(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def directory_digest(path: Path) -> str | None:
+    if path.is_symlink() or not path.is_dir():
+        return None
+    digest = hashlib.sha256()
+    for entry in sorted(path.iterdir(), key=lambda item: item.name):
+        if entry.is_symlink() or not entry.is_file():
+            return None
+        data = read_bytes(entry, f"file {entry.name}")
+        name = entry.name.encode("utf-8")
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def validate_patch_directory_for_save(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        fail("patch directory is missing or is a symlink")
+    for entry in path.iterdir():
+        if entry.is_symlink() or not entry.is_file():
+            fail(f"patch directory contains a non-file entry: {entry.name}")
+        if entry.name != ".gitkeep" and not PATCH_NAME_RE.fullmatch(entry.name):
+            fail(f"patch directory contains an unexpected file: {entry.name}")
+
+
+def export_path(path: str) -> bool:
+    return path == ".mine/sources.lock.json" or path.startswith(".mine/patches/")
+
+
+def index_snapshot(repo: Path) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-s", "-z"],
+        check=False,
+        env=git_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        fail(f"cannot snapshot the recipe Git index: {result.stderr.decode(errors='replace').strip()}")
+    records = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            path = record.split(b"\t", 1)[1].decode("utf-8")
+        except (IndexError, UnicodeDecodeError):
+            fail("recipe Git index contains a malformed record")
+        if not export_path(path):
+            records.append(record)
+    return b"\0".join(records)
+
+
+def staged_export_paths(repo: Path) -> list[str]:
+    names = run_git(repo, ["diff", "--cached", "--name-only", "--", ".mine/patches", ".mine/sources.lock.json"])
+    return [name for name in names.splitlines() if name]
+
+
+def write_save_journal(journal: dict[str, Any]) -> None:
+    atomic_write(SAVE_JOURNAL, (json.dumps(journal, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+
+
+def save_journal_paths(transaction: Path) -> dict[str, str]:
+    return {
+        "transaction": str(transaction),
+        "patch_dir": str(PATCH_DIR),
+        "lock": str(LOCK_PATH),
+        "receipt": str(source_receipt_path(SOURCE)),
+    }
+
+
+def validate_save_journal(journal: Any) -> dict[str, Any]:
+    value = require_keys(
+        journal,
+        {
+            "schema",
+            "state",
+            "source_head",
+            "paths",
+            "old",
+            "new",
+        },
+        "source save journal",
+    )
+    if value["schema"] != SAVE_JOURNAL_SCHEMA:
+        fail("unsupported source save journal")
+    for key in ("source_head",):
+        require_sha(value[key], f"source save journal.{key}")
+    paths = require_keys(value["paths"], {"transaction", "patch_dir", "lock", "receipt"}, "source save journal.paths")
+    transaction = Path(paths["transaction"])
+    if transaction.parent.resolve() != BUILD.resolve() or not transaction.name.startswith(SAVE_PREFIX):
+        fail("source save journal transaction is outside .build")
+    if Path(paths["patch_dir"]).resolve() != PATCH_DIR.resolve() or Path(paths["lock"]).resolve() != LOCK_PATH.resolve():
+        fail("source save journal paths do not match this recipe")
+    if Path(paths["receipt"]).resolve() != source_receipt_path(SOURCE).resolve():
+        fail("source save journal receipt path does not match this source")
+    for label in ("old", "new"):
+        record = require_keys(
+            value[label],
+            {"patch_tree", "lock", "receipt"},
+            f"source save journal.{label}",
+        )
+        for key in record:
+            if not isinstance(record[key], str) or not re.fullmatch(r"[0-9a-f]{64}", record[key]):
+                fail(f"malformed source save journal.{label}.{key}")
+    return value
+
+
+def source_save_artifacts() -> list[Path]:
+    return [
+        path
+        for path in BUILD.glob(SAVE_PREFIX + "*")
+        if path.name != SAVE_JOURNAL.name and path.is_dir()
+    ]
+
+
+def recover_save_transaction() -> None:
+    if SAVE_JOURNAL.is_symlink():
+        fail("source save journal is a symlink")
+    if not SAVE_JOURNAL.exists():
+        for transaction in source_save_artifacts():
+            marker = transaction / ".recipe-save-owner"
+            if not marker.is_file() or marker.read_text(encoding="utf-8") != "tinycast-recipe-save\n":
+                fail(f"unowned source save staging requires recovery: {transaction}")
+            remove_owned(transaction)
+        return
+    journal = validate_save_journal(parse_json(read_bytes(SAVE_JOURNAL, "source save journal"), "source save journal"))
+    transaction = Path(journal["paths"]["transaction"])
+    if transaction.is_symlink() or not transaction.is_dir() or (transaction / ".recipe-save-owner").read_text(encoding="utf-8") != "tinycast-recipe-save\n":
+        fail("source save journal staging directory is missing or unowned")
+    extra = [path for path in source_save_artifacts() if path.resolve() != transaction.resolve()]
+    if extra:
+        fail(f"multiple source save transactions require recovery: {extra[0]}")
+    if revision_commit(SOURCE, "HEAD") != journal["source_head"]:
+        fail("source changed during interrupted save; recover manually before retrying")
+    if run_git(SOURCE, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]).strip():
+        fail("source has newer working-tree data during interrupted save; recover manually before retrying")
+
+    current = {
+        "patch_tree": directory_digest(PATCH_DIR),
+        "lock": sha256_bytes(read_bytes(LOCK_PATH, "sources.lock.json")) if LOCK_PATH.is_file() else None,
+        "receipt": sha256_bytes(read_bytes(source_receipt_path(SOURCE), "recipe receipt"))
+        if source_receipt_path(SOURCE).is_file()
+        else None,
+    }
+    old = journal["old"]
+    new = journal["new"]
+    old_match = all(current[key] == old[key] for key in current)
+    new_match = all(current[key] == new[key] for key in current)
+    if not old_match and not new_match and not all(
+        current[key] in (old[key], new[key]) for key in current
+    ):
+        fail("interrupted source save has newer edits; refusing to overwrite them")
+    if old_match or new_match:
+        remove_owned(transaction)
+        SAVE_JOURNAL.unlink()
+        return
+    if staged_export_paths(ROOT):
+        fail("interrupted source save has staged export-owned files; resolve them before recovery")
+    previous_patches = transaction / "previous-patches"
+    old_lock = transaction / "old-lock"
+    old_receipt = transaction / "old-receipt"
+    if not previous_patches.is_dir() or not old_lock.is_file() or not old_receipt.is_file():
+        fail("interrupted source save is missing its rollback snapshot")
+    remove_owned(PATCH_DIR)
+    os.replace(previous_patches, PATCH_DIR)
+    atomic_write(LOCK_PATH, old_lock.read_bytes())
+    atomic_write(source_receipt_path(SOURCE), old_receipt.read_bytes())
+    remove_owned(transaction)
+    SAVE_JOURNAL.unlink()
+
+
+def export_candidate(source: Path, base: str, head: str, destination: Path) -> list[Path]:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "format-patch",
+            "--quiet",
+            "--zero-commit",
+            "-N",
+            "-o",
+            str(destination),
+            f"{base}..{head}",
+            "--",
+            ".",
+            ":!.mine",
+            ":!Makefile",
+        ],
+        check=False,
+        env=git_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode:
+        fail(f"source patch export failed: {result.stderr.strip()}")
+    patches = sorted(destination.glob("*.patch"), key=lambda path: path.name)
+    commit_count = len(run_git(source, ["rev-list", f"{base}..{head}"]).splitlines())
+    if len(patches) != commit_count:
+        fail("source patch export omitted a commit outside the recipe export contract")
+    for patch in patches:
+        if patch.is_symlink() or not patch.is_file() or not PATCH_NAME_RE.fullmatch(patch.name):
+            fail(f"source patch export produced an unsafe patch: {patch.name}")
+    if (PATCH_DIR / ".gitkeep").is_file():
+        shutil.copy2(PATCH_DIR / ".gitkeep", destination / ".gitkeep")
+    return patches
+
+
+def validate_export_candidate(
+    source: Path, base: str, authored_fingerprint: str, candidate: Path, patches: list[Path]
+) -> None:
+    validation = candidate.parent / "validation"
+    result = subprocess.run(
+        ["git", "clone", "--quiet", "--no-local", str(source), str(validation)],
+        check=False,
+        env=git_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode:
+        fail(f"source export validation clone failed: {result.stderr.strip()}")
+    try:
+        configure_repository(validation)
+        run_git(validation, ["checkout", "--quiet", "--detach", base])
+        run_git(validation, ["remote", "remove", "origin"])
+        if run_git(validation, ["rev-parse", "HEAD"]).strip() != base:
+            fail("source export validation did not start at the source-only checkpoint")
+        if patches:
+            replay = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(validation),
+                    "am",
+                    "--3way",
+                    "--no-verify",
+                    "--whitespace=nowarn",
+                    *(str(path) for path in patches),
+                ],
+                check=False,
+                env=git_env(commit_identity=True),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if replay.returncode:
+                subprocess.run(
+                    ["git", "-C", str(validation), "am", "--abort"],
+                    check=False,
+                    env=git_env(commit_identity=True),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                fail(f"source export validation patch replay conflicted: {replay.stderr.strip()}")
+        if run_git(validation, ["status", "--porcelain=v1", "--untracked-files=all"]).strip():
+            fail("source export validation clone is dirty after replay")
+        actual = source_fingerprint(validation)
+        if actual != authored_fingerprint:
+            fail(f"source export fingerprint mismatch: replayed {actual}, authored {authored_fingerprint}")
+    finally:
+        if validation.exists():
+            remove_owned(validation)
+
+
+def new_lock_bytes(lock_bytes: bytes, old_fingerprint: str, fingerprint: str) -> bytes:
+    if old_fingerprint == fingerprint:
+        return lock_bytes
+    old = old_fingerprint.encode("ascii")
+    if lock_bytes.count(old) != 1:
+        fail("sources.lock.json expected fingerprint is not uniquely identifiable")
+    return lock_bytes.replace(old, fingerprint.encode("ascii"), 1)
+
+
+def receipt_bytes(
+    inputs: dict[str, Any],
+    lock_bytes: bytes,
+    patch_sha: str,
+    patch_records: list[dict[str, Any]],
+    base: str,
+    managed_tip: str,
+    fingerprint: str,
+) -> bytes:
+    lock_sha = sha256_bytes(lock_bytes)
+    receipt = {
+        "schema": RECEIPT_SCHEMA,
+        "input": {
+            "lock_sha256": lock_sha,
+            "patch_digest": patch_sha,
+            "recipe_sha256": inputs["recipe_sha256"],
+            "input_digest": input_digest(lock_bytes, patch_sha, inputs["recipe_sha256"]),
+        },
+        "locked": {
+            "upstream": inputs["lock"]["upstream"]["commit"],
+            "space": inputs["lock"]["space"]["commit"],
+            "release_version": inputs["lock"]["upstream"]["release_version"],
+        },
+        "patches": patch_records,
+        "source_only_base_checkpoint": base,
+        "managed_tip": managed_tip,
+        "source_fingerprint": fingerprint,
+    }
+    return (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def validate_source_for_save(
+    source: Path, inputs: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    if not source.exists() or source.is_symlink():
+        fail("generated source is missing; run make prepare before make save")
+    receipt, _inputs_current, state = inspect_existing(source, inputs)
+    if state["worktree_dirty"] or state["ignored_paths"]:
+        ignored = ", ".join(state["ignored_paths"])
+        detail = f" (ignored: {ignored})" if ignored else ""
+        fail(f"generated source has uncommitted, untracked, or ignored changes{detail}; commit product edits first")
+    if state["unrepresented_refs"]:
+        fail(
+            "generated source has unique branches or stashes; preserve them and export only the current committed source: "
+            + ", ".join(state["unrepresented_refs"])
+        )
+    if receipt["input"]["lock_sha256"] != inputs["lock_sha256"] or receipt["input"]["patch_digest"] != inputs["patch_digest"]:
+        fail("authoritative lock or patch inputs changed since the generated source was prepared")
+    expected_locked = {
+        "upstream": inputs["lock"]["upstream"]["commit"],
+        "space": inputs["lock"]["space"]["commit"],
+        "release_version": inputs["lock"]["upstream"]["release_version"],
+    }
+    if receipt["locked"] != expected_locked:
+        fail("generated source receipt identities disagree with authoritative lock inputs")
+    base = receipt["source_only_base_checkpoint"]
+    managed_tip = receipt["managed_tip"]
+    if not is_ancestor(source, base, managed_tip):
+        fail("generated source receipt checkpoint is not an ancestor of its managed tip")
+    if any(path == "Makefile" or path.startswith(".mine/") for _, _, _, path in safe_git_tree(source, base)):
+        fail("generated source receipt checkpoint contains recipe tooling")
+    if source_fingerprint(source, managed_tip) != inputs["lock"]["expected_source"]["fingerprint"]:
+        fail("generated source managed tip disagrees with the authoritative fingerprint")
+    head = state["head"]
+    if run_git(source, ["rev-list", "--merges", f"{base}..{head}"]).strip():
+        fail("source export does not support merge commits; preserve the source and resolve manually")
+    return receipt, state, base, head
+
+
+def publish_save(
+    transaction: Path,
+    source_head: str,
+    old_patch_tree: str,
+    old_lock_sha: str,
+    old_receipt_sha: str,
+    new_patch_tree: str,
+    new_lock_sha: str,
+    new_receipt_sha: str,
+    new_lock: bytes,
+    new_receipt: bytes,
+) -> None:
+    old_lock = read_bytes(LOCK_PATH, "sources.lock.json")
+    old_receipt = read_bytes(source_receipt_path(SOURCE), "recipe receipt")
+    if (
+        directory_digest(PATCH_DIR) != old_patch_tree
+        or sha256_bytes(old_lock) != old_lock_sha
+        or sha256_bytes(old_receipt) != old_receipt_sha
+    ):
+        fail("source save inputs changed before publication; previous files were retained")
+    previous_patches = transaction / "previous-patches"
+    new_patches = transaction / "new-patches"
+    old_lock_path = transaction / "old-lock"
+    new_lock_path = transaction / "new-lock"
+    old_receipt_path = transaction / "old-receipt"
+    new_receipt_path = transaction / "new-receipt"
+    shutil.copytree(transaction / "candidate", new_patches)
+    old_lock_path.write_bytes(old_lock)
+    new_lock_path.write_bytes(new_lock)
+    old_receipt_path.write_bytes(old_receipt)
+    new_receipt_path.write_bytes(new_receipt)
+    journal = {
+        "schema": SAVE_JOURNAL_SCHEMA,
+        "state": "prepared",
+        "source_head": source_head,
+        "paths": save_journal_paths(transaction),
+        "old": {"patch_tree": old_patch_tree, "lock": old_lock_sha, "receipt": old_receipt_sha},
+        "new": {"patch_tree": new_patch_tree, "lock": new_lock_sha, "receipt": new_receipt_sha},
+    }
+    write_save_journal(journal)
+    try:
+        os.replace(PATCH_DIR, transaction / "previous-patches")
+        journal["state"] = "old-patches-moved"
+        write_save_journal(journal)
+        os.replace(new_patches, PATCH_DIR)
+        journal["state"] = "patches-published"
+        write_save_journal(journal)
+        os.replace(new_lock_path, LOCK_PATH)
+        journal["state"] = "lock-published"
+        write_save_journal(journal)
+        os.replace(new_receipt_path, source_receipt_path(SOURCE))
+        journal["state"] = "receipt-published"
+        write_save_journal(journal)
+    except BaseException as error:
+        try:
+            recover_save_transaction()
+        except RecipeError as recovery_error:
+            fail(f"source save publication failed: {error}; recovery stopped: {recovery_error}")
+        fail(f"source save publication failed; previous state was restored: {error}")
+
+
+def commit_saved_paths() -> bool:
+    before = index_snapshot(ROOT)
+    if staged_export_paths(ROOT):
+        fail("export-owned files are already staged; preserve them and retry make save")
+    run_git(ROOT, ["add", "-A", "--", ".mine/patches", ".mine/sources.lock.json"])
+    if subprocess.run(
+        ["git", "-C", str(ROOT), "diff", "--cached", "--quiet", "--", ".mine/patches", ".mine/sources.lock.json"],
+        check=False,
+        env=git_env(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0:
+        return False
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "commit",
+            "--only",
+            "--quiet",
+            "-m",
+            "mine: save patches",
+            "--",
+            ".mine/patches",
+            ".mine/sources.lock.json",
+        ],
+        check=False,
+        env=git_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode:
+        fail(f"source export published but commit failed; files remain recoverable: {result.stderr.strip()}")
+    if index_snapshot(ROOT) != before:
+        fail("source export commit changed unrelated staged index entries")
+    return True
+
+
+def save() -> dict[str, Any]:
+    ensure_build_root()
+    with RecipeLock(BUILD / ".recipe.lock", "save"):
+        recover_save_transaction()
+        inputs = load_inputs()
+        if staged_export_paths(ROOT):
+            fail("export-owned files are already staged; preserve them and retry make save")
+        if any(path for prefix in (STAGE_PREFIX, OLD_PREFIX) for path in BUILD.glob(prefix + "*")):
+            fail("source preparation has pending recovery; resolve it before make save")
+        validate_patch_directory_for_save(PATCH_DIR)
+        receipt, state, base, head = validate_source_for_save(SOURCE, inputs)
+        if head == receipt["managed_tip"]:
+            return {"exported": False, "committed": False, "source_head": head}
+        initial_patch_tree = directory_digest(PATCH_DIR)
+        initial_receipt_sha = sha256_bytes(read_bytes(source_receipt_path(SOURCE), "recipe receipt"))
+        if initial_patch_tree is None:
+            fail("source patch publication has an unsafe directory")
+
+        transaction = Path(tempfile.mkdtemp(prefix=SAVE_PREFIX, dir=BUILD))
+        (transaction / ".recipe-save-owner").write_text("tinycast-recipe-save\n", encoding="utf-8")
+        try:
+            candidate = transaction / "candidate"
+            candidate.mkdir()
+            patches = export_candidate(SOURCE, base, head, candidate)
+            patch_sha, patch_records = patch_digest(sorted(candidate.glob("*.patch"), key=lambda path: path.name))
+            authored_fingerprint = source_fingerprint(SOURCE, head)
+            validate_export_candidate(SOURCE, base, authored_fingerprint, candidate, patches)
+            current_inputs = load_inputs()
+            if (
+                current_inputs["lock_sha256"] != inputs["lock_sha256"]
+                or current_inputs["patch_digest"] != inputs["patch_digest"]
+            ):
+                fail("authoritative recipe inputs changed during save; previous files were retained")
+            current_receipt, current_state, current_base, current_head = validate_source_for_save(SOURCE, current_inputs)
+            if current_head != head or current_base != base or current_receipt["managed_tip"] != receipt["managed_tip"]:
+                fail("source or recipe inputs changed during save; previous files were retained")
+            if current_state["source_fingerprint"] != authored_fingerprint:
+                fail("source changed during save; previous files were retained")
+            new_lock = new_lock_bytes(
+                read_bytes(LOCK_PATH, "sources.lock.json"),
+                current_inputs["lock"]["expected_source"]["fingerprint"],
+                authored_fingerprint,
+            )
+            new_receipt = receipt_bytes(
+                current_inputs,
+                new_lock,
+                patch_sha,
+                patch_records,
+                base,
+                head,
+                authored_fingerprint,
+            )
+            old_lock = read_bytes(LOCK_PATH, "sources.lock.json")
+            old_receipt = read_bytes(source_receipt_path(SOURCE), "recipe receipt")
+            old_patch_tree = directory_digest(PATCH_DIR)
+            new_patch_tree = directory_digest(candidate)
+            if old_patch_tree is None or new_patch_tree is None:
+                fail("source patch publication has an unsafe directory")
+            if (
+                old_patch_tree != initial_patch_tree
+                or sha256_bytes(old_lock) != current_inputs["lock_sha256"]
+                or sha256_bytes(old_receipt) != initial_receipt_sha
+            ):
+                fail("patch inputs changed during save; previous files were retained")
+            publish_save(
+                transaction,
+                head,
+                old_patch_tree,
+                sha256_bytes(old_lock),
+                sha256_bytes(old_receipt),
+                new_patch_tree,
+                sha256_bytes(new_lock),
+                sha256_bytes(new_receipt),
+                new_lock,
+                new_receipt,
+            )
+            committed = commit_saved_paths()
+            recover_save_transaction()
+            return {
+                "exported": True,
+                "committed": committed,
+                "source_head": head,
+                "source_fingerprint": authored_fingerprint,
+                "patch_count": len(patches),
+            }
+        finally:
+            if transaction.exists() and not SAVE_JOURNAL.exists():
+                remove_owned(transaction)
+
+
+def finish_guard() -> None:
+    if SAVE_JOURNAL.exists() or source_save_artifacts():
+        fail("source export recovery is pending")
+    for prefix in (STAGE_PREFIX, OLD_PREFIX, BACKUP_PREFIX):
+        if any(BUILD.glob(prefix + "*")):
+            fail("generated source has retained or incomplete predecessor data")
+    if not SOURCE.exists():
+        print("finish guard: no prepared source")
+        return
+    inputs = load_inputs()
+    receipt, _inputs_current, state = inspect_existing(SOURCE, inputs)
+    if state["ignored_paths"]:
+        fail("generated source has ignored files that cleanup would lose: " + ", ".join(state["ignored_paths"]))
+    if state["unexported_changes"]:
+        fail("generated source has unexported source changes")
+    if receipt["input"]["lock_sha256"] != inputs["lock_sha256"] or receipt["input"]["patch_digest"] != inputs["patch_digest"]:
+        fail("generated source receipt is not aligned with authoritative lock and patch inputs")
+    if receipt["source_fingerprint"] != inputs["lock"]["expected_source"]["fingerprint"]:
+        fail("generated source fingerprint is not saved")
+    print("finish guard: source saved")
 
 
 def ensure_build_root() -> None:
@@ -1108,7 +1732,7 @@ def status() -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "status", "command"))
+    parser.add_argument("command", choices=("prepare", "status", "save", "finish-guard", "command"))
     parser.add_argument("name", nargs="?")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -1119,7 +1743,13 @@ def main(argv: list[str]) -> int:
             return run_command(args.name, args.arguments)
         if args.name is not None:
             parser.error(f"{args.command} takes no arguments")
-        result = prepare() if args.command == "prepare" else status()
+        if args.command == "save":
+            result = save()
+        elif args.command == "finish-guard":
+            finish_guard()
+            return 0
+        else:
+            result = prepare() if args.command == "prepare" else status()
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except RecipeError as error:
