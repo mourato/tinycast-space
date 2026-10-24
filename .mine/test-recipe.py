@@ -340,6 +340,7 @@ class Fixture:
     def run(
         self,
         command: str = "prepare",
+        arguments: list[str] | None = None,
         extra_env: dict[str, str] | None = None,
         timeout: float = 120,
     ) -> subprocess.CompletedProcess[str]:
@@ -347,7 +348,7 @@ class Fixture:
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            [sys.executable, str(self.root / ".mine/recipe.py"), command],
+            [sys.executable, str(self.root / ".mine/recipe.py"), command, *(arguments or [])],
             cwd=self.root,
             env=env,
             check=False,
@@ -1259,6 +1260,48 @@ class RecipeTests(unittest.TestCase):
         rebuilt = self.fixture.run()
         self.assertEqual(rebuilt.returncode, 0, rebuilt.stdout + rebuilt.stderr)
         self.assertEqual(self.fixture.source_fingerprint(), json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())["expected_source"]["fingerprint"])
+
+    def test_save_rewrite_requires_flag_keeps_backup_and_rebuilds(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        receipt = self.fixture.receipt()
+        base = str(receipt["source_only_base_checkpoint"])
+        old_tip = str(receipt["managed_tip"])
+        git(self.fixture.source, "branch", "managed-before-rewrite")
+        git(self.fixture.source, "checkout", "--quiet", "--detach", base)
+        source_head = self.fixture.commit_source("rewritten.txt", "rewritten\n", "rewritten source history")
+
+        rejected = self.fixture.run("save")
+        self.assertFailsWith(rejected, "outside managed lineage")
+
+        git(self.fixture.source, "branch", "-D", "managed-before-rewrite")
+        accepted = self.fixture.run("save", ["--rewrite"])
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        saved = json.loads(accepted.stdout)
+        self.assertTrue(saved["exported"])
+        self.assertEqual(saved["source_head"], source_head)
+        backup_ref = f"refs/tinycast/rewritten/{old_tip}"
+        self.assertEqual(git(self.fixture.source, "rev-parse", backup_ref), old_tip)
+
+        repeated = self.fixture.run("save")
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        self.assertFalse(json.loads(repeated.stdout)["exported"])
+
+        shutil.rmtree(self.fixture.source)
+        rebuilt = self.fixture.run()
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stdout + rebuilt.stderr)
+        lock = json.loads((self.fixture.root / ".mine/sources.lock.json").read_text())
+        self.assertEqual(self.fixture.source_fingerprint(), lock["expected_source"]["fingerprint"])
+
+    def test_save_rewrite_rejects_orphan_history(self) -> None:
+        self.assertEqual(self.fixture.run().returncode, 0)
+        git(self.fixture.source, "checkout", "--quiet", "--orphan", "orphan-history")
+        git(self.fixture.source, "rm", "-rf", "--quiet", ".")
+        write(self.fixture.source / "orphan.txt", "orphan\n")
+        git(self.fixture.source, "add", "orphan.txt")
+        git(self.fixture.source, "commit", "--quiet", "-m", "orphan history")
+
+        rejected = self.fixture.run("save", ["--rewrite"])
+        self.assertFailsWith(rejected, "outside source-only lineage")
 
     def test_save_allows_represented_branch_but_rejects_unique_stash(self) -> None:
         self.assertEqual(self.fixture.run().returncode, 0)

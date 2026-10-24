@@ -48,6 +48,7 @@ SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 PATCH_NAME_RE = re.compile(r"^[0-9]{4}-[A-Za-z0-9][A-Za-z0-9._-]*\.patch$")
+REWRITTEN_REF_RE = re.compile(r"^refs/tinycast/rewritten/([0-9a-f]{40})$")
 STAGE_PREFIX = ".source-stage-"
 OLD_PREFIX = ".source-old-"
 BACKUP_PREFIX = ".source-backup-"
@@ -428,6 +429,16 @@ def revision_commit(repo: Path, revision: str) -> str | None:
     return value or None
 
 
+def ensure_rewrite_backup(repo: Path, managed_tip: str) -> None:
+    ref = f"refs/tinycast/rewritten/{managed_tip}"
+    existing = revision_commit(repo, ref)
+    if existing is not None:
+        if existing != managed_tip:
+            fail(f"generated source rewrite backup ref does not preserve {managed_tip}")
+        return
+    run_git(repo, ["update-ref", ref, managed_tip])
+
+
 def stash_is_represented(repo: Path, stash: str, head_fingerprint: str, head: str) -> bool:
     if source_fingerprint(repo, stash) != head_fingerprint:
         return False
@@ -444,7 +455,10 @@ def stash_is_represented(repo: Path, stash: str, head_fingerprint: str, head: st
 def represented_refs(repo: Path, refs: list[str], head: str, head_fingerprint: str) -> list[str]:
     unrepresented: list[str] = []
     for ref in refs:
-        if ref == "refs/stash":
+        backup = REWRITTEN_REF_RE.fullmatch(ref)
+        if backup is not None:
+            represented = revision_commit(repo, ref) == backup.group(1)
+        elif ref == "refs/stash":
             represented = stash_is_represented(repo, ref, head_fingerprint, head)
         else:
             tip = revision_commit(repo, ref)
@@ -454,7 +468,9 @@ def represented_refs(repo: Path, refs: list[str], head: str, head_fingerprint: s
     return unrepresented
 
 
-def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, Any]]:
+def inspect_existing(
+    source: Path, inputs: dict[str, Any], *, allow_rewrite: bool = False
+) -> tuple[dict[str, Any], bool, dict[str, Any]]:
     if source.is_symlink():
         fail("generated source path is a symlink")
     receipt = validate_receipt(source, inputs)
@@ -475,13 +491,27 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
     ignored_status = run_git(source, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]).strip()
     ignored = [line[3:] for line in ignored_status.splitlines() if line.startswith("!! ")]
     refs = [line for line in run_git(source, ["for-each-ref", "--format=%(refname)"]).splitlines() if line]
-    unreachable = run_git(source, ["fsck", "--no-reflogs", "--unreachable"], check=False).strip()
+    head: str | None = None
+    head_is_descendant: bool | None = None
+    if allow_rewrite:
+        head = run_git(source, ["rev-parse", "--verify", "HEAD^{commit}"]).strip()
+        for commit_key in ("source_only_base_checkpoint", "managed_tip"):
+            verify_commit(source, receipt[commit_key], f"receipt.{commit_key}")
+        head_is_descendant = is_ancestor(source, receipt["managed_tip"], head)
+        if not head_is_descendant:
+            if not is_ancestor(source, receipt["source_only_base_checkpoint"], head):
+                fail(f"generated source HEAD is outside source-only lineage: {head}")
+            ensure_rewrite_backup(source, receipt["managed_tip"])
+            refs = [line for line in run_git(source, ["for-each-ref", "--format=%(refname)"]).splitlines() if line]
+    unreachable = run_git(source, ["fsck", "--no-reflogs", "--unreachable", "HEAD", *refs], check=False).strip()
     if any(line.startswith(("unreachable commit ", "unreachable tree ", "unreachable tag ")) for line in unreachable.splitlines()):
         fail("generated source has unreachable Git objects that may contain unexported work")
-    head = run_git(source, ["rev-parse", "--verify", "HEAD^{commit}"]).strip()
-    for commit_key in ("source_only_base_checkpoint", "managed_tip"):
-        verify_commit(source, receipt[commit_key], f"receipt.{commit_key}")
-    if not is_ancestor(source, receipt["managed_tip"], head):
+    if head is None:
+        head = run_git(source, ["rev-parse", "--verify", "HEAD^{commit}"]).strip()
+        for commit_key in ("source_only_base_checkpoint", "managed_tip"):
+            verify_commit(source, receipt[commit_key], f"receipt.{commit_key}")
+        head_is_descendant = is_ancestor(source, receipt["managed_tip"], head)
+    if not head_is_descendant and not allow_rewrite:
         fail(f"generated source HEAD is outside managed lineage: {head}")
     managed_fingerprint = source_fingerprint(source, receipt["managed_tip"])
     if managed_fingerprint != receipt["source_fingerprint"]:
@@ -495,7 +525,7 @@ def inspect_existing(source: Path, inputs: dict[str, Any]) -> tuple[dict[str, An
     local_state = {
         "head": head,
         "head_is_managed": head == receipt["managed_tip"],
-        "head_is_descendant": True,
+        "head_is_descendant": head_is_descendant,
         "worktree_dirty": bool(status),
         "ignored_paths": ignored,
         "refs": refs,
@@ -1340,11 +1370,11 @@ def receipt_bytes(
 
 
 def validate_source_for_save(
-    source: Path, inputs: dict[str, Any]
+    source: Path, inputs: dict[str, Any], *, allow_rewrite: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
     if not source.exists() or source.is_symlink():
         fail("generated source is missing; run make prepare before make save")
-    receipt, _inputs_current, state = inspect_existing(source, inputs)
+    receipt, _inputs_current, state = inspect_existing(source, inputs, allow_rewrite=allow_rewrite)
     if state["worktree_dirty"]:
         fail("generated source has uncommitted, untracked changes; commit product edits first")
     if state["unrepresented_refs"]:
@@ -1475,7 +1505,7 @@ def commit_saved_paths() -> bool:
     return True
 
 
-def save() -> dict[str, Any]:
+def save(*, rewrite: bool = False) -> dict[str, Any]:
     ensure_build_root()
     with RecipeLock(BUILD / ".recipe.lock", "save"):
         recover_save_transaction()
@@ -1485,7 +1515,7 @@ def save() -> dict[str, Any]:
         if any(path for prefix in (STAGE_PREFIX, OLD_PREFIX) for path in BUILD.glob(prefix + "*")):
             fail("source preparation has pending recovery; resolve it before make save")
         validate_patch_directory_for_save(PATCH_DIR)
-        receipt, state, base, head = validate_source_for_save(SOURCE, inputs)
+        receipt, state, base, head = validate_source_for_save(SOURCE, inputs, allow_rewrite=rewrite)
         if head == receipt["managed_tip"]:
             return {"exported": False, "committed": False, "source_head": head}
         initial_patch_tree = directory_digest(PATCH_DIR)
@@ -1508,7 +1538,9 @@ def save() -> dict[str, Any]:
                 or current_inputs["patch_digest"] != inputs["patch_digest"]
             ):
                 fail("authoritative recipe inputs changed during save; previous files were retained")
-            current_receipt, current_state, current_base, current_head = validate_source_for_save(SOURCE, current_inputs)
+            current_receipt, current_state, current_base, current_head = validate_source_for_save(
+                SOURCE, current_inputs, allow_rewrite=rewrite
+            )
             if current_head != head or current_base != base or current_receipt["managed_tip"] != receipt["managed_tip"]:
                 fail("source or recipe inputs changed during save; previous files were retained")
             if current_state["source_fingerprint"] != authored_fingerprint:
@@ -1929,14 +1961,23 @@ def status() -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    rewrite = False
+    normalized_argv = []
+    for argument in argv:
+        if argument == "--rewrite":
+            rewrite = True
+        else:
+            normalized_argv.append(argument)
     parser.add_argument(
         "command",
         choices=("prepare", "status", "save", "finish-guard", "check-space", "update", "command"),
     )
     parser.add_argument("name", nargs="?")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(normalized_argv)
     try:
+        if rewrite and args.command != "save":
+            parser.error("--rewrite is only valid with save")
         if args.command == "command":
             if args.name not in TOOL_COMMANDS:
                 parser.error("command must be one of: " + ", ".join(TOOL_COMMANDS))
@@ -1944,7 +1985,7 @@ def main(argv: list[str]) -> int:
         if args.name is not None:
             parser.error(f"{args.command} takes no arguments")
         if args.command == "save":
-            result = save()
+            result = save(rewrite=rewrite)
         elif args.command == "finish-guard":
             finish_guard()
             return 0

@@ -29,7 +29,7 @@ update:
 	@python3 "$(RECIPE)" update
 
 save:
-	@python3 "$(RECIPE)" save
+	@python3 "$(RECIPE)" save $(if $(filter 1,$(REWRITE)),--rewrite,)
 
 build:
 	@python3 "$(RECIPE)" command build

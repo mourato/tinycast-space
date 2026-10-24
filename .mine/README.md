@@ -30,7 +30,7 @@ Run each from the repository root. [`AGENTS.md`](../AGENTS.md) names the owners.
 | `make install` | Release build, then replaces `/Applications/Tinycast.app` and relaunches it. |
 | `make test` | Runs every harness in `.build/source`. `ARGS=<harness>` runs one. |
 | `make lint` | Lints `.build/source`. `ARGS=--fix` applies the mechanical fixes. |
-| `make save` | Exports committed `.build/source` work to `.mine/patches/` and the lock. |
+| `make save` | Exports committed `.build/source` work to `.mine/patches/` and the lock. `REWRITE=1` permits a rewritten history rooted at the receipt checkpoint. |
 | `make check-space` | Reports Space patch changes since the adopted commit. See [Space radar](#space-radar). Changes nothing. |
 | `make update` | Selects the latest official Tinycast `main`. The release version is the newest reachable `v*` semantic version tag on that commit. |
 | `make recipe-test` | Runs `test-recipe.py`. |
@@ -54,6 +54,11 @@ Artifacts stay in `.build/`: `DerivedData/`, `logs/{debug-build,release-build,te
 checkpoint independently, checks the fingerprint, and publishes the patches, lock and receipt as one
 transaction. Then it commits only `.mine/patches/` and `.mine/sources.lock.json`, with the message
 `mine: save patches`. Other staged entries stay staged.
+
+Use `make save REWRITE=1` when the source history was intentionally reordered, squashed or split. The
+rewritten HEAD must still descend from the receipt's source-only checkpoint; save keeps the previous
+managed tip under `refs/tinycast/rewritten/` before publishing. Without `REWRITE=1`, the existing
+managed-lineage guard remains in force.
 
 Ignored files in `.build/source` survive `save`. They are never exported.
 
@@ -98,6 +103,9 @@ To adopt a Space patch:
 
 ## Recovery
 
+- **Rewriting saved history.** Use `make save REWRITE=1` only for an intentional rewrite rooted at the
+  receipt checkpoint. Save keeps the former managed tip in `.build/source` under
+  `refs/tinycast/rewritten/<old-tip>` so the rewrite remains recoverable.
 - **Save commit failed after publication.** The patches and lock are already published and coherent, but
   they remain staged. Inspect with `git status` and `git diff --cached`. Fix the Git problem, then commit
   only `.mine/patches/` and `.mine/sources.lock.json`. A later `make save` may do nothing, because the
