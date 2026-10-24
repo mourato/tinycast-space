@@ -32,7 +32,7 @@ RECEIPT_NAME = "tinycast-recipe-receipt.json"
 DEFAULT_SIGN_IDENTITY = "Apple Development"
 RELEASE_PRODUCT = "Tinycast.app"
 DEBUG_PRODUCT = "Tinycast Dev.app"
-TOOL_COMMANDS = ("build", "build-debug", "test", "lint")
+TOOL_COMMANDS = ("build", "build-debug", "install", "test", "lint")
 RECEIPT_SCHEMA = 1
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -709,6 +709,28 @@ def build_stage(inputs: dict[str, Any], stage: Path) -> tuple[str, str, str]:
     return base, managed_tip, fingerprint
 
 
+def open_owned_regular(path: Path, label: str, flags: int) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    if not no_follow:
+        fail(f"{label} cannot be opened without following symlinks")
+    try:
+        descriptor = os.open(
+            path,
+            flags | no_follow | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK,
+            0o600,
+        )
+    except OSError as error:
+        fail(f"cannot open {label} safely: {error}")
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            fail(f"{label} is not a private regular file: {path}")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 class RecipeLock:
     def __init__(self, path: Path, operation: str, *, blocking: bool = True) -> None:
         self.path = path
@@ -718,29 +740,8 @@ class RecipeLock:
 
     def __enter__(self) -> "RecipeLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
-        if not no_follow:
-            fail("recipe lock cannot be opened without following symlinks")
-        fd: int | None = None
-        try:
-            fd = os.open(
-                self.path,
-                os.O_RDWR | os.O_CREAT | no_follow | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK,
-                0o600,
-            )
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                fail(f"recipe lock is not a private regular file: {self.path}")
-            self.handle = os.fdopen(fd, "r+", encoding="utf-8")
-            fd = None
-        except RecipeError:
-            if fd is not None:
-                os.close(fd)
-            raise
-        except OSError as error:
-            if fd is not None:
-                os.close(fd)
-            fail(f"cannot open recipe lock safely: {error}")
+        descriptor = open_owned_regular(self.path, "recipe lock", os.O_RDWR | os.O_CREAT)
+        self.handle = os.fdopen(descriptor, "r+", encoding="utf-8")
         flags = fcntl.LOCK_EX
         if not self.blocking:
             flags |= fcntl.LOCK_NB
@@ -887,9 +888,9 @@ def run_logged(command: list[str], log_name: str) -> int:
         fail(".build/logs is a symlink")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / log_name
-    if log_path.is_symlink():
-        fail(f"log path is a symlink: {log_name}")
-    with log_path.open("w", encoding="utf-8") as log:
+    descriptor = open_owned_regular(log_path, f"log {log_name}", os.O_WRONLY | os.O_CREAT)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as log:
+        log.truncate(0)
         log.write(f"$ {' '.join(command)}\n")
         log.flush()
         try:
@@ -964,9 +965,14 @@ def verify_signature(product: Path) -> int:
     return result.returncode
 
 
-def build_source(debug: bool, prepared: dict[str, Any]) -> int:
+def product_path(debug: bool) -> Path:
     configuration = "Debug" if debug else "Release"
-    product_name = DEBUG_PRODUCT if debug else RELEASE_PRODUCT
+    product = DEBUG_PRODUCT if debug else RELEASE_PRODUCT
+    return DERIVED_DATA / "Build" / "Products" / configuration / product
+
+
+def build_source(debug: bool, prepared: dict[str, Any]) -> tuple[int, Path | None]:
+    configuration = "Debug" if debug else "Release"
     if not (SOURCE / "Tinycast.xcodeproj" / "project.pbxproj").is_file():
         fail("generated source has no Tinycast.xcodeproj")
     if DERIVED_DATA.is_symlink():
@@ -1001,16 +1007,31 @@ def build_source(debug: bool, prepared: dict[str, Any]) -> int:
     status = run_logged(command, log_name)
     if status:
         print(f"recipe: {configuration} build failed ({status}); log: {LOG_DIR / log_name}", file=sys.stderr)
-        return status
-    product = DERIVED_DATA / "Build" / "Products" / configuration / product_name
+        return status, None
+    product = product_path(debug)
     if product.is_symlink() or not product.is_dir():
         fail(f"{configuration} build did not produce {product}")
     if not debug:
         status = verify_signature(product)
         if status:
-            return status
+            return status, None
     print(product)
-    return 0
+    return 0, product
+
+
+def run_install(product: Path) -> int:
+    script = MINE / "install.sh"
+    if script.is_symlink() or not script.is_file():
+        fail("install script is missing or is a symlink")
+    status = subprocess.run(
+        ["/bin/bash", str(script), str(product)],
+        cwd=str(ROOT),
+        env=command_env(),
+        check=False,
+    ).returncode
+    if status:
+        print(f"recipe: install failed ({status})", file=sys.stderr)
+    return status
 
 
 def run_project_tool(name: str, arguments: list[str]) -> int:
@@ -1039,7 +1060,14 @@ def run_command(name: str, arguments: list[str]) -> int:
         prepared = prepare_locked()
         report_source(prepared)
         if name in ("build", "build-debug"):
-            return build_source(name == "build-debug", prepared)
+            return build_source(name == "build-debug", prepared)[0]
+        if name == "install":
+            status, product = build_source(False, prepared)
+            if status:
+                return status
+            if product is None:
+                fail("Release build did not produce an installable product")
+            return run_install(product)
         return run_project_tool(name, arguments)
 
 

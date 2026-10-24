@@ -46,7 +46,7 @@ build-debug:
 	@python3 "$(RECIPE)" command build-debug
 
 install:
-	@"$(ROOT)/.mine/install.sh"
+	@python3 "$(RECIPE)" command install
 
 test:
 	@python3 "$(RECIPE)" command test $(ARGS)

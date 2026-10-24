@@ -1,15 +1,11 @@
 #!/bin/bash
-# Builds Release, signed with the local certificate (.mine/recipe.py command build) and replaces
-# /Applications/Tinycast.app. A failed build stops before anything is quit or replaced.
+# Replaces /Applications/Tinycast.app with the signed Release product built by recipe.py, which owns
+# the operation lock and passes the artifact path. A failed build never reaches this script.
 set -euo pipefail
-root="$(cd "$(dirname "$0")/.." && pwd)"
+built="${1:?usage: install.sh <signed Release app>}"
 app="/Applications/Tinycast.app"
-built="$(python3 "$root/.mine/recipe.py" command build | tail -1)"
 
-case "$built" in
-  "$root"/.build/DerivedData/Build/Products/Release/Tinycast.app) ;;
-  *) echo "unexpected build artifact: ${built:-none}" >&2; exit 1 ;;
-esac
+[ -d "$built" ] || { echo "missing build artifact: $built" >&2; exit 1; }
 
 echo "quitting running Tinycast"
 osascript -e 'quit app id "com.tinycast.app"' 2> /dev/null || true

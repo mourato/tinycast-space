@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,7 @@ class Fixture:
         (mine / "patches").mkdir(parents=True)
         shutil.copy2(RECIPE, mine / "recipe.py")
         shutil.copy2(SOURCE_TREE, mine / "source-tree.sh")
+        shutil.copy2(HERE / ".mine" / "install.sh", mine / "install.sh")
         self.processes: list[subprocess.Popen[str]] = []
         self.tools = self.root / "test-tools"
         self.logs = self.root / "tool-logs"
@@ -154,6 +156,7 @@ class Fixture:
             "product=Tinycast.app\n"
             "[ \"$configuration\" = Debug ] && product='Tinycast Dev.app'\n"
             "mkdir -p \"$dd/Build/Products/$configuration/$product\"\n"
+            "if [ -n \"${RECIPE_TEST_INSTALL_ORDER:-}\" ]; then printf 'xcodebuild\\n' >> \"$RECIPE_TEST_INSTALL_ORDER\"; fi\n"
             "exit \"${RECIPE_TEST_XCODEBUILD_STATUS:-0}\"\n",
             0o755,
         )
@@ -174,6 +177,32 @@ class Fixture:
             "exit \"${RECIPE_TEST_CODESIGN_STATUS:-0}\"\n",
             0o755,
         )
+        for tool, status, default in (
+            ("osascript", "RECIPE_TEST_OSASCRIPT_STATUS", "0"),
+            ("pgrep", "RECIPE_TEST_PGREP_STATUS", "1"),
+            ("rm", "RECIPE_TEST_RM_STATUS", "0"),
+            ("ditto", "RECIPE_TEST_DITTO_STATUS", "0"),
+            ("open", "RECIPE_TEST_OPEN_STATUS", "0"),
+        ):
+            handshake = ""
+            if tool == "osascript":
+                handshake = (
+                    "if [ \"${RECIPE_TEST_INSTALL_HANDSHAKE:-0}\" = 1 ]; then\n"
+                    "  \"${RECIPE_TEST_HELPER:?}\" -c 'import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ[\"RECIPE_TEST_SOCKET\"]); s.sendall(b\"ready\\n\"); s.recv(1); s.close()'\n"
+                    "fi\n"
+                )
+            write(
+                self.tools / tool,
+                "#!/bin/bash\n"
+                "set -eu\n"
+                "{\n"
+                f"  printf 'tool={tool}\\n'\n"
+                "  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n"
+                "} >> \"${RECIPE_TEST_INSTALL_LOG:?}\"\n"
+                f"if [ -n \"${{RECIPE_TEST_INSTALL_ORDER:-}}\" ]; then printf '{tool}\\n' >> \"$RECIPE_TEST_INSTALL_ORDER\"; fi\n"
+                f"{handshake}exit \"${{{status}:-{default}}}\"\n",
+                0o755,
+            )
 
     def _tag_recipe_root(self) -> None:
         self._init(self.root)
@@ -308,6 +337,7 @@ class Fixture:
             "RECIPE_TEST_SECURITY_LOG": str(self.logs / "security.log"),
             "RECIPE_TEST_CODESIGN_LOG": str(self.logs / "codesign.log"),
             "RECIPE_TEST_SCRIPT_LOG": str(self.logs / "project-script.log"),
+            "RECIPE_TEST_INSTALL_LOG": str(self.logs / "install.log"),
             "RECIPE_TEST_IDENTITY_HASH": IDENTITY_HASH,
             "RECIPE_TEST_SECOND_IDENTITY": SECOND_IDENTITY_HASH,
         }
@@ -721,6 +751,125 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 7, failed.stdout + failed.stderr)
         self.assertEqual(failed.stdout.strip(), "")
         self.assertIn("Release build failed (7)", failed.stderr)
+
+    def test_build_log_alias_is_rejected_before_truncation(self) -> None:
+        self.assertEqual(self.fixture.command("build-debug").returncode, 0)
+        log_path = self.fixture.root / ".build/logs/debug-build.log"
+        tool_log = self.fixture.logs / "xcodebuild.log"
+        sentinel = self.fixture.root / "outside-log-target.txt"
+        original = b"preserve unrelated user data\n"
+        sentinel.write_bytes(original)
+        log_path.unlink()
+        for variant in ("symlink", "hardlink"):
+            if variant == "symlink":
+                log_path.symlink_to(sentinel)
+            else:
+                os.link(sentinel, log_path)
+            tool_log.unlink(missing_ok=True)
+            result = self.fixture.command("build-debug")
+            self.assertFailsWith(result, "debug-build.log")
+            self.assertEqual(sentinel.read_bytes(), original)
+            self.assertFalse(tool_log.exists())
+            log_path.unlink()
+        rebuilt = self.fixture.command("build-debug")
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stdout + rebuilt.stderr)
+        self.assertTrue(log_path.is_file())
+        self.assertIn("$ xcodebuild", log_path.read_text())
+
+    def test_install_builds_and_installs_under_recipe_lock(self) -> None:
+        result = self.fixture.command("install")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("locked 1.2.3", result.stderr)
+        product = (
+            self.fixture.root / ".build/DerivedData/Build/Products/Release/Tinycast.app"
+        ).resolve()
+        self.assertTrue(product.is_dir())
+        log = (self.fixture.logs / "install.log").read_text()
+        self.assertIn('tool=osascript\narg=-e\narg=quit app id "com.tinycast.app"\n', log)
+        self.assertIn("tool=rm\narg=-rf\narg=/Applications/Tinycast.app\n", log)
+        self.assertIn(f"tool=ditto\narg={product}\narg=/Applications/Tinycast.app\n", log)
+        self.assertIn("tool=open\narg=/Applications/Tinycast.app\n", log)
+        self.assertIn("installed /Applications/Tinycast.app", result.stdout)
+
+    def test_install_build_failure_skips_app_tools(self) -> None:
+        result = self.fixture.command("install", extra_env={"RECIPE_TEST_XCODEBUILD_STATUS": "7"})
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Release build failed (7)", result.stderr)
+        self.assertFalse((self.fixture.logs / "install.log").exists())
+
+    def test_install_holds_lock_until_worker_finishes(self) -> None:
+        handshake_dir = Path(tempfile.mkdtemp(prefix="tc-install-handshake-", dir=tempfile.gettempdir()))
+        handshake = handshake_dir / "s"
+        order = self.fixture.logs / "install-order.log"
+        server: socket.socket | None = None
+        connection: socket.socket | None = None
+        install: subprocess.Popen[str] | None = None
+        second: subprocess.Popen[str] | None = None
+        try:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(handshake))
+            server.listen(1)
+            server.settimeout(20)
+            ordered = {"RECIPE_TEST_INSTALL_ORDER": str(order)}
+            install = self.fixture.start_command(
+                "install",
+                extra_env={
+                    **ordered,
+                    "RECIPE_TEST_INSTALL_HANDSHAKE": "1",
+                    "RECIPE_TEST_HELPER": sys.executable,
+                    "RECIPE_TEST_SOCKET": str(handshake),
+                },
+            )
+            connection, _ = server.accept()
+            connection.settimeout(20)
+            self.assertEqual(connection.recv(6), b"ready\n")
+
+            product = (
+                self.fixture.root / ".build/DerivedData/Build/Products/Release/Tinycast.app"
+            ).resolve()
+            self.assertTrue(product.is_dir())
+            lock_path = self.fixture.root / ".build/.recipe.lock"
+            with lock_path.open("r+") as handle:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            status = self.fixture.run("status")
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+            self.assertTrue(json.loads(status.stdout)["operation_busy"])
+            self.assertEqual(order.read_text().splitlines(), ["xcodebuild", "osascript"])
+            self.assertNotIn("tool=rm", (self.fixture.logs / "install.log").read_text())
+
+            second = self.fixture.start_command("build-debug", extra_env=ordered)
+            self.assertIsNone(second.poll())
+            connection.sendall(b"release")
+            install_stdout, install_stderr = install.communicate(timeout=120)
+            second_stdout, second_stderr = second.communicate(timeout=120)
+            self.assertEqual(install.returncode, 0, install_stdout + install_stderr)
+            self.assertEqual(second.returncode, 0, second_stdout + second_stderr)
+
+            tools = [entry for entry in order.read_text().splitlines() if entry != "pgrep"]
+            self.assertEqual(
+                tools,
+                ["xcodebuild", "osascript", "rm", "ditto", "open", "xcodebuild"],
+            )
+            settled = self.fixture.run("status")
+            self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
+            self.assertFalse(json.loads(settled.stdout)["operation_busy"])
+        finally:
+            for process in (install, second):
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+            if connection is not None:
+                connection.close()
+            if server is not None:
+                server.close()
+            shutil.rmtree(handshake_dir, ignore_errors=True)
 
     def test_test_and_lint_inherit_source_scripts_and_preserve_status(self) -> None:
         test = self.fixture.command("test", ["calc-test"], cwd=Path("/"))
