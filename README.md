@@ -21,6 +21,8 @@ in [`.mine/sources.lock.json`](.mine/sources.lock.json).
 
 - macOS 26 or later, with the Xcode version the pinned source requires.
 - Git, Python 3, Node with `npx`, and XcodeGen.
+- SwiftLint on `PATH` for `make lint`. Install it yourself, for example with `brew install swiftlint`.
+  `Scripts/lint.sh` in `.build/source` stops with an install hint when it is missing.
 - Network access for `make prepare`.
 - For `make build` and `make install` only: a code-signing identity that matches `TINYCAST_SIGN_IDENTITY`
   (default `Apple Development`). `make build-debug` is unsigned.
@@ -50,7 +52,10 @@ Updates are intentional. Nothing updates on its own.
 
 - `make check-space` reports the current and available pins. It changes nothing.
 - `make update` selects the latest official Tinycast `main` and Space's maintained snapshot.
-- `make sync` selects Space's maintained snapshot and the upstream release it records.
+- `make sync` selects Space's maintained snapshot and the upstream commit that its `.space/UPSTREAM`
+  records. That commit must be reachable from official `main`.
+- Both resolve the release version as the newest reachable semantic version tag (`v*`) on the selected
+  upstream commit.
 
 Both validate a complete candidate before they change anything. Each changes only
 `.mine/sources.lock.json`. Review that diff and commit it. The existing `.build/source` stays as it was

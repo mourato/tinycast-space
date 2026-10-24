@@ -9,7 +9,8 @@ It is not a supported distribution of Tinycast, and it makes no response or supp
   [abue-ammar/tinycast](https://github.com/abue-ammar/tinycast), through its own security policy. After
   `make prepare`, that policy is in `.build/source/SECURITY.md`.
 - **This recipe**: the pins, the patches, `Makefile` and `.mine/`. Do not open a public issue or pull
-  request. Report it privately to the repository owner, and include the affected file, the command and
+  request. If this repository offers private vulnerability reporting, use it. Otherwise, arrange a private
+  channel with the repository owner before you share details. Include the affected file, the command and
   the impact.
 
 ## Scope

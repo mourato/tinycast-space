@@ -12,8 +12,10 @@ Review rules for changes to this repository. They add to the shared standards at
   restate either in other files. Link to them.
 - **Document only what the code does.** Each path, target and name in a doc must exist. Check it before
   you commit.
-- **No generated file is edited by hand.** That covers the lock, `.mine/patches/` and anything under
-  `.build/`.
+- **Export-owned and build-owned files are not edited by hand.** That covers `.mine/sources.lock.json`,
+  `.mine/patches/`, the prepare receipt, the save journal, and the build outputs under `.build/`, such as
+  DerivedData and logs. Product edits in `.build/source` are normal work: commit them there, then run
+  `make save`. Generated resources inside `.build/source` follow its `AGENTS.md`.
 - **Keep data safe.** Do not add a command or instruction that deletes `.build/source`, a
   `.source-backup-*` directory or a save journal. Such removal needs an explicit decision.
 - **Config is strict JSON.** No comments and no trailing commas in `.vscode/` or other JSON files.

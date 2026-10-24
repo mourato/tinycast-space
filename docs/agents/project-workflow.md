@@ -12,9 +12,11 @@ run.
   with a recipe change, and run `make recipe-test` after.
 - Do not hand-edit `.mine/sources.lock.json` or `.mine/patches/`. Use `make update`, `make sync` or
   `make save`.
-- Do not hand-edit `.build/source`. Commit product changes there, then export them with `make save`.
-- Product behaviour is out of scope for this repository. Product tests, lint rules and invariants belong
-  to `.build/source`.
+- Edit product code in `.build/source` directly. Commit product changes there, then export them with
+  `make save`. A dirty source is not exportable.
+- Product behaviour is owned by `.build/source`: its tests, lint rules and invariants live there. Exported
+  product patches are part of this repository's purpose. Recipe changes (`Makefile`, `.mine/`, docs) are
+  root commits and stay separate from those patches.
 
 ## Ownership and save lifecycle
 

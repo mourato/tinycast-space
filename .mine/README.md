@@ -32,7 +32,7 @@ Run each from the repository root. [`AGENTS.md`](../AGENTS.md) names the owners.
 | `make save` | Exports committed `.build/source` work to `.mine/patches/` and the lock. |
 | `make check-space` | Reads the current and available Space pins. Changes nothing. |
 | `make update` | Selects the latest official Tinycast `main` and Space's maintained snapshot. |
-| `make sync` | Selects Space's maintained snapshot and the upstream release it records. |
+| `make sync` | Selects Space's maintained snapshot and the upstream commit its `.space/UPSTREAM` records. The release version is the newest reachable `v*` semantic version tag on that commit. |
 | `make recipe-test` | Runs `test-recipe.py`. |
 | `make finish-task` | Integrates the current task branch. See [Integration](#integration). |
 | `make prune-derived` | Lists stale legacy DerivedData. `ARGS=--apply` removes it. |
@@ -82,8 +82,25 @@ not apply stops `prepare`, and the previously published source stays in place.
 - **`.source-backup-*` directories.** Each source replacement keeps its predecessor here, including
   ignored files and local Git metadata. These can hold unsaved work. Keep them until you have saved or
   copied out anything you need.
-- **Prepare refuses changed inputs while source work is unexported.** Commit the work in
-  `.build/source`, run `make save`, then run `make prepare`.
+- **Prepare refuses changed inputs while source work is unexported.** `make prepare` fails when the lock
+  or patches changed and `.build/source` has unexported commits. Export before you change the inputs:
+  commit the work in `.build/source`, run `make save`, then run `make update` or `make sync`, and run
+  `make prepare`.
+- **Save refuses stale inputs.** `make save` rejects a source whose receipt records a different lock or
+  patch digest. Committing source work does not clear this. Keep `.build/source`, its refs and every
+  `.source-backup-*` directory. Then reconcile the inputs:
+  1. Run `make status` and check `inputs_current`.
+  2. Read `input.lock_sha256`, `input.patch_digest` and the top-level `patches` list (name and
+     `sha256` per file) from `.git/tinycast-recipe-receipt.json` in `.build/source`.
+  3. Find the commit whose `.mine/sources.lock.json` and `.mine/patches/` match them. Check the lock
+     with `git show <commit>:.mine/sources.lock.json | shasum -a 256`, and each patch the same way.
+  4. Copy any uncommitted lock or patch edits aside. `git restore --source <commit>` overwrites them.
+  5. Run `git restore --source <commit> -- .mine/sources.lock.json .mine/patches`, then `make save`.
+  6. Reapply the intended pin change with `make update` or `make sync`, then run `make prepare`. Do not
+     copy the saved lock or patches back: `make save` just rewrote both.
+
+  If no committed input set matches the receipt, stop. Do not reset `main`, re-tag, or delete the
+  receipt or backups to force a save.
 
 ## Integration
 

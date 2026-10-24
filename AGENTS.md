@@ -21,23 +21,26 @@ Product invariants live in `.build/source/AGENTS.md` and its `docs/`. This file 
 
 ## Read first
 
-- [docs/agents/project-workflow.md](docs/agents/project-workflow.md): lifecycle, artifacts, validation.
-- [CODING_STANDARDS.md](CODING_STANDARDS.md): review rules for recipe changes.
-- [.mine/README.md](.mine/README.md): command reference and recovery.
+- Before a change to lifecycle, artifacts, or validation, read
+  [docs/agents/project-workflow.md](docs/agents/project-workflow.md).
+- Before a review of recipe changes, read [CODING_STANDARDS.md](CODING_STANDARDS.md).
+- Before a command, a pin update, or a save recovery, read [.mine/README.md](.mine/README.md).
 
-## Owners
+## Canonical abstractions
 
-Each concept has one owner. Do not add a second.
+Each invariant has one owner. Do not add a second. Run `make recipe-test` after any change to these
+owners.
 
-- **Pins:** `.mine/sources.lock.json`. `load_lock` in `.mine/recipe.py` reads it. It names the upstream,
-  the Space snapshot and the expected source fingerprint.
-- **Source fingerprint:** `source_fingerprint` in `.mine/recipe.py`. It hashes the tracked source tree,
-  excluding `.mine/` and `Makefile`. Lock and receipt must agree on it.
-- **Prepare receipt:** `tinycast-recipe-receipt.json` in the source's `.git` directory, written by
-  `receipt_bytes` and checked by `validate_receipt`.
-- **Operation lock:** `RecipeLock` on `.build/.recipe.lock`. Prepare, build, test, lint, install, save,
-  sync, update and check-space take it. `status` tries it without blocking and reports a busy operation.
-- **Save:** `save` in `.mine/recipe.py` is the only path from `.build/source` to `.mine/patches/` and the
-  lock.
-
-Tests that enforce these owners: `.mine/test-recipe.py`, run with `make recipe-test`.
+- Pins: `load_lock` in `.mine/recipe.py`; use instead of parsing `.mine/sources.lock.json` directly;
+  enforced by `test_malformed_lock_and_symlink_are_rejected` in `.mine/test-recipe.py`.
+- Source fingerprint: `source_fingerprint` in `.mine/recipe.py`; use instead of hashing the source tree
+  by hand; enforced by `test_prepare_materializes_new_pin_then_save_preserves_fingerprint`.
+- Prepare receipt: `receipt_bytes` writes and `validate_receipt` checks `tinycast-recipe-receipt.json`
+  in the source's `.git` directory; use instead of editing it; enforced by
+  `test_missing_receipt_and_non_descendant_source_are_rejected`.
+- Operation lock: `RecipeLock` on `.build/.recipe.lock`; use instead of running an operation without it;
+  enforced by `test_install_holds_lock_until_worker_finishes` and
+  `test_command_reuses_dirty_source_and_holds_lock_during_tool`.
+- Save: `save` in `.mine/recipe.py`; use instead of exporting patches or copying files into
+  `.mine/patches/` by hand; enforced by `test_save_exports_committed_source_and_preserves_unrelated_index`
+  and `test_save_rejects_dirty_source_and_stale_authoritative_inputs`.
