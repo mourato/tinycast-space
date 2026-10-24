@@ -181,10 +181,10 @@ index 7cdca906..153d1167 100644
          case .text:
              // Collapse whitespace so a multi-line copy stays a clean one-line title.
 diff --git a/Tinycast/Palette/PaletteState.swift b/Tinycast/Palette/PaletteState.swift
-index 70f0f448..e4e47b6d 100644
+index 50abf13b..53ab6634 100644
 --- a/Tinycast/Palette/PaletteState.swift
 +++ b/Tinycast/Palette/PaletteState.swift
-@@ -33,6 +33,8 @@ final class PaletteState {
+@@ -27,6 +27,8 @@ final class PaletteState {
      var emojiCategoryFilter: EmojiCategoryFilter = .all
      /// Nil means the configured default; zoom only overrides it for this picker session.
      var emojiGridColumnsOverride: EmojiGridColumns?
@@ -193,7 +193,7 @@ index 70f0f448..e4e47b6d 100644
      /// Ordering out leaves the SwiftUI tree mounted, so a media preview needs this to stop playing.
      private(set) var isVisible = false
      /// Changes every time the palette is shown so the search field can re-focus.
-@@ -89,6 +91,8 @@ final class PaletteState {
+@@ -83,6 +85,8 @@ final class PaletteState {
  
      func noteVisible(_ visible: Bool) {
          isVisible = visible
@@ -201,9 +201,9 @@ index 70f0f448..e4e47b6d 100644
 +        if !visible { quickLook = false }
      }
  
-     var canGoBack: Bool { !backStack.isEmpty || isInFileSearchFolder }
-@@ -167,6 +171,7 @@ final class PaletteState {
-         fileSearchFolder = nil
+     var canGoBack: Bool { !backStack.isEmpty }
+@@ -159,6 +163,7 @@ final class PaletteState {
+         fileSearchFilter = .all
          emojiCategoryFilter = .all
          emojiGridColumnsOverride = nil
 +        quickLook = false
@@ -226,10 +226,10 @@ index 81862540..45979d44 100644
          // Handled at the panel: the field editor or a missing main menu eats these first.
          panel.onCommandShortcut = { [weak self] event in
 diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
-index 996ad2e6..9e5e5141 100644
+index 7d4e26df..4316899f 100644
 --- a/Tinycast/Palette/RootPaletteView.swift
 +++ b/Tinycast/Palette/RootPaletteView.swift
-@@ -430,6 +430,7 @@ struct RootPaletteView: View {
+@@ -426,6 +426,7 @@ struct RootPaletteView: View {
                  vm.fileSearchFilter = .all
                  vm.emojiCategoryFilter = .all
                  vm.emojiGridColumnsOverride = nil

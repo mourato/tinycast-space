@@ -64,22 +64,22 @@ index 9216b1d0..8ab23773 100644
                  rows.append(.header(bucket.title))
                  currentBucket = bucket
 diff --git a/Tinycast/Features/Clipboard/UI/ClipboardView.swift b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
-index a6f9ec51..05ff0dd8 100644
+index 9542493f..173ea9dd 100644
 --- a/Tinycast/Features/Clipboard/UI/ClipboardView.swift
 +++ b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
-@@ -37,8 +37,10 @@ struct ClipboardList: View {
+@@ -36,8 +36,10 @@ struct ClipboardList: View {
+     private var rows: [Row] {
          var rows: [Row] = []
          var currentTitle: String?
-         var pinnedSlot = 0
 +        let buckets = DateBucket.Boundaries()
-         for item in results {
+         for (index, item) in results.enumerated() {
 -            let title = item.isPinned ? String(localized: "Pinned") : DateBucket(for: item.createdAt).title
 +            let title =
 +                item.isPinned ? String(localized: "Pinned") : buckets.bucket(for: item.createdAt).title
              if title != currentTitle {
                  rows.append(.header(title))
                  currentTitle = title
-@@ -109,17 +111,33 @@ enum DateBucket: Int {
+@@ -110,17 +112,33 @@ enum DateBucket: Int {
          }
      }
  

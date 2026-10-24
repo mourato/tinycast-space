@@ -19,10 +19,10 @@ Origin: tinycast-space 0026-update-check-errors.patch @ ffccfc3
  6 files changed, 114 insertions(+), 25 deletions(-)
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index 53fba69e..29fbb818 100755
+index 50301cec..85c508c9 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -722,6 +722,7 @@ run updates-test           Tinycast/Features/Updates/Model/*.swift \
+@@ -728,6 +728,7 @@ run updates-test           Tinycast/Features/Updates/Model/*.swift \
                             Tinycast/Features/Updates/Service/BundleSignature.swift
  run update-check-test      Tinycast/Features/Updates/Model/*.swift \
                             Tinycast/Features/Updates/Service/UpdateCheckStore.swift \

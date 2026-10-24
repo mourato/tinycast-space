@@ -23,7 +23,7 @@ Origin: tinycast-space 0018-entry-deeplinks.patch @ ffccfc3
  create mode 100644 Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index ea20838d..b638ebfc 100755
+index b35d7c3c..7f33c402 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
 @@ -128,6 +128,7 @@ run app-name-test          Tinycast/Platform/AppDisplayName.swift \

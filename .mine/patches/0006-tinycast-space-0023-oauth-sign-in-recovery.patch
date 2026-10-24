@@ -104,10 +104,10 @@ index db23b69a..fb01aae8 100644
      const error = params.get("error");
      if (error) throw new Error(params.get("error_description") ?? error);
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index b638ebfc..53fba69e 100755
+index ea20838d..cd046035 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -667,6 +667,7 @@ run ext-accessory-test     $E/Model/RenderNode.swift \
+@@ -666,6 +666,7 @@ run ext-accessory-test     $E/Model/RenderNode.swift \
                             $E/Model/ExtensionPickerItem.swift \
                             $E/Model/ExtensionSearchAccessory.swift \
                             $E/Service/ExtensionStorage.swift

@@ -618,7 +618,7 @@ index e44e2231..3c3a0501 100644
          if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
          // Re-scan on open so an app uninstalled since the last scan drops out of the launcher.
 diff --git a/Tinycast/Palette/PaletteState.swift b/Tinycast/Palette/PaletteState.swift
-index 50abf13b..70f0f448 100644
+index 53ab6634..e4e47b6d 100644
 --- a/Tinycast/Palette/PaletteState.swift
 +++ b/Tinycast/Palette/PaletteState.swift
 @@ -24,6 +24,12 @@ final class PaletteState {
@@ -634,8 +634,8 @@ index 50abf13b..70f0f448 100644
      var emojiCategoryFilter: EmojiCategoryFilter = .all
      /// Nil means the configured default; zoom only overrides it for this picker session.
      var emojiGridColumnsOverride: EmojiGridColumns?
-@@ -85,7 +91,7 @@ final class PaletteState {
-         isVisible = visible
+@@ -89,7 +95,7 @@ final class PaletteState {
+         if !visible { quickLook = false }
      }
  
 -    var canGoBack: Bool { !backStack.isEmpty }
@@ -643,7 +643,7 @@ index 50abf13b..70f0f448 100644
  
      func prepare(mode: PaletteMode) {
          backStack.removeAll()
-@@ -114,6 +120,7 @@ final class PaletteState {
+@@ -118,6 +124,7 @@ final class PaletteState {
      }
  
      func pop(preservingSelection: Bool = false) -> Bool {
@@ -651,15 +651,15 @@ index 50abf13b..70f0f448 100644
          guard let frame = backStack.popLast() else { return false }
          openScreen(frame.mode)
          clipboardFilter = frame.clipboardFilter
-@@ -157,6 +164,7 @@ final class PaletteState {
+@@ -161,6 +168,7 @@ final class PaletteState {
          argumentEntryID = nil
          clipboardFilter = .all
          fileSearchFilter = .all
 +        fileSearchFolder = nil
          emojiCategoryFilter = .all
          emojiGridColumnsOverride = nil
-         forceExpanded = false
-@@ -251,3 +259,18 @@ final class PaletteState {
+         quickLook = false
+@@ -256,3 +264,18 @@ final class PaletteState {
          hoverDisarmToken = UUID()
      }
  }

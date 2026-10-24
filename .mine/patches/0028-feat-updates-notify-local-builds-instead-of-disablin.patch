@@ -14,11 +14,10 @@ newer releases are offered.
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
 ---
  Tinycast/Features/Updates/Model/ReleaseFeed.swift  |  5 +++++
- .../Updates/Service/UpdateCheckStore.swift         |  4 +---
  .../Features/Updates/UI/UpdateCoordinator.swift    | 12 +++++++++++-
  .../Features/Updates/UI/UpdateWindowView.swift     | 14 +++++++++++---
  docs/features/updates.md                           |  5 +++++
- 5 files changed, 33 insertions(+), 7 deletions(-)
+ 4 files changed, 32 insertions(+), 4 deletions(-)
 
 diff --git a/Tinycast/Features/Updates/Model/ReleaseFeed.swift b/Tinycast/Features/Updates/Model/ReleaseFeed.swift
 index a68d9e5a..5d28d042 100644
@@ -36,21 +35,6 @@ index a68d9e5a..5d28d042 100644
      /// The release worth offering: strictly newer than what runs, and not skipped.
      static func offer(
          _ release: AvailableRelease?, running: AppVersion, skipped: AppVersion?
-diff --git a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-index 50a342ed..d6c31356 100644
---- a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-+++ b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
-@@ -37,9 +37,7 @@ final class UpdateCheckStore {
-     @ObservationIgnored private var pump: Task<Void, Never>?
- 
-     init(
--        // mourato: builds of this fork are installed locally and never update themselves, so a
--        // Space release never replaces them. Rebuild with `make update` / `make install`.
--        channel: ReleaseChannel = .development,
-+        channel: ReleaseChannel = ReleaseChannel(bundleID: Bundle.main.bundleIdentifier),
-         runningVersion: AppVersion? = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
-             .flatMap(AppVersion.init),
-         fileURL: URL = AppPaths.caches().appendingPathComponent("update-check.json"),
 diff --git a/Tinycast/Features/Updates/UI/UpdateCoordinator.swift b/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
 index 7ead406f..48df8b94 100644
 --- a/Tinycast/Features/Updates/UI/UpdateCoordinator.swift

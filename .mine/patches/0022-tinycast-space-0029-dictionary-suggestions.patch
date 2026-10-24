@@ -25,7 +25,7 @@ Origin: tinycast-space 0029-dictionary-suggestions.patch @ ffccfc3
  create mode 100644 Tinycast/Features/Dictionary/UI/DictionarySuggestionsView.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index 29fbb818..d00d4db1 100755
+index 7f33c402..50301cec 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
 @@ -343,6 +343,12 @@ run fallback-test          Tinycast/Features/Launcher/Model/Fallback.swift \

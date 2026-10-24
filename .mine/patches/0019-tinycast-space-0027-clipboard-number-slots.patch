@@ -88,19 +88,17 @@ index b03c2d67..7cdca906 100644
          }
          core.clipboardCoordinator.activate(item)
 diff --git a/Tinycast/Features/Clipboard/UI/ClipboardView.swift b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
-index 05ff0dd8..173ea9dd 100644
+index a6f9ec51..9542493f 100644
 --- a/Tinycast/Features/Clipboard/UI/ClipboardView.swift
 +++ b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
-@@ -36,17 +36,18 @@ struct ClipboardList: View {
+@@ -36,15 +36,16 @@ struct ClipboardList: View {
      private var rows: [Row] {
          var rows: [Row] = []
          var currentTitle: String?
 -        var pinnedSlot = 0
-         let buckets = DateBucket.Boundaries()
 -        for item in results {
 +        for (index, item) in results.enumerated() {
-             let title =
-                 item.isPinned ? String(localized: "Pinned") : buckets.bucket(for: item.createdAt).title
+             let title = item.isPinned ? String(localized: "Pinned") : DateBucket(for: item.createdAt).title
              if title != currentTitle {
                  rows.append(.header(title))
                  currentTitle = title

@@ -11,7 +11,8 @@ Origin: tinycast-space 0019-clipboard-image-files.patch @ ffccfc3
  Tests/clipboard-test.swift                    |  9 ++++++++
  .../Clipboard/Model/ClipboardFilter.swift     |  4 ++--
  .../Clipboard/Model/ClipboardStore.swift      | 21 +++++++++++++++++--
- 4 files changed, 32 insertions(+), 5 deletions(-)
+ docs/features/clipboard.md                    |  4 +++-
+ 5 files changed, 35 insertions(+), 6 deletions(-)
 
 diff --git a/Tests/clipboard-search-test.swift b/Tests/clipboard-search-test.swift
 index f356c51f..fedb8ddb 100644
@@ -109,6 +110,21 @@ index 3cfdd18d..501b5f4f 100644
          let columns = "i.id, i.kind, i.text, i.image_path, i.created_at, i.source_app, i.pinned_at"
          let sql =
              isShort
+diff --git a/docs/features/clipboard.md b/docs/features/clipboard.md
+index c0d4bfc7..1c82ee44 100644
+--- a/docs/features/clipboard.md
++++ b/docs/features/clipboard.md
+@@ -291,7 +291,9 @@ the way back out.
+ `ClipboardFilter` owns the seven cases and everything the UI needs from them — title, glyph, and the
+ `emptyMessage` that stops "Clipboard history is empty" from appearing over a history that only looks
+ empty. The cases are **exclusive**: a copied URL is a link, not a narrower kind of text, so *Text
+-Only* means prose, and *Colors Only* takes `#FF5733` out of it.
++Only* means prose, and *Colors Only* takes `#FF5733` out of it. An image file copied in Finder is
++an image: *Images Only* takes it by extension, and *Files Only* leaves it out. The OCR search
++applies the same rule in SQL, through the `is_image_file` function that `isImageFile` shares.
+ 
+ `ClipboardItem.textForm` derives `plain`/`color`/`link`/`email` from the text on demand — nil for an
+ image.
 -- 
 2.56.0
 

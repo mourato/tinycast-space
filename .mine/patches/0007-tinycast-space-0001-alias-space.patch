@@ -9,12 +9,13 @@ Content-Transfer-Encoding: 8bit
 An exact, case-sensitive user alias + Space opens its entry: rows with inline arguments focus the first unanswered field (or the first field, when every one is optional); an extension view command whose arguments are all optional opens instead, so what follows lands in its own search bar (`brew` → Search Homebrew); everything else runs (apps and settings panes keep searching). A backslash right before the Space escapes it into a plain space. It fires only with the caret at the end of the query and nothing selected (read from the field editor), so a Space typed mid-query stays a space (idea from [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/4141ac68)).
 
 Origin: tinycast-space 0001-alias-space.patch @ ffccfc3
+Origin: tinycast-space 0015-alias-tab.patch @ ffccfc3
 ---
- Tinycast/Palette/RootPaletteView.swift | 85 +++++++++++++++++++++++++-
- 1 file changed, 84 insertions(+), 1 deletion(-)
+ Tinycast/Palette/RootPaletteView.swift | 86 +++++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 1 deletion(-)
 
 diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
-index 6ae0d566..fd4143ae 100644
+index 6ae0d566..47bc0a99 100644
 --- a/Tinycast/Palette/RootPaletteView.swift
 +++ b/Tinycast/Palette/RootPaletteView.swift
 @@ -595,6 +595,8 @@ struct RootPaletteView: View {
@@ -22,7 +23,7 @@ index 6ae0d566..fd4143ae 100644
                  return .handled
              }
 +            // tinycast-space: the alias jump. Later in the chain is asked first; see `aliasKeyPress`.
-+            .onKeyPress(keys: [.space], phases: .down) { aliasKeyPress($0) }
++            .onKeyPress(keys: [.space, .tab], phases: .down) { aliasKeyPress($0) }
              .modifier(
                  ExtensionShortcutKeys(
                      screen: { menuOpen ? nil : screen as? ExtensionCommandScreen }, selection: sel)
@@ -36,18 +37,19 @@ index 6ae0d566..fd4143ae 100644
          else { return }
          argumentFocused = field
          searchFocused = false
-@@ -1471,6 +1474,86 @@ struct RootPaletteView: View {
+@@ -1471,6 +1474,87 @@ struct RootPaletteView: View {
  
  }
  
-+// tinycast-space: typing a user alias exactly and pressing Space opens its entry, the way Raycast
-+// does. Kept out of the view, so upstream's code only carries the one line in `keyHandlers` that
-+// calls in and the fallback in `focusPendingArgument`.
++// tinycast-space: typing a user alias exactly and pressing Space or Tab opens its entry, the way
++// Raycast does. Kept out of the view, so upstream's code only carries the one line in
++// `keyHandlers` that calls in and the fallback in `focusPendingArgument`.
 +extension RootPaletteView {
 +    /// A row with inline arguments gets its first field focused; anything else runs, so further
 +    /// typing lands in the command's own search field. Apps and settings panes keep searching,
 +    /// since "tg something" is more often a query. Hooked after upstream's own key handlers: of
-+    /// one view's `onKeyPress` handlers, the one later in the chain is asked first.
++    /// one view's `onKeyPress` handlers, the one later in the chain is asked first, so Tab on an
++    /// alias reaches this before the field order does.
 +    private func aliasKeyPress(_ press: KeyPress) -> KeyPress.Result {
 +        guard vm.mode == .launcher, searchFocused, argumentFocused == nil, !menuOpen,
 +            !vm.isComposing, !vm.isControlListOpen, !isCollapsed,
@@ -55,7 +57,7 @@ index 6ae0d566..fd4143ae 100644
 +            !vm.query.isEmpty, searchCaretAtEnd
 +        else { return .ignored }
 +        // "\ " escapes the Space: the backslash becomes a plain space and the query searches on.
-+        if vm.query.hasSuffix("\\") {
++        if press.key == .space, vm.query.hasSuffix("\\") {
 +            vm.query.removeLast()
 +            vm.query += " "
 +            return .handled

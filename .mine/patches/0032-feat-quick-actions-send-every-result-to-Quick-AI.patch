@@ -20,42 +20,44 @@ Replace button on that reply; Summarize only reads.
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
 ---
- Scripts/run-tests.sh                          |   2 -
- Tests/quick-action-test.swift                 | 201 +----------
- Tests/text-diff-performance.swift             | 110 ------
- Tests/text-diff-test.swift                    |  73 ----
- Tinycast.xcodeproj/project.pbxproj            |  24 --
+ Scripts/run-tests.sh                          |  31 +-
+ Tests/quick-action-test.swift                 | 988 ++++++++++++++----
+ Tests/text-diff-performance.swift             | 110 --
+ Tests/text-diff-test.swift                    |  73 --
+ Tinycast.xcodeproj/project.pbxproj            |  30 +-
  Tinycast/App/AppCore.swift                    |  21 +-
- .../Features/AI/UI/AIChatCoordinator.swift    |  24 ++
+ .../Features/AI/UI/AIChatCoordinator.swift    |  24 +
  .../Features/AI/UI/AIChatDetailView.swift     |   2 +
- Tinycast/Features/AI/UI/AIChatState.swift     |  17 +
- Tinycast/Features/AI/UI/AIScreen.swift        |   8 +-
+ Tinycast/Features/AI/UI/AIChatState.swift     |  47 +-
+ Tinycast/Features/AI/UI/AIScreen.swift        |  11 +-
  .../Features/AI/UI/ChatTranscriptView.swift   |  26 +-
- .../Backup/Model/SettingsBackupCoverage.swift |   9 -
- .../Model/BuiltInQuickAction.swift            |  16 +-
- .../QuickActions/Model/QuickAction.swift      |  12 +-
+ .../Backup/Model/SettingsBackupCoverage.swift |  12 +-
+ .../Model/BuiltInQuickAction.swift            |  15 +-
+ .../QuickActions/Model/QuickAction.swift      |   5 +-
  .../Model/QuickActionPrompt.swift             |  13 +-
- .../Model/QuickActionSettings.swift           |  30 --
- .../QuickActions/Model/TextDiffEngine.swift   | 107 ------
- .../Service/QuickActionRunner.swift           |  39 +--
+ .../Model/QuickActionSettings.swift           |  41 +-
+ .../QuickActions/Model/TextDiffEngine.swift   | 107 --
+ .../Service/QuickActionRunner.swift           |  39 +-
  .../CustomQuickActionEditorPanel.swift        |  12 +-
- .../Settings/QuickActionModelPicker.swift     |  22 --
- .../Settings/QuickActionSettingsStore.swift   | 118 +------
- .../Settings/QuickActionsSettingsView.swift   | 136 ++------
- .../UI/QuickActionCoordinator.swift           | 230 +++++++------
- .../QuickActions/UI/QuickActionPanel.swift    |  63 ----
- .../UI/QuickActionPanelController.swift       | 131 --------
- .../UI/QuickActionPanelState.swift            |  64 ----
- .../UI/QuickActionResultView.swift            | 209 ------------
- .../Features/Settings/AppSettingsKey.swift    |   3 -
+ .../Settings/QuickActionModelPicker.swift     |  22 -
+ .../Settings/QuickActionSettingsStore.swift   | 122 +--
+ .../Settings/QuickActionsSettingsView.swift   | 139 +--
+ .../UI/QuickActionCoordinator.swift           | 497 +++++++--
+ .../QuickActions/UI/QuickActionPanel.swift    |  63 --
+ .../UI/QuickActionPanelController.swift       | 131 ---
+ .../UI/QuickActionPanelState.swift            |  64 --
+ .../UI/QuickActionResultView.swift            | 209 ----
+ .../Features/Settings/AppSettingsKey.swift    |   4 +-
  .../Features/Settings/SettingsAnchor.swift    |   1 -
  .../Settings/SettingsSearchCatalog.swift      |   3 -
+ Tinycast/Palette/PaletteCoordinator.swift     |  21 +-
+ .../Palette/PaletteWindowController.swift     |  92 +-
  docs/features/ai.md                           |  30 +-
  docs/features/launcher.md                     |   4 +-
- docs/features/quick-actions.md                | 312 ++++++++----------
+ docs/features/quick-actions.md                | 360 +++----
  docs/testing.md                               |   5 -
- docs/ui.md                                    |  10 +-
- 35 files changed, 412 insertions(+), 1675 deletions(-)
+ docs/ui.md                                    |  11 +-
+ 37 files changed, 1684 insertions(+), 1701 deletions(-)
  delete mode 100644 Tests/text-diff-performance.swift
  delete mode 100644 Tests/text-diff-test.swift
  delete mode 100644 Tinycast/Features/QuickActions/Model/TextDiffEngine.swift
@@ -66,24 +68,74 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
  delete mode 100644 Tinycast/Features/QuickActions/UI/QuickActionResultView.swift
 
 diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
-index 045f5aea..feee23f7 100755
+index 045f5aea..2fc66244 100755
 --- a/Scripts/run-tests.sh
 +++ b/Scripts/run-tests.sh
-@@ -805,8 +805,6 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
+@@ -805,13 +805,39 @@ run mcp-test               Tinycast/Features/Settings/AppSettingsKey.swift \
                             Tinycast/Features/AI/Model/JSONValue.swift \
                             Tinycast/Features/MCP/Model/*.swift \
                             Tinycast/Features/MCP/Settings/MCPSettingsStore.swift
 -run -O text-diff-test      Tinycast/Features/QuickActions/Model/TextDiffEngine.swift
 -run index text-diff-performance Tinycast/Features/QuickActions/Model/TextDiffEngine.swift
  run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
++                           Tinycast/Features/AI/Model/AIRequest.swift \
                             Tinycast/Features/AI/Model/AIConnection.swift \
                             Tinycast/Features/AI/Model/AppleIntelligence.swift \
+                            Tinycast/Features/AI/Model/ChatGPTSubscription.swift \
+                            Tinycast/Features/AI/Model/InstalledAI.swift \
++                           Tinycast/Features/AI/Model/AIConversationOpenPolicy.swift \
++                           Tinycast/Features/AI/Model/AIAttachmentPolicy.swift \
++                           Tinycast/Features/AI/Model/AIRetention.swift \
++                           Tinycast/Features/AI/Model/AITool.swift \
++                           Tinycast/Features/AI/Model/JSONValue.swift \
++                           Tinycast/Features/AI/Model/ChatMessage.swift \
++                           Tinycast/Features/AI/Model/ChatSession.swift \
++                           Tinycast/Features/AI/Model/ChatChoices.swift \
++                           Tinycast/Features/AI/Model/ChatReferences.swift \
++                           Tinycast/Features/AI/Model/ChatTitle.swift \
++                           Tinycast/Features/AI/Model/ChatFind.swift \
++                           Tinycast/Features/AI/Model/ChatCitations.swift \
++                           Tinycast/Features/AI/Model/ChatToolScope.swift \
++                           Tinycast/Features/AI/Model/MarkdownBlock.swift \
++                           Tinycast/Features/AI/Model/MarkdownMath.swift \
++                           Tinycast/Features/AI/Model/MathFormula.swift \
++                           Tinycast/Features/AI/Model/MathNode.swift \
++                           Tinycast/Features/AI/Model/MathSymbolCatalog.swift \
++                           Tinycast/Features/AI/Model/ContextBrowser.swift \
++                           Tinycast/Features/AI/Model/ContextPolicy.swift \
++                           Tinycast/Features/AI/Model/ContextSource.swift \
++                           Tinycast/Features/AI/Service/AIProvider.swift \
++                           Tinycast/Features/AI/Service/ChatHistoryStore.swift \
++                           Tinycast/Features/AI/Service/AIToolLoopProvider.swift \
++                           Tinycast/Features/AI/UI/AIChatState.swift \
++                           Tinycast/Features/AI/UI/AIChatSurfacesState.swift \
++                           Tinycast/Features/AI/UI/ChatFindState.swift \
+                            Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift \
+                            Tinycast/Features/QuickActions/Model/CustomQuickAction.swift \
+                            Tinycast/Features/QuickActions/Model/CustomQuickActionStore.swift \
+@@ -819,6 +845,7 @@ run quick-action-test      Tinycast/Features/Settings/AppSettingsKey.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionFailure.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionPrompt.swift \
+                            Tinycast/Features/QuickActions/Model/QuickActionSettings.swift \
++                           Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift \
+                            Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift \
+                            Tinycast/Platform/LocalizedResource.swift
+ run apple-intelligence-test Tinycast/Features/Settings/AppSettingsKey.swift \
 diff --git a/Tests/quick-action-test.swift b/Tests/quick-action-test.swift
-index c3d18c1a..4055f4a8 100644
+index c3d18c1a..c4d47237 100644
 --- a/Tests/quick-action-test.swift
 +++ b/Tests/quick-action-test.swift
-@@ -18,9 +18,7 @@ struct QuickActionTests {
-     static func main() {
+@@ -1,3 +1,4 @@
++import AppKit
+ import Foundation
+ 
+ @main
+@@ -15,17 +16,30 @@ struct QuickActionTests {
+         }
+     }
+ 
+-    static func main() {
++    static func main() async {
          everyActionDescribesItself()
          promptsForbidCommentaryAndInjection()
 -        previewChoicesRememberOnlyWhatWasChosen()
@@ -93,7 +145,27 @@ index c3d18c1a..4055f4a8 100644
          refusalsNameTheirOwnCause()
          customActionsCarryTheirOwnIdentity()
          customActionsKeepTheBoundary()
-@@ -57,135 +55,22 @@ struct QuickActionTests {
+         customActionsSurviveARelaunch()
+         customActionsNeverWriteOverWhatTheyCouldNotRead()
++        await captureOpensQuickAIBeforeReading()
++        await captureErrorsStayInTheirWindow()
++        await replaceOnlyStaysSilent()
++        await unreadableAppsStayHonestWithoutAPage()
++        await answerFailuresStayInTheirWindow()
++        await cancelDuringCaptureStagesNothing()
++        await hideDuringCaptureReopensNothing()
++        await hideThenReopenDropsStaleCapture()
++        await hideThenReopenDropsStaleFailure()
++        await silentCaptureSurvivesHide()
++        await newChatDuringCaptureKeepsItsOwn()
++        await conflictingSendDropsTheCapture()
++        await conflictingAttachmentIsNeverConsumed()
++        await supersededCaptureKeepsNewerProgress()
++        pageTextKeepsItsOwnContract()
+ 
+         print("\(passes) passed, \(failures) failed")
+         if failures > 0 { exit(1) }
+@@ -57,135 +71,40 @@ struct QuickActionTests {
              "only a missing permission opens System Settings")
      }
  
@@ -135,16 +207,21 @@ index c3d18c1a..4055f4a8 100644
              reopened.settings.instructionOverride(for: BuiltInQuickAction.fixGrammar)
                  == "Use British English.",
              "an action's instructions survive a relaunch")
--
+ 
 -        // A removed connection must not leave this pointing at a route that cannot answer.
 -        reopened.repairModel(against: [], fallback: .appleIntelligence)
--        expect(
+         expect(
 -            reopened.model == .appleIntelligence,
 -            "a removed connection falls forward rather than failing at press time")
 -
 -        let onDevice = QuickActionSettingsStore(defaults: defaults)
 -        onDevice.repairModel(against: [], fallback: nil)
--        expect(
++            !reopened.settings.replacesOnly(BuiltInQuickAction.fixGrammar),
++            "every action opens Quick AI until the reader says otherwise")
++        store.settings.setReplacesOnly(true, for: .fixGrammar)
++        store.settings.setReplacesOnly(true, for: .summarize)
++        let replacing = QuickActionSettingsStore(defaults: defaults)
+         expect(
 -            onDevice.model == .appleIntelligence,
 -            "repair leaves a route that names no connection untouched")
 -
@@ -152,7 +229,9 @@ index c3d18c1a..4055f4a8 100644
 -        onDevice.repairInstalledModel(
 -            available: [.claude(model: "sonnet", effort: nil)], unavailableSources: [],
 -            fallback: .appleIntelligence)
--        expect(
++            replacing.settings.replacesOnly(BuiltInQuickAction.fixGrammar),
++            "a Replace only choice survives a relaunch")
+         expect(
 -            onDevice.model == .claude(model: "sonnet", effort: nil),
 -            "an installed model removed from the catalog moves to that command's first model")
 -        onDevice.select(.openCode(model: "provider/old", effort: nil))
@@ -225,27 +304,33 @@ index c3d18c1a..4055f4a8 100644
 -            "an unavailable command drops the route instead of borrowing the fallback")
 -
 -        reopened.setModelOverride(nil, for: .summarize)
--        expect(
++            !replacing.settings.replacesOnly(BuiltInQuickAction.summarize),
++            "Summarize cannot be set to replace its text, so it never stores the choice")
++        var cleared = replacing.settings
++        cleared.setReplacesOnly(false, for: .fixGrammar)
+         expect(
 -            defaults.data(forKey: AppSettingsKey.quickActionModelOverrides.rawValue) == nil,
 -            "clearing the last route leaves nothing stored")
++            !cleared.replacesOnly(BuiltInQuickAction.fixGrammar),
++            "switching back to Quick AI removes the choice")
      }
  
      static func everyActionDescribesItself() {
-@@ -198,29 +83,17 @@ struct QuickActionTests {
+@@ -198,29 +117,17 @@ struct QuickActionTests {
              Set(BuiltInQuickAction.allCases.map(\.title)).count == BuiltInQuickAction.allCases.count,
              "no two actions read the same in the shortcut list")
  
 -        // Summarize answers a question about the text; replacing it unasked would destroy the text.
 -        expect(BuiltInQuickAction.summarize.alwaysPreviews, "Summarize always shows its panel")
--        expect(
++        // A summary answers a question about the text; writing it back over the text would destroy it.
++        expect(!BuiltInQuickAction.summarize.replacesSelection, "a summary is never written back")
+         expect(
 -            BuiltInQuickAction.allCases.filter(\.alwaysPreviews) == [.summarize],
 -            "only Summarize forces a panel")
 -        expect(
 -            BuiltInQuickAction.fixGrammar.replacesDirectlyByDefault,
 -            "grammar is the one action safe to apply unseen")
-+        // A summary answers a question about the text; writing it back over the text would destroy it.
-+        expect(!BuiltInQuickAction.summarize.replacesSelection, "a summary is never written back")
-         expect(
+-        expect(
 -            !BuiltInQuickAction.rewrite.replacesDirectlyByDefault,
 -            "a rewrite changes the voice, so it is previewed by default")
 +            BuiltInQuickAction.allCases.filter { !$0.replacesSelection } == [.summarize],
@@ -265,7 +350,7 @@ index c3d18c1a..4055f4a8 100644
      }
  
      static func promptsForbidCommentaryAndInjection() {
-@@ -238,18 +111,13 @@ struct QuickActionTests {
+@@ -238,18 +145,13 @@ struct QuickActionTests {
                  "\(action) treats the selection as material, not as instructions")
          }
  
@@ -289,7 +374,7 @@ index c3d18c1a..4055f4a8 100644
  
          expect(
              QuickActionPrompt.instructions(for: BuiltInQuickAction.rewrite, override: "My instructions")
-@@ -277,34 +145,6 @@ struct QuickActionTests {
+@@ -277,34 +179,6 @@ struct QuickActionTests {
              "Translate cannot persist model instructions")
      }
  
@@ -324,7 +409,7 @@ index c3d18c1a..4055f4a8 100644
      /// A fixed suite name stops cfprefsd accumulating a plist per run; cleared at both ends.
      static func isolatedDefaults(_ name: String) -> UserDefaults {
          let defaults = UserDefaults(suiteName: name)!
-@@ -327,10 +167,7 @@ struct QuickActionTests {
+@@ -327,10 +201,7 @@ struct QuickActionTests {
          let action = QuickAction.custom(record)
          expect(action.title == "Make Snarky", "a custom action is named by its record")
          expect(action.symbol == CustomQuickAction.sfSymbol, "an unset icon falls back to the default")
@@ -336,23 +421,27 @@ index c3d18c1a..4055f4a8 100644
          expect(
              !action.usesTranslationFramework,
              "only the shipped Translate reaches Apple's translator")
-@@ -343,14 +180,7 @@ struct QuickActionTests {
+@@ -343,14 +214,15 @@ struct QuickActionTests {
              "another feature's entry id is not a Quick Action")
  
          // Preview is the default, because Tinycast cannot know what an arbitrary prompt returns.
--        expect(
++        expect(record.previewsResult, "a custom action previews until the reader says otherwise")
+         expect(
 -            QuickActionSettings().previewsResult(.custom(record)),
 -            "a custom action previews until the reader says otherwise")
--        var replacing = record
--        replacing.previewsResult = false
--        expect(
++            !QuickActionSettings().replacesOnly(.custom(record)),
++            "a custom action opens Quick AI by default")
+         var replacing = record
+         replacing.previewsResult = false
+         expect(
 -            !QuickActionSettings().previewsResult(.custom(replacing)),
 -            "the choice travels on the record, so deleting it takes the choice too")
-+        expect(record.previewsResult, "a custom action previews until the reader says otherwise")
++            QuickActionSettings().replacesOnly(.custom(replacing)),
++            "a custom action set to Replace only is read from its record")
      }
  
      static func customActionsKeepTheBoundary() {
-@@ -367,9 +197,6 @@ struct QuickActionTests {
+@@ -367,9 +239,6 @@ struct QuickActionTests {
              QuickActionPrompt.instructions(for: .custom(record), override: "Something else")
                  == instructions,
              "a custom action has no separate override to be replaced by")
@@ -362,6 +451,772 @@ index c3d18c1a..4055f4a8 100644
      }
  
      static func customActionsSurviveARelaunch() {
+@@ -473,4 +342,765 @@ struct QuickActionTests {
+         expect(writeFailure == .storageUnavailable, "a write that cannot land is reported")
+         expect(unwritable.actions.isEmpty, "and the list never moved ahead of the file")
+     }
++
++    /// Quick AI opens before the read, so its progress is already on screen when capture blocks.
++    static func captureOpensQuickAIBeforeReading() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        let before = fixture.chat.session.id
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "Quick AI opens before the read starts")
++        expect(
++            fixture.chat.session.id != before, "the read lands in a fresh chat, not the old one")
++        expect(fixture.chat.notice == "Gathering selected text…", "progress names the capture")
++        expect(fixture.chat.noticeIsProgress, "progress is not an error, so no Configure button")
++        expect(fixture.chat.session.messages.isEmpty, "nothing is sent before the capture lands")
++        expect(fixture.injector.copies == 0, "nothing is borrowed before the read resumes")
++        expect(QuickActionRunner.seenPIDs.count == 1, "the read starts exactly once")
++        expect(
++            QuickActionRunner.seenPIDs.first == fixture.app.processIdentifier,
++            "the read keeps the source app for its borrowed copy")
++        QuickActionRunner.resumeAll(with: "the selected words")
++        await fixture.core.aiChatCoordinator.waitForAnswer()
++        expect(QuickActionRunner.continuations.isEmpty, "the read resumed exactly once")
++        let answer = fixture.core.aiChatCoordinator.answers.first!
++        expect(
++            answer.session == fixture.chat.session.id,
++            "the answer continues the same prepared chat")
++        expect(answer.attachments == ["Selected text"], "the selection rides as its document")
++        expect(!fixture.chat.noticeIsProgress, "the answer retires the gathering notice")
++        expect(fixture.palette.keyClaims == 1, "the finished capture takes key")
++        expect(fixture.chat.session.messages.count == 2, "prompt and reply join the transcript")
++        expect(fixture.core.messages.isEmpty, "no pill or dialog escapes the window")
++    }
++
++    /// A prepared Quick AI keeps every capture failure; silence keeps the old pill and dialog.
++    static func captureErrorsStayInTheirWindow() async {
++        for failure in [
++            QuickActionFailure.needsAccessibility, .noTarget, .unreadableApp("Chrome"), .noSelection,
++            .tooLong
++        ] as [QuickActionFailure] {
++            let fixture = QuickActionFixture()
++            QuickActionRunner.behavior = .fail(failure)
++            fixture.coordinator.run(.builtIn(.summarize))
++            await QuickActionRunner.waitForStart()
++            expect(
++                fixture.chat.notice == failure.localizedDescription,
++                "a prepared capture keeps \(failure) in Quick AI")
++            expect(QuickActionRunner.seenPIDs.count == 1, "the read was attempted")
++            expect(fixture.palette.visible, "the window stays open on its error")
++            expect(fixture.palette.keyClaims == 1, "the error takes key so it is seen")
++            expect(fixture.chat.session.messages.isEmpty, "a failure sends nothing")
++            expect(
++                fixture.core.aiChatCoordinator.answers.isEmpty, "a failure starts no answer")
++            expect(fixture.core.messages.isEmpty, "no pill carries the failure")
++            expect(fixture.core.failures.isEmpty, "no dialog carries the failure")
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++    }
++
++    /// Replace only keeps the window shut: progress in the pill, and any failure in a HUD.
++    static func replaceOnlyStaysSilent() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        fixture.store.settings.setReplacesOnly(true, for: .rewrite)
++        QuickActionRunner.behavior = .fail(.noSelection)
++        fixture.coordinator.run(.builtIn(.rewrite))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.core.progresses == ["Rewriting…"], "the pill names the action")
++        expect(!fixture.core.messages.isEmpty, "the failure stays a fading pill")
++        expect(
++            fixture.core.messages.map { $0.text } == ["Select some text first."],
++            "the pill carries the cause")
++        expect(fixture.palette.shows == 0, "Replace only never opens Quick AI")
++        expect(fixture.core.failures.isEmpty, "silence earns no dialog")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a failed silent run answers nothing")
++        expect(fixture.injector.replaced.isEmpty, "a failed silent run writes nothing back")
++    }
++
++    /// Without a browser behind the failure there is no page to try, and the cause stays honest.
++    static func unreadableAppsStayHonestWithoutAPage() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++            ContextBrowserRunner.reset()
++        }
++        QuickActionRunner.behavior = .fail(.unreadableApp("Figma"))
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(
++            fixture.chat.notice == QuickActionFailure.unreadableApp("Figma").localizedDescription,
++            "an unreadable app is named in Quick AI")
++        expect(ContextBrowserRunner.listCalls == 0, "a non-browser never lists tabs")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "no page means no answer")
++    }
++
++    /// A turn that never starts reports where the reader already looks.
++    static func answerFailuresStayInTheirWindow() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        fixture.core.aiChatCoordinator.failAnswer = true
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(
++            fixture.chat.notice == "Summarize didn't start", "a stalled turn says so in Quick AI")
++        expect(!fixture.chat.noticeIsProgress, "the report replaces the progress, not the chat")
++        expect(fixture.palette.visible, "the window stays open on its error")
++        expect(fixture.chat.session.messages.isEmpty, "a stalled turn sends nothing")
++    }
++
++    /// Cancelling mid-capture stages nothing and leaves no gathering notice behind.
++    static func cancelDuringCaptureStagesNothing() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        fixture.coordinator.cancel()
++        QuickActionRunner.resumeAll(with: "late text")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a cancelled capture answers nothing")
++        expect(fixture.chat.session.messages.isEmpty, "a cancelled capture sends nothing")
++        expect(fixture.chat.notice == nil, "cancel clears the gathering notice")
++    }
++
++    /// Hiding mid-capture is explicit: the late capture stages nothing and reopens nothing.
++    static func hideDuringCaptureReopensNothing() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        fixture.palette.hidePalette()
++        QuickActionRunner.resumeAll(with: "late text")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a hidden capture answers nothing")
++        expect(fixture.chat.session.messages.isEmpty, "a hidden capture sends nothing")
++        expect(fixture.chat.notice == nil, "a dropped capture leaves no notice behind")
++        expect(!fixture.palette.visible, "a dropped capture never reopens the window")
++    }
++
++    /// Hiding retires the capture even when the same empty chat reopens before it lands.
++    static func hideThenReopenDropsStaleCapture() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        let session = fixture.chat.session.id
++        let staging = fixture.chat.stagingGeneration
++        fixture.palette.hidePalette()
++        fixture.palette.showPalette(mode: .ai)
++        expect(fixture.chat.session.id == session, "reopen keeps the same empty chat")
++        expect(fixture.chat.stagingGeneration == staging, "reopen stages nothing new")
++        QuickActionRunner.resumeAll(with: "late text")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed capture answers nothing")
++        expect(fixture.chat.session.messages.isEmpty, "a dismissed capture sends nothing")
++        expect(fixture.chat.pendingAttachments.isEmpty, "a dismissed capture stages nothing")
++        expect(fixture.chat.notice == nil, "a dismissed capture leaves no progress behind")
++        expect(fixture.palette.keyClaims == 0, "a dismissed capture never takes key")
++        expect(fixture.palette.visible, "the reopened window stays as the reader left it")
++        QuickActionRunner.behavior = .succeed("fresh words")
++        fixture.coordinator.run(.builtIn(.summarize))
++        await fixture.core.aiChatCoordinator.waitForAnswer()
++        expect(fixture.core.aiChatCoordinator.answers.count == 1, "a later run still answers")
++        expect(fixture.palette.keyClaims == 1, "the later run takes key once")
++    }
++
++    /// A failure that lands after hide and reopen reports nowhere and reopens nothing new.
++    static func hideThenReopenDropsStaleFailure() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        fixture.palette.hidePalette()
++        fixture.palette.showPalette(mode: .ai)
++        QuickActionRunner.failAll(with: QuickActionFailure.noSelection)
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late failure was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a dismissed failure answers nothing")
++        expect(fixture.chat.session.messages.isEmpty, "a dismissed failure sends nothing")
++        expect(fixture.chat.notice == nil, "a dismissed failure leaves no progress behind")
++        expect(fixture.palette.keyClaims == 0, "a dismissed failure never takes key")
++        expect(fixture.palette.visible, "the reopened window stays as the reader left it")
++    }
++
++    /// Silent work never prepares a chat, so hiding retires nothing.
++    static func silentCaptureSurvivesHide() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        fixture.store.settings.setReplacesOnly(true, for: .rewrite)
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.rewrite))
++        await QuickActionRunner.waitForStart()
++        expect(!fixture.core.progresses.isEmpty, "the silent capture starts in the pill")
++        fixture.palette.hidePalette()
++        QuickActionRunner.resumeAll(with: "the selected words")
++        await fixture.core.aiChatCoordinator.waitForAnswer()
++        expect(QuickActionRunner.continuations.isEmpty, "the silent read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.count == 1, "silent work survives a hide")
++        expect(fixture.palette.shows == 0, "silent work never opens Quick AI")
++        expect(fixture.chat.session.messages.count == 2, "the silent turn still lands in history")
++    }
++
++    /// A new chat mid-capture belongs to the reader; the late capture leaves it alone.
++    static func newChatDuringCaptureKeepsItsOwn() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        fixture.chat.startNewChat()
++        let own = fixture.chat.session.id
++        QuickActionRunner.resumeAll(with: "late text")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "a superseded capture answers nothing")
++        expect(fixture.chat.session.id == own, "the reader's new chat is untouched")
++        expect(fixture.chat.session.messages.isEmpty, "nothing lands in the new chat")
++        expect(fixture.chat.notice == nil, "no notice leaks into the new chat")
++    }
++
++    /// A send that beats the capture owns the chat; the late capture answers over nothing.
++    static func conflictingSendDropsTheCapture() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        _ = fixture.chat.record(prompt: "their question", documents: [], reply: "their answer")
++        QuickActionRunner.resumeAll(with: "late text")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty,
++            "a capture never answers over a conflicting send")
++        expect(fixture.chat.session.messages.count == 2, "the reader's turn stands as sent")
++    }
++
++    /// An attachment staged mid-capture belongs to the next send, never to the late capture.
++    static func conflictingAttachmentIsNeverConsumed() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        expect(fixture.palette.passiveShows == 1, "the capture starts under progress")
++        let staged = ChatAttachment(
++            payload: .document(
++                AIDocument(data: Data("theirs".utf8), mimeType: "text/plain", name: "Theirs")),
++            name: "Theirs", preview: nil)
++        expect(fixture.chat.attach(staged) == nil, "the reader's attachment stages")
++        QuickActionRunner.resumeAll(with: "late text")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.isEmpty, "the late read was delivered")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty,
++            "a capture never consumes a conflicting attachment")
++        expect(
++            fixture.chat.pendingAttachments.map(\.name) == ["Theirs"],
++            "the reader's attachment waits for their own send")
++        expect(fixture.chat.session.messages.isEmpty, "nothing is sent on their behalf")
++    }
++
++    /// A late capture retires only its own notice; the newer capture keeps its progress.
++    static func supersededCaptureKeepsNewerProgress() async {
++        let fixture = QuickActionFixture()
++        defer {
++            fixture.cleanUp()
++            QuickActionRunner.reset()
++        }
++        QuickActionRunner.behavior = .suspend
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        fixture.coordinator.cancel()
++        fixture.coordinator.run(.builtIn(.summarize))
++        await QuickActionRunner.waitForStart()
++        let newer = fixture.chat.session.id
++        expect(
++            fixture.chat.notice == "Gathering selected text…", "the newer capture shows progress")
++        QuickActionRunner.resumeOldest(with: "stale words")
++        await captureSettled()
++        expect(QuickActionRunner.continuations.count == 1, "only the stale read was delivered")
++        expect(fixture.chat.session.id == newer, "the stale capture never replaces the newer chat")
++        expect(
++            fixture.chat.notice == "Gathering selected text…",
++            "stale cleanup keeps the newer progress")
++        expect(
++            fixture.core.aiChatCoordinator.answers.isEmpty, "the stale capture answers nothing")
++        QuickActionRunner.resumeAll(with: "fresh words")
++        await fixture.core.aiChatCoordinator.waitForAnswer()
++        expect(
++            fixture.core.aiChatCoordinator.answers.count == 1, "the newer capture still answers")
++        expect(
++            fixture.core.aiChatCoordinator.answers.first?.session == newer,
++            "the answer continues the newer chat")
++        expect(fixture.palette.keyClaims == 1, "the newer capture takes key once")
++    }
++
++    /// A page stands in only where browser context already allows it, capped like a selection.
++    static func pageTextKeepsItsOwnContract() {
++        expect(
++            ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.google.Chrome", options: browserOptions(),
++                aiEnabled: true),
++            "a supported browser with context on may stand in")
++        expect(
++            !ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.google.Chrome", options: ContextPolicy.Options(),
++                aiEnabled: true),
++            "a supported browser with context off may not")
++        expect(
++            !ContextBrowser.quickActionFallbackApplies(
++                bundleID: "com.example.editor", options: browserOptions(), aiEnabled: true),
++            "an editor never stands in as a page")
++        let read = ContextBrowser.PageRead(
++            title: "T", url: "https://example.com/", selection: "chosen",
++            body: "whole page", isTruncated: false)
++        expect(
++            ContextBrowser.quickActionText(read, limitBytes: 32_768) == "chosen",
++            "a page selection wins over its body")
++        let bodyOnly = ContextBrowser.PageRead(
++            title: "T", url: "https://example.com/", selection: "  ",
++            body: "whole page", isTruncated: false)
++        expect(
++            ContextBrowser.quickActionText(bodyOnly, limitBytes: 32_768) == "whole page",
++            "a page without a selection reads whole")
++        let long = String(repeating: "a", count: 40_000)
++        let capped = ContextBrowser.quickActionText(
++            ContextBrowser.PageRead(
++                title: "T", url: "https://example.com/", selection: "",
++                body: long, isTruncated: false),
++            limitBytes: QuickActionRunner.maxSelectionBytes)
++        expect(
++            capped?.utf8.count ?? 0 <= QuickActionRunner.maxSelectionBytes,
++            "a page is capped where it is read, like a selection")
++    }
++
++    static func browserOptions() -> ContextPolicy.Options {
++        var options = ContextPolicy.Options()
++        options.browserEnabled = true
++        return options
++    }
++
++    /// Resumed capture work is synchronous on MainActor, so a hop enqueued after resume runs last.
++    static func captureSettled() async {
++        await Task { @MainActor in }.value
++    }
++}
++
++// The shipped coordinator with every collaborator isolated, so no run reads, pastes or prompts.
++@MainActor
++final class QuickActionFixture {
++    let directory: URL
++    let suite: String
++    let defaults: UserDefaults
++    let settings = AppSettings()
++    let store: QuickActionSettingsStore
++    let customActions: CustomQuickActionStore
++    let injector = TextInjector()
++    let palette = PaletteCoordinator()
++    let chat: AIChatState
++    let core: AppCore
++    let coordinator: QuickActionCoordinator
++    let app = NSRunningApplication.current
++
++    init() {
++        directory = FileManager.default.temporaryDirectory
++            .appendingPathComponent("QuickActionCaptureTests-\(UUID().uuidString)")
++        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        chat = AIChatState(history: ChatHistoryStore(directory: directory))
++        core = AppCore(chat: chat)
++        suite = "QuickActionCaptureTests.\(UUID().uuidString)"
++        defaults = UserDefaults(suiteName: suite)!
++        defaults.removePersistentDomain(forName: suite)
++        store = QuickActionSettingsStore(defaults: defaults)
++        customActions = CustomQuickActionStore(directory: directory)
++        customActions.load()
++        palette.targetApp = app
++        coordinator = QuickActionCoordinator(
++            settings: settings, store: store, customActions: customActions,
++            injector: injector, appIndex: AppIndex(), hotKeys: HotKeyManager(),
++            favorites: FavoritesStore(), visibility: VisibilityStore(),
++            ranking: LauncherRankingStore(), aliases: AliasStore(),
++            paletteCoordinator: palette, core: core)
++    }
++
++    func cleanUp() {
++        defaults.removePersistentDomain(forName: suite)
++        UserDefaults.standard.removeSuite(named: suite)
++        CFPreferencesAppSynchronize(suite as CFString)
++        try? FileManager.default.removeItem(
++            at: URL(fileURLWithPath: NSHomeDirectory())
++                .appendingPathComponent("Library/Preferences/\(suite).plist"))
++        try? FileManager.default.removeItem(at: directory)
++    }
++}
++
++@MainActor
++final class AppSettings {
++    var quickActionsEnabled = true
++    var aiEnabled = true
++    var contextPolicyOptions = ContextPolicy.Options()
++}
++
++@MainActor
++final class PaletteCoordinator {
++    var mode = PaletteMode.ai
++    var visible = false
++    var key = false
++    var shows = 0
++    var passiveShows = 0
++    var keyClaims = 0
++    var dismissalGeneration = 0
++    var targetApp: NSRunningApplication?
++    var previousOwnWindow: NSWindow?
++    var isVisible: Bool { visible }
++
++    func showPalette(
++        mode: PaletteMode, restoreAnyMode: Bool = false, seeding query: String? = nil,
++        takingKey: Bool = true
++    ) {
++        self.mode = mode
++        shows += 1
++        if takingKey {
++            key = true
++        } else {
++            passiveShows += 1
++        }
++        visible = true
++    }
++
++    func claimKey() {
++        keyClaims += 1
++        if visible { key = true }
++    }
++
++    func isShowing(_ mode: PaletteMode) -> Bool { visible && self.mode == mode }
++    func hidePalette(restoreFocus: Bool = true) {
++        dismissalGeneration += 1
++        visible = false
++        key = false
++    }
++}
++
++enum PaletteMode { case launcher, ai }
++
++@MainActor
++enum QuickActionRunner {
++    static let maxSelectionBytes = 32_768
++    enum Behavior {
++        case succeed(String)
++        case fail(QuickActionFailure)
++        case suspend
++    }
++    static var behavior: Behavior = .succeed("selected text")
++    static var seenPIDs: [pid_t] = []
++    static var continuations: [CheckedContinuation<String, Error>] = []
++    static var started = 0
++    static var startWaiters: [CheckedContinuation<Void, Never>] = []
++
++    static func reset() {
++        behavior = .succeed("selected text")
++        seenPIDs = []
++        continuations = []
++        started = 0
++        startWaiters = []
++    }
++
++    /// The read owns the start event; prepare precedes this await, so waiting proves it ran.
++    static func notifyStarted() {
++        if !startWaiters.isEmpty {
++            startWaiters.removeFirst().resume()
++        } else {
++            started += 1
++        }
++    }
++
++    static func waitForStart() async {
++        if started > 0 { started -= 1; return }
++        await withCheckedContinuation { startWaiters.append($0) }
++    }
++
++    static func selection(
++        in targetApp: NSRunningApplication?, using injector: TextInjector
++    ) async throws -> String {
++        seenPIDs.append(targetApp?.processIdentifier ?? -1)
++        notifyStarted()
++        switch behavior {
++        case .succeed(let text): return try accepted(text)
++        case .fail(let failure): throw failure
++        case .suspend:
++            return try await withCheckedThrowingContinuation { continuations.append($0) }
++        }
++    }
++
++    static func accepted(_ text: String) throws -> String {
++        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            throw QuickActionFailure.noSelection
++        }
++        guard text.utf8.count <= maxSelectionBytes else { throw QuickActionFailure.tooLong }
++        return text
++    }
++
++    static func resumeAll(with text: String) {
++        let pending = continuations
++        continuations = []
++        for continuation in pending { continuation.resume(returning: text) }
++    }
++
++    /// A superseded capture resumes alone, so the newer capture's progress can be checked first.
++    static func resumeOldest(with text: String) {
++        guard !continuations.isEmpty else { return }
++        continuations.removeFirst().resume(returning: text)
++    }
++
++    static func failAll(with failure: Error) {
++        let pending = continuations
++        continuations = []
++        for continuation in pending { continuation.resume(throwing: failure) }
++    }
++}
++
++@MainActor
++final class TextInjector {
++    var copied: String?
++    var copies = 0
++    var copyPIDs: [pid_t] = []
++    var replaced: [(text: String, pid: pid_t)] = []
++
++    func copySelection(from targetApp: NSRunningApplication?) async -> String? {
++        copies += 1
++        copyPIDs.append(targetApp?.processIdentifier ?? -1)
++        return copied
++    }
++
++    func replaceSelection(
++        with text: String, in targetApp: NSRunningApplication?,
++        onDelivered: @escaping @MainActor () -> Void = {},
++        onFailed: @escaping @MainActor () -> Void = {}
++    ) {
++        replaced.append((text, targetApp?.processIdentifier ?? -1))
++        onDelivered()
++    }
++}
++
++@MainActor
++enum ContextBrowserRunner {
++    static var listCalls = 0
++    static var readCalls = 0
++    static func reset() { listCalls = 0; readCalls = 0 }
++    struct TabList: Sendable {
++        let browser: ContextBrowser.Browser
++        let tabs: [ContextBrowser.BrowserTab]
++        let frontIsPrivate: Bool
++    }
++    static func listTabs(preferredBundleID: String?) async -> Result<
++        TabList, ContextBrowser.ReadFailure
++    > {
++        listCalls += 1
++        return .failure(.noSource)
++    }
++    static func readTab(_ tab: ContextBrowser.BrowserTab) async -> Result<
++        ContextBrowser.PageRead, ContextBrowser.ReadFailure
++    > {
++        readCalls += 1
++        return .failure(.noSource)
++    }
++}
++
++@MainActor
++enum TextTranslator {
++    enum Failure: Error { case notInstalled }
++    static func displayName(of language: Locale.Language) -> String { "Test Language" }
++    static func translate(_ text: String, to language: Locale.Language) async throws -> String {
++        "translated"
++    }
++    static func supportedLanguages() async -> [Locale.Language] { [] }
++}
++
++struct InjectionTarget {
++    var ownEditor: Any?
++    static func behindPalette(ownWindow: NSWindow?, app: NSRunningApplication?) -> InjectionTarget? {
++        InjectionTarget()
++    }
++    static func current() -> InjectionTarget? { InjectionTarget() }
++}
++
++final class NoteTextView: NSView {
++    var injectableSelection = ""
++    func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
++    func replaceUnchangedSelection(with text: String, source: String, range: NSRange) -> Bool {
++        false
++    }
++}
++
++struct NoteEditorInput: Equatable { var source = "" }
++
++@MainActor
++final class AppIndex {
++    func setCommandsVisible(_ commands: Set<CommandID>, _ visible: Bool) {}
++    func setCustomQuickActions(_ actions: [CustomQuickAction]) {}
++}
++
++enum CommandID: Hashable {
++    case builtIn(BuiltInQuickAction)
++    init(_ action: BuiltInQuickAction) { self = .builtIn(action) }
++}
++
++enum HotKeyAction: Equatable { case quickAction(id: UUID) }
++
++@MainActor
++final class HotKeyManager {
++    var recordingAction: HotKeyAction?
++    func setBinding(_ binding: String?, for action: HotKeyAction) {}
++}
++
++final class FavoritesStore { func remove(keys: Set<String>) {} }
++final class VisibilityStore { func removeItemKeys(_ keys: [String]) {} }
++final class LauncherRankingStore { func reset(itemKey: String) {} }
++final class AliasStore { func removeKeys(_ keys: [String]) {} }
++
++enum DialogTone { case danger, neutral, success }
++enum DialogConfirmRole { case standard }
++
++@MainActor
++final class TestNotesCoordinator { var editorInput = NoteEditorInput() }
++
++@MainActor
++final class TestChats {
++    let quickAI: AIChatState
++    init(_ chat: AIChatState) { quickAI = chat }
++}
++
++@MainActor
++final class TestAIChatCoordinator {
++    struct Answer {
++        let prompt: String
++        let session: UUID
++        let attachments: [String]
++    }
++    let chats: TestChats
++    var answers: [Answer] = []
++    var answerWaiters: [CheckedContinuation<Void, Never>] = []
++    var failAnswer = false
++    init(chat: AIChatState) { chats = TestChats(chat) }
++    func waitForAnswer() async {
++        if !answers.isEmpty { return }
++        await withCheckedContinuation { answerWaiters.append($0) }
++    }
++    func answerQuickAction(prompt: String, instructions: String, in chat: AIChatState) -> Bool {
++        guard !failAnswer else { return false }
++        answers.append(
++            Answer(
++                prompt: prompt, session: chat.session.id,
++                attachments: chat.pendingAttachments.map(\.name)))
++        _ = chat.record(
++            prompt: prompt, documents: chat.pendingAttachments.compactMap(\.document),
++            reply: "canned")
++        let waiters = answerWaiters
++        answerWaiters = []
++        for waiter in waiters { waiter.resume() }
++        return true
++    }
++}
++
++@MainActor
++final class AppCore {
++    let aiChatCoordinator: TestAIChatCoordinator
++    let notesCoordinator = TestNotesCoordinator()
++    var progresses: [String] = []
++    var progressHides = 0
++    var messages: [(text: String, tone: DialogTone)] = []
++    var failures: [(title: String, message: String)] = []
++    init(chat: AIChatState) { aiChatCoordinator = TestAIChatCoordinator(chat: chat) }
++    func showProgress(_ message: String, onCancel: (() -> Void)? = nil) {
++        progresses.append(message)
++    }
++    func hideProgress() { progressHides += 1 }
++    func showMessage(_ message: String, tone: DialogTone = .success) {
++        messages.append((message, tone))
++    }
++    func reportFailure(title: String, message: String, symbol: String, recovery: String?) async
++        -> Bool
++    {
++        failures.append((title, message))
++        return false
++    }
++    func confirm(
++        title: String, message: String, symbol: String, confirmTitle: String,
++        tone: DialogTone = .success, confirmRole: DialogConfirmRole = .standard
++    ) async -> Bool { false }
++    func showNotice(title: String, message: String, symbol: String, tone: DialogTone) async {}
++    func applyInstalledAILifecycle() {}
++}
++
++enum Paster {
++    static func copyPlainText(_ text: String) {}
++}
++
++enum Permissions {
++    static func ensureAccessibility() -> Bool { true }
++    static func isAccessibilityTrusted() -> Bool { true }
++    static func openAccessibilitySettings() {}
++}
++
++enum AppLauncher {
++    static func openSettingsPane(bundleID: String) {}
+ }
 diff --git a/Tests/text-diff-performance.swift b/Tests/text-diff-performance.swift
 deleted file mode 100644
 index 31fc45d7..00000000
@@ -558,7 +1413,7 @@ index d4ed487a..00000000
 -    }
 -}
 diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
-index 33bd87a0..c4192a79 100644
+index 33bd87a0..e389ce16 100644
 --- a/Tinycast.xcodeproj/project.pbxproj
 +++ b/Tinycast.xcodeproj/project.pbxproj
 @@ -93,8 +93,6 @@
@@ -570,7 +1425,25 @@ index 33bd87a0..c4192a79 100644
  		1B22A7E45ADF2FEA95957698 /* ExtensionFieldChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C8025ED5F2833127E20C05 /* ExtensionFieldChrome.swift */; };
  		1B9BC6B00770D1F002E62E0D /* ExtensionBootConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED5AAA98FFF7A4D34D7B490D /* ExtensionBootConfig.swift */; };
  		1BC16048EE05A1FD25739CB4 /* PaletteState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 188A6D3C5B6BC67716F15F83 /* PaletteState.swift */; };
-@@ -494,7 +492,6 @@
+@@ -229,8 +227,8 @@
+ 		428266F88C6D26C003F1D3A0 /* NoteCheckboxGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD6B72A1A1FF3D08CFC3FA7D /* NoteCheckboxGeometry.swift */; };
+ 		428CCA07D8AFA65CB892EB5D /* DictationTensor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3EAD167D7B52BCB504D6264 /* DictationTensor.swift */; };
+ 		42CDB6A71960204B194EDC8B /* CommandEscapeTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D05FD9A7137951B2EC6C39 /* CommandEscapeTap.swift */; };
+-		439F72D2C096C9B814DF11D7 /* FileSearchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC86115B040B8C574EAD0B5 /* FileSearchPolicy.swift */; };
+ 		439DB3096E4C3A2B2DC0BF43 /* ContextSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5581F5EE9B9967A60E9C16ED /* ContextSettingsView.swift */; };
++		439F72D2C096C9B814DF11D7 /* FileSearchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FC86115B040B8C574EAD0B5 /* FileSearchPolicy.swift */; };
+ 		43DBCE7B5A84D0D6322124F5 /* MessageHUDController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2CB71671625A1F446316A1 /* MessageHUDController.swift */; };
+ 		44646A576847F2D9FB68D8CF /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2F8B8787A7197579A6F6ECC /* MCPServerManager.swift */; };
+ 		44A3046B5651CDBF82223952 /* FileIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CC89B6C271E28F2373B50B /* FileIndexer.swift */; };
+@@ -432,6 +430,7 @@
+ 		791AC049B6CA16C7D86EEBEF /* MeetingLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C117C966BC2990F19E00AB /* MeetingLauncher.swift */; };
+ 		7A3401FAB95C7E16B62760CA /* WindowSwitchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E250BCD1D425BC3C309FF397 /* WindowSwitchPolicy.swift */; };
+ 		7A7D20DFBEB49D7C7D9DDEB5 /* RoomPreviewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 676760D8D30526B99A1F97B7 /* RoomPreviewController.swift */; };
++		7AADEF28BFDB74E156A63785 /* ClipboardQuickLook.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE34CFACDA8219A3ED69DAA /* ClipboardQuickLook.swift */; };
+ 		7AF6E4F92BBF4D41B9B1E700 /* BackupBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 780B32AF98BA3A51D2F0E8B4 /* BackupBundle.swift */; };
+ 		7B25CD1684D24C164346AA68 /* SnippetEditorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F590D5052075C9E121306FEE /* SnippetEditorScreen.swift */; };
+ 		7B32E6EE86458C854D76B0AF /* RoomWindowSweep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D1BD03E0327890BD4E68988 /* RoomWindowSweep.swift */; };
+@@ -494,7 +493,6 @@
  		8CC7A4A5D4205843219A81C8 /* CustomCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF0880635E294D9DF55BAADA /* CustomCommand.swift */; };
  		8CFF2D2BF36F60659C8570A3 /* SettingsPaneScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F7C8CBD0AA75D016DBFC06 /* SettingsPaneScanner.swift */; };
  		8D20CD7B6918873960F84291 /* NoteDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B10DA3A9B1CBD9A03F3DE5 /* NoteDocument.swift */; };
@@ -578,7 +1451,7 @@ index 33bd87a0..c4192a79 100644
  		8D529C8F3AB579941067FE98 /* MessageHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 976A1F05AD82DB8A04B3C3F9 /* MessageHUDView.swift */; };
  		8DB8C82F0683007053A5E564 /* NoteTextViewEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 261AA09F2C6FE579667B9F97 /* NoteTextViewEditing.swift */; };
  		8DCF330D30E59FFEE8C8E8CF /* PaletteDropGuideController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A8B82DCB1B7D131BF0908A /* PaletteDropGuideController.swift */; };
-@@ -591,7 +588,6 @@
+@@ -591,7 +589,6 @@
  		AAFD2C9276D38719E85B675F /* Memo.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB76FDBFE1E306C2A5B1A29B /* Memo.swift */; };
  		AB500AC3DEBFF6EB1CE42812 /* DialogController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94507F8F095D3EBD1A9B3007 /* DialogController.swift */; };
  		AB778D7CE5D7B6B91A4B996F /* DictionaryEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65BCE97EB19D934F786DFAA0 /* DictionaryEntryView.swift */; };
@@ -586,7 +1459,7 @@ index 33bd87a0..c4192a79 100644
  		ABF71DB1EB6741F10CD834DF /* MenuSnapshotPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A39D6A1B28175B4E394ED7A /* MenuSnapshotPolicy.swift */; };
  		ABFC92E6F22D8D6715081D9F /* CalendarAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F82845FDA307DF71676352 /* CalendarAccess.swift */; };
  		AC417E6C0EC58EE665F27F80 /* LauncherMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C7717F4851345ED38592B1C /* LauncherMatch.swift */; };
-@@ -639,7 +635,6 @@
+@@ -639,7 +636,6 @@
  		BA81E5DE22F944417665D90D /* FeatureCommandsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F082FD6A3AC234F43735715D /* FeatureCommandsSection.swift */; };
  		BA835EDCB6D17DE6BFE2D39E /* DialogTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97F7A18CE243DB037673EB63 /* DialogTextField.swift */; };
  		BAD4BEF8041665ACCF1CE460 /* ScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F64FC06CB10BDF8CD044D64 /* ScheduleView.swift */; };
@@ -594,7 +1467,7 @@ index 33bd87a0..c4192a79 100644
  		BB4ED6E8BDDE27DE7815A226 /* ChatComposerTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C343C0FEA2652D8E82E04B /* ChatComposerTextView.swift */; };
  		BB62D7609D890578345C5BB5 /* NoteMarkdownRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E816B806F2103D0EF184E5 /* NoteMarkdownRenderer.swift */; };
  		BBAB44C0E70AABE70A048889 /* QuicklinkArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = F616D2EE62AEC6782E77364D /* QuicklinkArchive.swift */; };
-@@ -772,7 +767,6 @@
+@@ -772,7 +768,6 @@
  		E457BC709D195B8F5D0C2A79 /* UninstallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B6DAC3B9FF387367C3FAB4 /* UninstallSession.swift */; };
  		E49FB7938D8D22AB09AE1D23 /* ExtensionMenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8AB48A3C8B78B04CBFF36B /* ExtensionMenuBarController.swift */; };
  		E4B18EBFFD009B2CAFF4BA9B /* PanelTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73E25B87C692D5FEE1FBF994 /* PanelTransition.swift */; };
@@ -602,7 +1475,7 @@ index 33bd87a0..c4192a79 100644
  		E4C6F315EA0F0544D9E4BB08 /* FileIconStamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC39721B6964B279FB5D5DC3 /* FileIconStamp.swift */; };
  		E4E1403AA9A8ACE4A3D3581C /* MeetingEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B330ABFC83721904159DDF2 /* MeetingEvent.swift */; };
  		E573655220F45E598575FC68 /* MenuTreeNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1B528506E4B62440B4863A /* MenuTreeNode.swift */; };
-@@ -1091,7 +1085,6 @@
+@@ -1091,7 +1086,6 @@
  		316A544BF6628C0465DE28D8 /* EmojiIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiIndex.swift; sourceTree = "<group>"; };
  		31757FAE5F3E9E06D9B77DCA /* ReleaseNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotes.swift; sourceTree = "<group>"; };
  		31BAD6EE1BA3036C4B5A3D19 /* HUDPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HUDPresenter.swift; sourceTree = "<group>"; };
@@ -610,7 +1483,7 @@ index 33bd87a0..c4192a79 100644
  		322CDA010EDCE32555CD4212 /* PlainTextSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainTextSurface.swift; sourceTree = "<group>"; };
  		3265CBD6C91FC67E3996AF8E /* MCPOAuthChallenge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthChallenge.swift; sourceTree = "<group>"; };
  		32733B27AE0BD75742D1394F /* DialogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DialogView.swift; sourceTree = "<group>"; };
-@@ -1356,7 +1349,6 @@
+@@ -1356,7 +1350,6 @@
  		7FAB190A19D214F4B64B9BAB /* SettingsFileFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFileFormat.swift; sourceTree = "<group>"; };
  		7FDB7BD7AB45EAD1A11FFFC4 /* AXWindowAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXWindowAccess.swift; sourceTree = "<group>"; };
  		802BD2F4CC057228F2528217 /* PalettePlacement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PalettePlacement.swift; sourceTree = "<group>"; };
@@ -618,7 +1491,7 @@ index 33bd87a0..c4192a79 100644
  		81C6D5C5A9A1D66BF3A77A8E /* MCPSecretStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSecretStore.swift; sourceTree = "<group>"; };
  		81E2A3F7C4FCA7120A3F6EF5 /* ArmedHover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmedHover.swift; sourceTree = "<group>"; };
  		823F8F6B9EAAD17DD1062137 /* SyntaxStructuredLexers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyntaxStructuredLexers.swift; sourceTree = "<group>"; };
-@@ -1569,7 +1561,6 @@
+@@ -1569,7 +1562,6 @@
  		BDB241B179A08518424F7C1B /* DialogPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DialogPanel.swift; sourceTree = "<group>"; };
  		BE3331A5E8F892CC257AD31B /* SnippetMarkdownSerializer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetMarkdownSerializer.swift; sourceTree = "<group>"; };
  		BE33C0D70D728B12E9A8D4A6 /* WindowCommandCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCommandCoordinator.swift; sourceTree = "<group>"; };
@@ -626,7 +1499,7 @@ index 33bd87a0..c4192a79 100644
  		BE6972F177922B1EB8831735 /* OnboardingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingCard.swift; sourceTree = "<group>"; };
  		BE7D64F656A9DD6EE1CCC93A /* DictationPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationPanel.swift; sourceTree = "<group>"; };
  		BEBE95E04A3E8B4BCF973A04 /* MathBox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathBox.swift; sourceTree = "<group>"; };
-@@ -1630,7 +1621,6 @@
+@@ -1630,7 +1622,6 @@
  		CD8BC47B03C5DFDC3FAE752D /* ChatComposerChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposerChips.swift; sourceTree = "<group>"; };
  		CE8C8077B002AFD9A9C496EF /* ChatTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTitle.swift; sourceTree = "<group>"; };
  		CEE5FA2E56073002C2DA6D6A /* ClipboardTextHelper */ = {isa = PBXFileReference; includeInIndex = 0; path = ClipboardTextHelper; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -634,7 +1507,7 @@ index 33bd87a0..c4192a79 100644
  		CF2A1ECA5667B8FD1B1F9FD8 /* UpdateCheckStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheckStore.swift; sourceTree = "<group>"; };
  		CF64F5FCB3872996AE57FDBB /* FileSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSearchCoordinator.swift; sourceTree = "<group>"; };
  		CFBF31AF26A4786B234ABB64 /* ExtensionAnimatedImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionAnimatedImage.swift; sourceTree = "<group>"; };
-@@ -1655,7 +1645,6 @@
+@@ -1655,7 +1646,6 @@
  		D43F1080FB443A1D0616790E /* FavoritesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStore.swift; sourceTree = "<group>"; };
  		D4462AB0E866F02397B57EC6 /* MeetingDetails.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetails.swift; sourceTree = "<group>"; };
  		D558FDBE73563E4292E388DD /* DictationVolumeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationVolumeSnapshot.swift; sourceTree = "<group>"; };
@@ -642,7 +1515,7 @@ index 33bd87a0..c4192a79 100644
  		D65D1C9A117E443C6DA2BD9E /* WindowLayoutAnchor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowLayoutAnchor.swift; sourceTree = "<group>"; };
  		D68722D56122F3EFDA707782 /* RoomsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomsScreen.swift; sourceTree = "<group>"; };
  		D6CC42C482CC8B87188F55F4 /* ReleaseNotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseNotesView.swift; sourceTree = "<group>"; };
-@@ -1715,7 +1704,6 @@
+@@ -1715,7 +1705,6 @@
  		E7CBCC47A7A061C01F592BA6 /* ContextPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextPolicy.swift; sourceTree = "<group>"; };
  		E7D5244DA7C7D17A80F33442 /* ExtensionMenuBarManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionMenuBarManager.swift; sourceTree = "<group>"; };
  		E8A4DEF28F120FE354EB5599 /* QuickAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAction.swift; sourceTree = "<group>"; };
@@ -650,7 +1523,23 @@ index 33bd87a0..c4192a79 100644
  		E9AEDF156B61DD90C5ADA8FA /* FallbackActionsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FallbackActionsMenu.swift; sourceTree = "<group>"; };
  		E9CC89B6C271E28F2373B50B /* FileIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexer.swift; sourceTree = "<group>"; };
  		E9D41B9E6F2C617D28C83AFF /* ShortcutRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRecorder.swift; sourceTree = "<group>"; };
-@@ -2335,10 +2323,6 @@
+@@ -1746,6 +1735,7 @@
+ 		EF4FF95DC8A5CD7676DCBA60 /* ExtensionSelectionForwarder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionSelectionForwarder.swift; sourceTree = "<group>"; };
+ 		EFAD3CBED74EA031B58266EC /* SettingsFileKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFileKey.swift; sourceTree = "<group>"; };
+ 		EFBD39DED4660AFB08714E67 /* RaycastThemeCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaycastThemeCatalog.swift; sourceTree = "<group>"; };
++		EFE34CFACDA8219A3ED69DAA /* ClipboardQuickLook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardQuickLook.swift; sourceTree = "<group>"; };
+ 		EFF8EEC4B5B30644A7EAA117 /* InterfaceMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterfaceMetrics.swift; sourceTree = "<group>"; };
+ 		F023729C84682E9231F3D73B /* ExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionInstaller.swift; sourceTree = "<group>"; };
+ 		F0311153A4A3557C6FFEAAAB /* HotKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyManager.swift; sourceTree = "<group>"; };
+@@ -2217,6 +2207,7 @@
+ 				E5B89168050723B7221F04A2 /* ClipboardCoordinator.swift */,
+ 				51903548B005B2EF070C8AE2 /* ClipboardEditField.swift */,
+ 				B45A6AB1413A8A08EF7F0A9E /* ClipboardFilterButton.swift */,
++				EFE34CFACDA8219A3ED69DAA /* ClipboardQuickLook.swift */,
+ 				548C83C4086CD9FB8E85B222 /* ClipboardScreen.swift */,
+ 				FBF6EF3A2C35F45B82D40968 /* ClipboardView.swift */,
+ 				DB74C73EB33F368E0890E839 /* ClipDrag.swift */,
+@@ -2335,10 +2326,6 @@
  			isa = PBXGroup;
  			children = (
  				56D6EE5144AEF889C95B3758 /* QuickActionCoordinator.swift */,
@@ -661,7 +1550,7 @@ index 33bd87a0..c4192a79 100644
  			);
  			path = UI;
  			sourceTree = "<group>";
-@@ -2627,7 +2611,6 @@
+@@ -2627,7 +2614,6 @@
  				53DBA322BA1F117530075F51 /* QuickActionFailure.swift */,
  				F513217C40F0B8199DC57A35 /* QuickActionPrompt.swift */,
  				C3C83D437500107168E12647 /* QuickActionSettings.swift */,
@@ -669,7 +1558,7 @@ index 33bd87a0..c4192a79 100644
  			);
  			path = Model;
  			sourceTree = "<group>";
-@@ -3162,7 +3145,6 @@
+@@ -3162,7 +3148,6 @@
  			isa = PBXGroup;
  			children = (
  				C464FF06F4AD0883F035290D /* CustomQuickActionEditorPanel.swift */,
@@ -677,7 +1566,15 @@ index 33bd87a0..c4192a79 100644
  				98C29DA5656628B41C17D42A /* QuickActionSettingsStore.swift */,
  				C5941CE8F08FD5986FED12E9 /* QuickActionsSettingsView.swift */,
  			);
-@@ -4648,12 +4630,7 @@
+@@ -4217,6 +4202,7 @@
+ 				AD9753D6EAF202B6E31510EB /* ClipboardFilter.swift in Sources */,
+ 				1F8F2135470F74627A644ACC /* ClipboardFilterButton.swift in Sources */,
+ 				A64891F5587F2C11E4A2E2D2 /* ClipboardManager.swift in Sources */,
++				7AADEF28BFDB74E156A63785 /* ClipboardQuickLook.swift in Sources */,
+ 				935F7433BB0C0ECDE6FA3BF3 /* ClipboardScreen.swift in Sources */,
+ 				D4A45373662D6658706E4DA4 /* ClipboardSettingsView.swift in Sources */,
+ 				3155DE3A2195764DDEA97F26 /* ClipboardStore.swift in Sources */,
+@@ -4648,12 +4634,7 @@
  				D99DAF62B746E6009E1BFB1F /* QuickAction.swift in Sources */,
  				D4F49C93A33488D226BA8664 /* QuickActionCoordinator.swift in Sources */,
  				BFC17B1BD5D239E0CCD56DDF /* QuickActionFailure.swift in Sources */,
@@ -690,7 +1587,7 @@ index 33bd87a0..c4192a79 100644
  				3F3414742ABC6F21D48C2A9E /* QuickActionRunner.swift in Sources */,
  				F9750CE5EC2E7E541F740A15 /* QuickActionSettings.swift in Sources */,
  				78BA4410EAA35ED76D7CFBE8 /* QuickActionSettingsStore.swift in Sources */,
-@@ -4808,7 +4785,6 @@
+@@ -4808,7 +4789,6 @@
  				A41185C975CBF97A8C6EAC19 /* SystemPromptEditor.swift in Sources */,
  				410F1B5FFAA44378AC9EC2DB /* SystemSettingsSettingsView.swift in Sources */,
  				005B39EF22378D1736CE5805 /* TerminalLogView.swift in Sources */,
@@ -793,26 +1690,44 @@ index 76d6e855..d2cd0b54 100644
                      ? ChatFindHighlight(
                          query: find.needle, matches: Set(occurrences.map(\.messageID)),
 diff --git a/Tinycast/Features/AI/UI/AIChatState.swift b/Tinycast/Features/AI/UI/AIChatState.swift
-index 129a59e5..c678f360 100644
+index 129a59e5..3136e3f4 100644
 --- a/Tinycast/Features/AI/UI/AIChatState.swift
 +++ b/Tinycast/Features/AI/UI/AIChatState.swift
-@@ -28,6 +28,8 @@ final class AIChatState {
+@@ -8,6 +8,8 @@ final class AIChatState {
+     private(set) var isStreaming = false
+     private(set) var isThinking = false
+     private(set) var notice: String?
++    /// A notice naming work in flight, not something to fix; the empty state hides Configure for it.
++    private(set) var noticeIsProgress = false
+     /// Files staged for the next message; they go out with whatever is typed next.
+     private(set) var pendingAttachments: [ChatAttachment] = []
+     /// The window's unsent text; Quick AI's lives in the palette query instead.
+@@ -28,6 +30,8 @@ final class AIChatState {
      @ObservationIgnored private var reasoningStartedAt: Date?
      /// Told when a reply ends whole, which is when a chat has something to be named by.
      @ObservationIgnored var onReplyFinished: (@MainActor (AIChatState) -> Void)?
-+    /// Asked once by the next turn to end, however it ends; a quick action writes its result back here.
-+    @ObservationIgnored var onNextReplyEnded: (@MainActor (ChatMessage?) -> Void)?
++    /// Asked once by the next turn to end, however it ends; the reply's state says how it ended.
++    @ObservationIgnored var onNextReplyEnded: (@MainActor (ChatMessage) -> Void)?
      @ObservationIgnored private var flushTask: Task<Void, Never>?
      @ObservationIgnored private var lastFlush = ContinuousClock().now
  
-@@ -58,6 +60,18 @@ final class AIChatState {
+@@ -45,7 +49,7 @@ final class AIChatState {
+     ) -> Bool {
+         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !text.isEmpty || !pendingAttachments.isEmpty, !isStreaming else { return false }
+-        notice = nil
++        clearNotice()
+         session.append(
+             ChatMessage(
+                 role: .user, text: text, images: pendingAttachments.compactMap(\.image),
+@@ -58,6 +62,18 @@ final class AIChatState {
          return true
      }
  
 +    /// A reply the chat's model did not write, such as Apple's translator's, as a finished turn.
 +    @discardableResult
 +    func record(prompt: String, documents: [AIDocument], reply: String) -> UUID {
-+        notice = nil
++        clearNotice()
 +        session.append(ChatMessage(role: .user, text: prompt, documents: documents))
 +        let message = ChatMessage(role: .assistant, text: reply)
 +        session.append(message)
@@ -824,18 +1739,86 @@ index 129a59e5..c678f360 100644
      /// The chat's own route from now on; a saved chat records it at once, a new one on first send.
      func setModel(_ model: AIModelSelection) {
          session.model = model
-@@ -332,6 +346,9 @@ final class AIChatState {
+@@ -71,7 +87,7 @@ final class AIChatState {
+         instructions: String? = nil, contextBudget: Int = ChatSession.defaultTextBudget
+     ) -> Bool {
+         guard !isStreaming, session.dropTrailingReply() else { return false }
+-        notice = nil
++        clearNotice()
+         if let model { session.model = model }
+         startReply(
+             using: provider, webSearch: webSearch, instructions: instructions,
+@@ -118,6 +134,19 @@ final class AIChatState {
+ 
+     func report(_ message: String) {
+         notice = message
++        noticeIsProgress = false
++    }
++
++    /// Progress the reader waits on; cancelling or superseding it clears it without a trace.
++    func reportProgress(_ message: String) {
++        notice = message
++        noticeIsProgress = true
++    }
++
++    /// Drops a gathering notice its run never used; a report or a turn keeps its own.
++    func clearProgressNotice() {
++        guard noticeIsProgress, session.messages.isEmpty else { return }
++        clearNotice()
+     }
+ 
+     /// Refused, not truncated: the composer is the last place an oversized turn can be explained.
+@@ -155,6 +184,11 @@ final class AIChatState {
+         stagingGeneration += 1
+     }
+ 
++    private func clearNotice() {
++        notice = nil
++        noticeIsProgress = false
++    }
++
+     func cancel() {
+         replyGeneration += 1
+         replyTask?.cancel()
+@@ -169,7 +203,7 @@ final class AIChatState {
+     func startNewChat() {
+         cancel()
+         session = ChatSession()
+-        notice = nil
++        clearNotice()
+         clearStaging()
+     }
+ 
+@@ -180,7 +214,7 @@ final class AIChatState {
+         guard let loaded = history.session(id: id) else { return false }
+         cancel()
+         session = loaded
+-        notice = nil
++        clearNotice()
+         clearStaging()
+         return true
+     }
+@@ -189,7 +223,7 @@ final class AIChatState {
+         if session.id == id {
+             cancel()
+             session = ChatSession()
+-            notice = nil
++            clearNotice()
+             clearStaging()
+         }
+         history.remove(id: id)
+@@ -332,6 +366,9 @@ final class AIChatState {
          isStreaming = false
          isThinking = false
          replyTask = nil
 +        let ended = onNextReplyEnded
 +        onNextReplyEnded = nil
-+        ended?(state == .complete ? session.messages.last : nil)
++        if let reply = session.messages.last { ended?(reply) }
          if state == .complete { onReplyFinished?(self) }
      }
  
 diff --git a/Tinycast/Features/AI/UI/AIScreen.swift b/Tinycast/Features/AI/UI/AIScreen.swift
-index 6f8d10c9..8f0cf0ee 100644
+index 6f8d10c9..dd8e561d 100644
 --- a/Tinycast/Features/AI/UI/AIScreen.swift
 +++ b/Tinycast/Features/AI/UI/AIScreen.swift
 @@ -187,7 +187,9 @@ struct AIScreen: PaletteScreen {
@@ -857,7 +1840,17 @@ index 6f8d10c9..8f0cf0ee 100644
  
      var body: some View {
          Group {
-@@ -214,7 +217,8 @@ private struct AIChatView: View {
+@@ -206,7 +209,8 @@ private struct AIChatView: View {
+                 let unavailability = availability()
+                 AIEmptyState(
+                     message: chat.notice ?? unavailability,
+-                    canConfigure: chat.notice != nil || unavailability != nil,
++                    canConfigure: (chat.notice != nil && !chat.noticeIsProgress)
++                        || unavailability != nil,
+                     onConfigure: onConfigure)
+             } else {
+                 ChatTranscriptView(
+@@ -214,7 +218,8 @@ private struct AIChatView: View {
                      status: chat.liveStatus,
                      usage: chat.usage,
                      surface: .palette,
@@ -940,10 +1933,10 @@ index a43f5de4..2583823a 100644
      @Environment(\.metrics) private var metrics
      let action: () -> Void
 diff --git a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-index 377b463c..31c3e532 100644
+index 377b463c..87d4fbab 100644
 --- a/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
 +++ b/Tinycast/Features/Backup/Model/SettingsBackupCoverage.swift
-@@ -181,15 +181,6 @@ enum SettingsBackupCoverage {
+@@ -181,15 +181,9 @@ enum SettingsBackupCoverage {
          AppSettingsKey.quickActionsEnabled.rawValue:
              "Grants keystroke delivery into other apps through the Accessibility permission, and a "
              + "flag that grants a capability is never carried by a backup.",
@@ -956,26 +1949,31 @@ index 377b463c..31c3e532 100644
 -        AppSettingsKey.quickActionPreviews.rawValue:
 -            "Says which actions may rewrite a document without showing the result first, which is a "
 -            + "decision each Mac makes about its own text.",
++        AppSettingsKey.quickActionReplaceOnly.rawValue:
++            "Says which actions write a reply into the reader's document without a window to check it "
++            + "first, a decision each Mac makes about its own text.",
          AppSettingsKey.quickActionInstructions.rawValue:
              "Custom model instructions change transformed results and must not move unseen.",
          AppSettingsKey.quickActionLanguage.rawValue:
 diff --git a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
-index c65e9e7e..f4ff4aef 100644
+index c65e9e7e..56e2ee9f 100644
 --- a/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
 +++ b/Tinycast/Features/QuickActions/Model/BuiltInQuickAction.swift
-@@ -29,20 +29,8 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
-         }
-     }
+@@ -31,18 +31,15 @@ enum BuiltInQuickAction: String, CaseIterable, Codable, Identifiable, Sendable {
  
--    var progressTitle: String {
--        switch self {
+     var progressTitle: String {
+         switch self {
 -        case .fixGrammar: return String(localized: "Fixing Grammar…")
 -        case .rewrite: return String(localized: "Rewriting…")
 -        case .translate: return String(localized: "Translating…")
 -        case .summarize: return String(localized: "Summarizing…")
--        }
--    }
--
++        case .fixGrammar: return "Fixing Grammar…"
++        case .rewrite: return "Rewriting…"
++        case .translate: return "Translating…"
++        case .summarize: return "Summarizing…"
+         }
+     }
+ 
 -    var alwaysPreviews: Bool { self == .summarize }
 -
 -    var replacesDirectlyByDefault: Bool { self == .fixGrammar }
@@ -987,20 +1985,13 @@ index c65e9e7e..f4ff4aef 100644
      var usesTranslationFramework: Bool { self == .translate }
  }
 diff --git a/Tinycast/Features/QuickActions/Model/QuickAction.swift b/Tinycast/Features/QuickActions/Model/QuickAction.swift
-index 1cbe2852..a457cc34 100644
+index 1cbe2852..1618315f 100644
 --- a/Tinycast/Features/QuickActions/Model/QuickAction.swift
 +++ b/Tinycast/Features/QuickActions/Model/QuickAction.swift
-@@ -42,16 +42,8 @@ enum QuickAction: Hashable, Identifiable, Sendable {
+@@ -49,9 +49,8 @@ enum QuickAction: Hashable, Identifiable, Sendable {
          }
      }
  
--    var progressTitle: String {
--        switch self {
--        case .builtIn(let action): return action.progressTitle
--        case .custom(let action): return action.name + "…"
--        }
--    }
--
 -    var alwaysPreviews: Bool { builtInAction?.alwaysPreviews ?? false }
 -
 -    var showsDiff: Bool { builtInAction?.showsDiff ?? false }
@@ -1041,10 +2032,10 @@ index abdce2e5..fc21f88b 100644
 -    }
  }
 diff --git a/Tinycast/Features/QuickActions/Model/QuickActionSettings.swift b/Tinycast/Features/QuickActions/Model/QuickActionSettings.swift
-index 6dd3b865..430f6fa7 100644
+index 6dd3b865..a3a9b4f3 100644
 --- a/Tinycast/Features/QuickActions/Model/QuickActionSettings.swift
 +++ b/Tinycast/Features/QuickActions/Model/QuickActionSettings.swift
-@@ -1,30 +1,10 @@
+@@ -1,28 +1,32 @@
  import Foundation
  
  struct QuickActionSettings: Equatable, Sendable {
@@ -1054,41 +2045,62 @@ index 6dd3b865..430f6fa7 100644
      /// BCP-47, e.g. `es-419`. Empty means the Mac's own language.
      var targetLanguage: String = ""
      private(set) var instructionOverrides: [BuiltInQuickAction: String] = [:]
++    /// Built-in actions that write their reply back without opening Quick AI. Absent means Quick AI.
++    private(set) var replaceOnlyActions: Set<BuiltInQuickAction> = []
  
 -    func previewsResult(_ action: QuickAction) -> Bool {
--        switch action {
++    /// Only the reader's choice on a custom action's record; a built-in one lives here.
++    func replacesOnly(_ action: QuickAction) -> Bool {
+         switch action {
 -        case .builtIn(let builtIn): return previewsResult(builtIn)
 -        case .custom(let custom): return custom.previewsResult
--        }
--    }
--
++        case .builtIn(let builtIn): return replacesOnly(builtIn)
++        case .custom(let custom): return !custom.previewsResult
+         }
+     }
+ 
 -    func previewsResult(_ action: BuiltInQuickAction) -> Bool {
 -        if action.alwaysPreviews { return true }
 -        return previewChoices[action] ?? !action.replacesDirectlyByDefault
--    }
--
++    func replacesOnly(_ action: BuiltInQuickAction) -> Bool {
++        replaceOnlyActions.contains(action)
+     }
+ 
 -    mutating func setPreviewsResult(_ previews: Bool, for action: BuiltInQuickAction) {
 -        guard !action.alwaysPreviews else { return }
 -        previewChoices[action] = previews
--    }
--
-     func instructionOverride(for action: QuickAction) -> String? {
-         action.builtInAction.flatMap(instructionOverride)
-     }
-@@ -39,16 +19,6 @@ struct QuickActionSettings: Equatable, Sendable {
++    /// Summarize has nothing to write back, so it can never be told to.
++    mutating func setReplacesOnly(_ replacesOnly: Bool, for action: BuiltInQuickAction) {
++        guard action.replacesSelection else { return }
++        if replacesOnly {
++            replaceOnlyActions.insert(action)
++        } else {
++            replaceOnlyActions.remove(action)
++        }
      }
  
-     /// Round-trips through `UserDefaults`; an unknown key is an action that no longer exists.
+     func instructionOverride(for action: QuickAction) -> String? {
+@@ -38,17 +42,16 @@ struct QuickActionSettings: Equatable, Sendable {
+         instructionOverrides[action] = instructions
+     }
+ 
+-    /// Round-trips through `UserDefaults`; an unknown key is an action that no longer exists.
 -    var storedPreviewChoices: [String: Bool] {
 -        get { Dictionary(uniqueKeysWithValues: previewChoices.map { ($0.rawValue, $1) }) }
--        set {
++    var storedReplaceOnlyActions: [String] {
++        get { replaceOnlyActions.map(\.rawValue).sorted() }
+         set {
 -            previewChoices = Dictionary(
 -                uniqueKeysWithValues: newValue.compactMap { key, value in
 -                    BuiltInQuickAction(rawValue: key).map { ($0, value) }
 -                })
--        }
--    }
--
++            replaceOnlyActions = Set(
++                newValue.compactMap(BuiltInQuickAction.init(rawValue:))
++                    .filter(\.replacesSelection))
+         }
+     }
+ 
++    /// Round-trips through `UserDefaults`; an unknown key is an action that no longer exists.
      var storedInstructionOverrides: [String: String] {
          get { Dictionary(uniqueKeysWithValues: instructionOverrides.map { ($0.rawValue, $1) }) }
          set {
@@ -1343,7 +2355,7 @@ index 29ad3b4c..00000000
 -    }
 -}
 diff --git a/Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift b/Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
-index aac1476d..37c19777 100644
+index aac1476d..18e2436a 100644
 --- a/Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
 +++ b/Tinycast/Features/QuickActions/Settings/QuickActionSettingsStore.swift
 @@ -1,7 +1,7 @@
@@ -1355,7 +2367,7 @@ index aac1476d..37c19777 100644
  @MainActor
  @Observable
  final class QuickActionSettingsStore {
-@@ -10,138 +10,22 @@ final class QuickActionSettingsStore {
+@@ -10,138 +10,26 @@ final class QuickActionSettingsStore {
      var settings: QuickActionSettings {
          didSet { persistSettings() }
      }
@@ -1379,6 +2391,8 @@ index aac1476d..37c19777 100644
          loaded.storedInstructionOverrides =
              defaults.dictionary(forKey: AppSettingsKey.quickActionInstructions.rawValue)
              as? [String: String] ?? [:]
++        loaded.storedReplaceOnlyActions =
++            defaults.stringArray(forKey: AppSettingsKey.quickActionReplaceOnly.rawValue) ?? []
          settings = loaded
 -        model = Self.decode(
 -            AIModelSelection.self,
@@ -1471,7 +2485,7 @@ index aac1476d..37c19777 100644
          defaults.set(
              settings.storedInstructionOverrides,
              forKey: AppSettingsKey.quickActionInstructions.rawValue)
-     }
+-    }
 -
 -    private func persistModel() {
 -        persist(model, forKey: .quickActionModel)
@@ -1492,10 +2506,12 @@ index aac1476d..37c19777 100644
 -    private static func decode<Value: Decodable>(_ type: Value.Type, from data: Data?) -> Value? {
 -        guard let data else { return nil }
 -        return try? JSONDecoder().decode(type, from: data)
--    }
++        defaults.set(
++            settings.storedReplaceOnlyActions, forKey: AppSettingsKey.quickActionReplaceOnly.rawValue)
+     }
  }
 diff --git a/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift b/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift
-index f3e496df..2b3737da 100644
+index f3e496df..fbea2c1f 100644
 --- a/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift
 +++ b/Tinycast/Features/QuickActions/Settings/QuickActionsSettingsView.swift
 @@ -1,13 +1,12 @@
@@ -1521,7 +2537,7 @@ index f3e496df..2b3737da 100644
                  languageSection
              }
              .settingsEnabled(appSettings.quickActionsEnabled)
-@@ -57,42 +55,29 @@ struct QuickActionsSettingsView: View {
+@@ -57,42 +55,26 @@ struct QuickActionsSettingsView: View {
          .onReceive(refreshTimer) { _ in isTrusted = Permissions.isAccessibilityTrusted() }
          .settingsEditorPanel(item: $editingAction) { action in
              InstructionsEditorPanel(
@@ -1565,14 +2581,11 @@ index f3e496df..2b3737da 100644
              ForEach(BuiltInQuickAction.allCases, content: builtInRow)
              ForEach(customActions.actions) { action in
 -                SettingsRow(title: action.name, subtitle: subtitle(for: .custom(action))) {
-+                SettingsRow(
-+                    title: action.name,
-+                    subtitle: action.previewsResult ? nil : "Replaces at once"
-+                ) {
++                SettingsRow(title: action.name, subtitle: nil) {
                      SymbolImage(name: action.symbol, size: Theme.Size.quickActionHeaderIcon)
                          .frame(width: Theme.Size.settingsRowIcon)
                  } trailing: {
-@@ -113,15 +98,20 @@ struct QuickActionsSettingsView: View {
+@@ -113,15 +95,20 @@ struct QuickActionsSettingsView: View {
          } header: {
              SettingsSectionHeader(.quickActionsActions)
          } footer: {
@@ -1581,8 +2594,8 @@ index f3e496df..2b3737da 100644
 -                .foregroundStyle(.secondary)
 +            Text(
 +                appSettings.aiEnabled
-+                    ? "Results open in Quick AI, where Replace writes them back. A custom action set "
-+                        + "to Replace writes back as soon as it finishes."
++                    ? "Quick AI shows each result, where Replace writes it back. Replace only writes "
++                        + "the result back as soon as it finishes, without opening Quick AI."
 +                    : "Turn on AI Chat to use Quick Actions."
 +            )
 +            .font(.caption)
@@ -1597,16 +2610,33 @@ index f3e496df..2b3737da 100644
              Image(systemName: action.symbol)
                  .frame(width: Theme.Size.settingsRowIcon)
          } trailing: {
-@@ -130,8 +120,6 @@ struct QuickActionsSettingsView: View {
+@@ -130,8 +117,9 @@ struct QuickActionsSettingsView: View {
              }
              if let entry { AliasField(entry: entry) }
              ShortcutRecorder(action: .command(CommandID(action)), isQuiet: true)
 -            resultPicker(title: action.title, selection: previewBinding(action))
 -                .disabled(action.alwaysPreviews)
++            if action.replacesSelection {
++                resultPicker(title: action.title, selection: previewBinding(action))
++            }
              if let entry { launcherToggle(title: action.title, entry: entry) }
          }
      }
-@@ -163,28 +151,6 @@ struct QuickActionsSettingsView: View {
+@@ -145,10 +133,11 @@ struct QuickActionsSettingsView: View {
+         .accessibilityLabel("Edit \(title)")
+     }
+ 
++    /// `true` is Quick AI, `false` is Replace only: the same choice on a built-in and a custom action.
+     private func resultPicker(title: String, selection: Binding<Bool>) -> some View {
+         Picker("", selection: selection) {
+-            Text("Replace").tag(false)
+-            Text("Preview").tag(true)
++            Text("Quick AI").tag(true)
++            Text("Replace only").tag(false)
+         }
+         .labelsHidden()
+         .fixedSize()
+@@ -163,28 +152,6 @@ struct QuickActionsSettingsView: View {
              .accessibilityLabel("Show \(title) in launcher")
      }
  
@@ -1635,7 +2665,7 @@ index f3e496df..2b3737da 100644
      private var languageSection: some View {
          Section {
              Picker(selection: languageBinding) {
-@@ -204,32 +170,12 @@ struct QuickActionsSettingsView: View {
+@@ -204,20 +171,6 @@ struct QuickActionsSettingsView: View {
          }
      }
  
@@ -1656,19 +2686,18 @@ index f3e496df..2b3737da 100644
      private var enabledBinding: Binding<Bool> {
          Binding(
              get: { appSettings.quickActionsEnabled },
-             set: { core.quickActionCoordinator.setEnabled($0) })
-     }
+@@ -226,8 +179,8 @@ struct QuickActionsSettingsView: View {
  
--    private func previewBinding(_ action: BuiltInQuickAction) -> Binding<Bool> {
--        Binding(
+     private func previewBinding(_ action: BuiltInQuickAction) -> Binding<Bool> {
+         Binding(
 -            get: { store.settings.previewsResult(action) },
 -            set: { store.settings.setPreviewsResult($0, for: action) })
--    }
--
++            get: { !store.settings.replacesOnly(action) },
++            set: { store.settings.setReplacesOnly(!$0, for: action) })
+     }
+ 
      private func previewBinding(_ action: CustomQuickAction) -> Binding<Bool> {
-         Binding(
-             get: { action.previewsResult },
-@@ -248,59 +194,21 @@ struct QuickActionsSettingsView: View {
+@@ -248,59 +201,21 @@ struct QuickActionsSettingsView: View {
              set: { store.settings.targetLanguage = $0 })
      }
  
@@ -1730,7 +2759,7 @@ index f3e496df..2b3737da 100644
              self.builtIn = builtIn
              self.onSave = onSave
          }
-@@ -316,8 +224,6 @@ struct QuickActionsSettingsView: View {
+@@ -316,8 +231,6 @@ struct QuickActionsSettingsView: View {
                      .font(.body)
                      .settingsEditorTextArea(height: Theme.Size.editorTextHeight * 2)
  
@@ -1739,7 +2768,7 @@ index f3e496df..2b3737da 100644
                  HStack(spacing: Theme.Spacing.md) {
                      Button("Use Default") { instructions = builtIn }
                          .buttonStyle(.modalAction(.standard, fillsWidth: false))
-@@ -327,7 +233,7 @@ struct QuickActionsSettingsView: View {
+@@ -327,7 +240,7 @@ struct QuickActionsSettingsView: View {
                          .buttonStyle(.modalAction(.cancel))
                          .keyboardShortcut(.cancelAction)
                      Button("Save") {
@@ -1749,7 +2778,7 @@ index f3e496df..2b3737da 100644
                      }
                      .buttonStyle(.modalAction(.primary))
 diff --git a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
-index 72e69dbe..54f527db 100644
+index 72e69dbe..52a8aa1b 100644
 --- a/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 +++ b/Tinycast/Features/QuickActions/UI/QuickActionCoordinator.swift
 @@ -1,7 +1,7 @@
@@ -1859,97 +2888,325 @@ index 72e69dbe..54f527db 100644
          let source =
              paletteCoordinator.isVisible
              ? InjectionTarget.behindPalette(
-@@ -201,8 +212,6 @@ final class QuickActionCoordinator {
+@@ -201,8 +212,8 @@ final class QuickActionCoordinator {
          generation += 1
          running?.cancel()
          running = nil
 -        hideProgress(ownedBy: progressOwner)
 -        panels.dismiss()
++        core.hideProgress()
++        core.aiChatCoordinator.chats.quickAI.clearProgressNotice()
      }
  
      /// The generation stops a superseded task from clearing the newer handle as it finishes.
-@@ -247,12 +256,18 @@ final class QuickActionCoordinator {
+@@ -218,41 +229,192 @@ final class QuickActionCoordinator {
+     }
+ 
+     private func begin(_ action: QuickAction, target: Target) async {
++        switch target {
++        case .note(let note):
++            await beginFromNote(action, note: note, target: target)
++        case .external(let app):
++            await beginExternal(action, app: app, target: target)
++        }
++    }
++
++    private func beginFromNote(_ action: QuickAction, note: NoteSelection, target: Target) async {
++        let selection: String
++        do {
++            selection = try QuickActionRunner.accepted(note.text)
++        } catch let failure as QuickActionFailure {
++            reportRefusal(failure)
++            return
++        } catch {
++            core.showMessage(error.localizedDescription, tone: .danger)
++            return
++        }
++        guard !Task.isCancelled else { return }
++        let writesBack = action.replacesSelection
++        let silently = writesBack && store.settings.replacesOnly(action)
++        let sourceName = "Selected text"
++        if action.usesTranslationFramework {
++            await translate(
++                selection, sourceName: sourceName, action: action, target: target,
++                writesBack: writesBack, silently: silently)
++        } else {
++            answer(
++                action, selection: selection, sourceName: sourceName, target: target,
++                writesBack: writesBack, silently: silently)
++        }
++    }
++
++    private func beginExternal(
++        _ action: QuickAction, app: NSRunningApplication?, target: Target
++    ) async {
++        let replacesOnly = store.settings.replacesOnly(action)
++        var previews = !replacesOnly
++        let mine = generation
++        var prepared: PreparedCapture?
++        if previews {
++            guard !Task.isCancelled, mine == generation else { return }
++            guard settings.quickActionsEnabled, settings.aiEnabled else { return }
++            prepared = preparePreview()
++        } else {
++            guard !Task.isCancelled, mine == generation else { return }
++            guard settings.quickActionsEnabled, settings.aiEnabled else { return }
++            core.showProgress(action.progressTitle, onCancel: { [weak self] in self?.cancel() })
++        }
++        // The palette may now be key: capture still posts to the retained app's pid.
+         let selection: String
+         var fromPage = false
+         do {
+-            switch target {
+-            case .external(let app):
+-                do {
+-                    selection = try await QuickActionRunner.selection(in: app, using: injector)
+-                } catch let failure as QuickActionFailure where Self.pageMayStandIn(for: failure) {
+-                    guard let page = await pageText(in: app) else { throw failure }
+-                    guard !Task.isCancelled else { return }
+-                    switch page {
+-                    case .success(let text): selection = text
+-                    case .failure(let refusal):
+-                        core.showMessage(refusal.message, tone: .neutral)
++            do {
++                selection = try await QuickActionRunner.selection(in: app, using: injector)
++            } catch let failure as QuickActionFailure where Self.pageMayStandIn(for: failure) {
++                if !previews {
++                    guard
++                        ContextBrowser.quickActionFallbackApplies(
++                            bundleID: app?.bundleIdentifier,
++                            options: settings.contextPolicyOptions,
++                            aiEnabled: settings.aiEnabled)
++                    else { throw failure }
++                    core.hideProgress()
++                    guard !Task.isCancelled, mine == generation else { return }
++                    guard settings.quickActionsEnabled, settings.aiEnabled else { return }
++                    prepared = preparePreview()
++                    previews = true
++                }
++                guard let page = await pageText(in: app) else { throw failure }
++                switch page {
++                case .success(let text): selection = text
++                case .failure(let refusal):
++                    guard let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine)
++                    else {
++                        if let expected = prepared { dropStaleCapture(matching: expected) }
+                         return
+                     }
+-                    fromPage = true
++                    paletteCoordinator.claimKey()
++                    chat.report(refusal.message)
++                    return
+                 }
+-            case .note(let note):
+-                selection = try QuickActionRunner.accepted(note.text)
++                fromPage = true
+             }
+         } catch let failure as QuickActionFailure {
++            if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
++                paletteCoordinator.claimKey()
++                chat.report(failure.localizedDescription)
++                return
++            }
++            if previews {
++                if let expected = prepared { dropStaleCapture(matching: expected) }
++                return
++            }
++            core.hideProgress()
++            guard !Task.isCancelled, mine == generation else { return }
+             reportRefusal(failure)
+             return
+         } catch {
++            if let snapshot = prepared, let chat = preparedChat(matching: snapshot, mine: mine) {
++                paletteCoordinator.claimKey()
++                chat.report(error.localizedDescription)
++                return
++            }
++            if previews {
++                if let expected = prepared { dropStaleCapture(matching: expected) }
++                return
++            }
++            core.hideProgress()
++            guard !Task.isCancelled, mine == generation else { return }
+             core.showMessage(error.localizedDescription, tone: .danger)
              return
          }
-         guard !Task.isCancelled else { return }
+-        guard !Task.isCancelled else { return }
 -        let state = QuickActionPanelState(
 -            action: action, original: selection, targetLanguage: targetLanguage)
 -        // Typing over a page that had no selection would land in whatever happens to be focused.
 -        let previews = fromPage || store.settings.previewsResult(action)
 -        if previews { present(state, target: target) }
 -        await perform(state, target: target, previewing: previews)
-+        // A page has no selection to write back into, so its result is only ever read.
-+        let writesBack = !fromPage && action.replacesSelection
++        let writesBack = action.replacesSelection && !fromPage
++        let silently = writesBack && replacesOnly
 +        let sourceName = fromPage ? "Page text" : "Selected text"
++        if previews {
++            guard let snapshot = prepared else { return }
++            if action.usesTranslationFramework {
++                await translate(
++                    selection, sourceName: sourceName, action: action, target: target,
++                    writesBack: writesBack, silently: silently, prepared: snapshot, mine: mine)
++            } else {
++                answer(
++                    action, selection: selection, sourceName: sourceName, target: target,
++                    writesBack: writesBack, silently: silently, prepared: snapshot, mine: mine)
++            }
++            return
++        }
++        core.hideProgress()
++        guard !Task.isCancelled, mine == generation else { return }
++        guard settings.quickActionsEnabled, settings.aiEnabled else { return }
 +        if action.usesTranslationFramework {
 +            await translate(
 +                selection, sourceName: sourceName, action: action, target: target,
-+                writesBack: writesBack)
++                writesBack: writesBack, silently: silently)
 +        } else {
 +            answer(
 +                action, selection: selection, sourceName: sourceName, target: target,
-+                writesBack: writesBack)
++                writesBack: writesBack, silently: silently)
 +        }
++    }
++
++    /// What the read must still find: the same chat, empty and unstreamed, still on screen.
++    private struct PreparedCapture {
++        let sessionID: UUID
++        let stagingGeneration: Int
++        let dismissalGeneration: Int
++    }
++
++    private static let gatheringMessage = "Gathering selected text…"
++
++    private func preparePreview() -> PreparedCapture {
++        let chat = core.aiChatCoordinator.chats.quickAI
++        chat.startNewChat()
++        pendingReply = nil
++        chat.reportProgress(Self.gatheringMessage)
++        // Unkeyed: the borrowed ⌘C activates the retained app, which would hide a key window.
++        paletteCoordinator.showPalette(mode: .ai, takingKey: false)
++        return PreparedCapture(
++            sessionID: chat.session.id, stagingGeneration: chat.stagingGeneration,
++            dismissalGeneration: paletteCoordinator.dismissalGeneration)
++    }
++
++    /// The prepared chat while it is still the one on screen and empty; anything else drops it.
++    private func preparedChat(matching prepared: PreparedCapture, mine: Int) -> AIChatState? {
++        guard !Task.isCancelled, mine == generation else { return nil }
++        guard settings.quickActionsEnabled, settings.aiEnabled else { return nil }
++        let chat = core.aiChatCoordinator.chats.quickAI
++        guard chat.session.id == prepared.sessionID,
++            chat.stagingGeneration == prepared.stagingGeneration,
++            paletteCoordinator.dismissalGeneration == prepared.dismissalGeneration,
++            !chat.isStreaming,
++            chat.session.messages.isEmpty,
++            chat.pendingAttachments.isEmpty,
++            paletteCoordinator.isShowing(.ai)
++        else { return nil }
++        return chat
++    }
++
++    /// A dropped capture retires only its own gathering notice, never a newer capture's.
++    private func dropStaleCapture(matching expected: PreparedCapture) {
++        let chat = core.aiChatCoordinator.chats.quickAI
++        guard chat.session.id == expected.sessionID else { return }
++        chat.clearProgressNotice()
      }
  
      private static func pageMayStandIn(for failure: QuickActionFailure) -> Bool {
-@@ -319,58 +334,109 @@ final class QuickActionCoordinator {
+@@ -319,58 +481,199 @@ final class QuickActionCoordinator {
          }
      }
  
 -    private func perform(
 -        _ state: QuickActionPanelState, target: Target, previewing: Bool
 +    /// A new conversation whose text rides as a staged document, answered by the chat's own route.
++    /// Replace only keeps the window shut: progress in the pill, and any failure in a HUD.
 +    private func answer(
 +        _ action: QuickAction, selection: String, sourceName: String, target: Target,
-+        writesBack: Bool
++        writesBack: Bool, silently: Bool,
++        prepared: PreparedCapture? = nil, mine: Int? = nil
 +    ) {
 +        let chat = core.aiChatCoordinator.chats.quickAI
-+        chat.startNewChat()
-+        pendingReply = nil
++        let isPrepared = prepared != nil && mine != nil
++        if isPrepared {
++            guard let prepared, let mine, preparedChat(matching: prepared, mine: mine) != nil
++            else {
++                if let expected = prepared { dropStaleCapture(matching: expected) }
++                return
++            }
++            pendingReply = nil
++            paletteCoordinator.claimKey()
++        } else {
++            chat.startNewChat()
++            pendingReply = nil
++        }
 +        let attachment = ChatAttachment(
 +            payload: .document(
 +                AIDocument(data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)),
 +            name: sourceName, preview: nil)
 +        if let refusal = chat.attach(attachment) {
-+            core.showMessage(refusal.message, tone: .neutral)
++            if isPrepared {
++                chat.report(refusal.message)
++            } else {
++                core.showMessage(refusal.message, tone: .neutral)
++            }
 +            return
 +        }
 +        let chatID = chat.session.id
 +        if writesBack {
-+            var automatic = false
-+            if case .custom(let custom) = action { automatic = !custom.previewsResult }
 +            chat.onNextReplyEnded = { [weak self] reply in
-+                guard let self, let reply else { return }
-+                self.finishedReply(
-+                    reply, chatID: chatID, action: action, target: target, automatic: automatic)
++                self?.replyEnded(
++                    reply, chatID: chatID, action: action, target: target, silently: silently)
 +            }
 +        }
-+        paletteCoordinator.showPalette(mode: .ai)
++        if !isPrepared {
++            if silently {
++                core.showProgress(action.progressTitle, onCancel: { [weak chat] in chat?.cancel() })
++            } else {
++                paletteCoordinator.showPalette(mode: .ai)
++            }
++        }
 +        let instructions = QuickActionPrompt.instructions(
 +            for: action, override: store.settings.instructionOverride(for: action))
 +        let sent = core.aiChatCoordinator.answerQuickAction(
 +            prompt: action.title, instructions: instructions, in: chat)
-+        if !sent { chat.onNextReplyEnded = nil }
++        if !sent {
++            chat.onNextReplyEnded = nil
++            if isPrepared {
++                if chat.noticeIsProgress { chat.report("\(action.title) didn't start") }
++            } else if silently {
++                core.hideProgress()
++                core.showMessage(chat.notice ?? "\(action.title) didn't start", tone: .danger)
++            }
++        }
 +    }
 +
 +    /// Apple's translator does not stream, so its reply is recorded whole as a finished turn.
 +    private func translate(
 +        _ selection: String, sourceName: String, action: QuickAction, target: Target,
-+        writesBack: Bool
++        writesBack: Bool, silently: Bool,
++        prepared: PreparedCapture? = nil, mine: Int? = nil
      ) async {
 +        let chat = core.aiChatCoordinator.chats.quickAI
-+        chat.startNewChat()
-+        pendingReply = nil
-+        paletteCoordinator.showPalette(mode: .ai)
++        if let prepared, let mine {
++            guard preparedChat(matching: prepared, mine: mine) != nil else {
++                dropStaleCapture(matching: prepared)
++                return
++            }
++            pendingReply = nil
++            paletteCoordinator.claimKey()
++        } else {
++            chat.startNewChat()
++            pendingReply = nil
++            if !silently { paletteCoordinator.showPalette(mode: .ai) }
++        }
 +        let language = targetLanguage
 +        let languageName = TextTranslator.displayName(of: language)
-+        core.showProgress("Translating…")
++        core.showProgress(action.progressTitle)
 +        defer { core.hideProgress() }
          do {
 -            let text = try await produce(state, previewing: previewing)
-+            let text = try await TextTranslator.translate(selection, to: language)
-             guard !Task.isCancelled else { return }
+-            guard !Task.isCancelled else { return }
 -            state.finish(text)
 -            if previewing { return }
 -            deliver(text, to: target, action: state.action)
@@ -1959,15 +3216,35 @@ index 72e69dbe..54f527db 100644
 -            // A HUD cannot say where the download lives, so this has to become a panel.
 -            if !previewing { present(state, target: target) }
 -            state.requireLanguageDownload()
++            let text = try await TextTranslator.translate(selection, to: language)
++            if let prepared, let mine {
++                guard preparedChat(matching: prepared, mine: mine) != nil else {
++                    dropStaleCapture(matching: prepared)
++                    return
++                }
++            } else {
++                guard !Task.isCancelled else { return }
++            }
 +            let document = AIDocument(
 +                data: Data(selection.utf8), mimeType: "text/plain", name: sourceName)
 +            let messageID = chat.record(
 +                prompt: "\(action.title) to \(languageName)", documents: [document], reply: text)
-+            if writesBack {
++            guard writesBack else { return }
++            if silently {
++                writeBack(text, to: target, action: action)
++            } else {
 +                pendingReply = PendingReply(
 +                    chatID: chat.session.id, messageID: messageID, action: action, target: target)
 +            }
 +        } catch let failure as TextTranslator.Failure where failure.needsDownload {
++            if let prepared, let mine {
++                guard preparedChat(matching: prepared, mine: mine) != nil else {
++                    dropStaleCapture(matching: prepared)
++                    return
++                }
++            } else {
++                guard !Task.isCancelled else { return }
++            }
 +            guard
 +                await core.reportFailure(
 +                    title: "\(languageName) isn’t downloaded yet",
@@ -1979,7 +3256,18 @@ index 72e69dbe..54f527db 100644
 +            AppLauncher.openSettingsPane(bundleID: Self.languageSettingsPane)
          } catch {
 -            report(error, state: state, previewing: previewing)
-+            chat.report(error.localizedDescription)
++            if silently {
++                core.showMessage(error.localizedDescription, tone: .danger)
++            } else if let prepared, let mine,
++                let failedChat = preparedChat(matching: prepared, mine: mine)
++            {
++                paletteCoordinator.claimKey()
++                failedChat.report(error.localizedDescription)
++            } else if let snapshot = prepared {
++                dropStaleCapture(matching: snapshot)
++            } else {
++                chat.report(error.localizedDescription)
++            }
          }
      }
  
@@ -1993,30 +3281,36 @@ index 72e69dbe..54f527db 100644
 -        core.showProgress(state.action.progressTitle, onCancel: { [weak self] in self?.cancel() })
 -        defer { hideProgress(ownedBy: mine) }
 -        return try await generate(state, streaming: false)
-+    /// Automatic replacement leaves the palette, as a direct replacement always did; otherwise the reply waits for its button.
-+    private func finishedReply(
-+        _ reply: ChatMessage, chatID: UUID, action: QuickAction, target: Target, automatic: Bool
++    /// The reply has ended, however it ended. Replace only writes it back here, with no window to show it.
++    private func replyEnded(
++        _ reply: ChatMessage, chatID: UUID, action: QuickAction, target: Target, silently: Bool
 +    ) {
++        if silently { core.hideProgress() }
 +        let text = reply.text.trimmingCharacters(in: .whitespacesAndNewlines)
-+        guard !text.isEmpty else { return }
-+        guard automatic else {
++        guard reply.state == .complete, !text.isEmpty else {
++            if silently { core.showMessage("\(action.title) didn't finish", tone: .danger) }
++            return
++        }
++        guard silently else {
 +            pendingReply = PendingReply(
 +                chatID: chatID, messageID: reply.id, action: action, target: target)
 +            return
 +        }
-+        paletteCoordinator.hidePalette(restoreFocus: target.isNote)
-+        deliver(text, to: target, action: action)
++        writeBack(text, to: target, action: action)
      }
  
 -    private func hideProgress(ownedBy owner: Int?) {
 -        guard let owner, progressOwner == owner else { return }
 -        progressOwner = nil
 -        core.hideProgress()
-+    /// Quick AI asks this before offering its Replace button for the reply on screen.
-+    func canReplaceReply(in chat: AIChatState) -> Bool {
-+        guard let pending = pendingReply, pending.chatID == chat.session.id, !chat.isStreaming
-+        else { return false }
-+        return chat.session.messages.last?.id == pending.messageID
++    /// A reply that lands in another app than the one it was asked of is copied, never pasted there.
++    private func writeBack(_ text: String, to target: Target, action: QuickAction) {
++        guard focusHeld(by: target) else {
++            Paster.copyPlainText(text)
++            core.showMessage("\(action.title) copied instead — the app changed", tone: .danger)
++            return
++        }
++        deliver(text, to: target, action: action)
      }
  
 -    private func generate(
@@ -2024,7 +3318,14 @@ index 72e69dbe..54f527db 100644
 -    ) async throws -> String {
 -        if state.action.usesTranslationFramework {
 -            return try await TextTranslator.translate(state.original, to: state.targetLanguage)
--        }
++    private func focusHeld(by target: Target) -> Bool {
++        switch target {
++        case .external(let app):
++            guard let app else { return false }
++            return NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
++        // The editor is checked again on delivery, against the very range it was asked about.
++        case .note: return true
+         }
 -        let provider = try core.quickActionProvider(for: state.action)
 -        return try await QuickActionRunner.run(
 -            state.action, selection: state.original, using: provider,
@@ -2033,6 +3334,15 @@ index 72e69dbe..54f527db 100644
 -                guard streaming else { return }
 -                state.append(delta)
 -            })
++    }
++
++    /// Quick AI asks this before offering its Replace button for the reply on screen.
++    func canReplaceReply(in chat: AIChatState) -> Bool {
++        guard let pending = pendingReply, pending.chatID == chat.session.id, !chat.isStreaming
++        else { return false }
++        return chat.session.messages.last?.id == pending.messageID
++    }
++
 +    func replaceReply(in chat: AIChatState) {
 +        guard canReplaceReply(in: chat), let pending = pendingReply,
 +            let reply = chat.session.messages.last
@@ -2044,7 +3354,7 @@ index 72e69dbe..54f527db 100644
      }
  
      /// A replacement that never lands would otherwise lose the reply, so the clipboard keeps it.
-@@ -398,34 +464,6 @@ final class QuickActionCoordinator {
+@@ -398,34 +701,6 @@ final class QuickActionCoordinator {
          }
      }
  
@@ -2571,10 +3881,10 @@ index a6bcf86c..00000000
 -    }
 -}
 diff --git a/Tinycast/Features/Settings/AppSettingsKey.swift b/Tinycast/Features/Settings/AppSettingsKey.swift
-index 394fb0a9..8ce96e4f 100644
+index 394fb0a9..c84a9d4b 100644
 --- a/Tinycast/Features/Settings/AppSettingsKey.swift
 +++ b/Tinycast/Features/Settings/AppSettingsKey.swift
-@@ -99,9 +99,6 @@ enum AppSettingsKey: String, CaseIterable {
+@@ -99,10 +99,8 @@ enum AppSettingsKey: String, CaseIterable {
      case mcpEnabled = "mcpEnabled"
      case mcpServers = "mcpServers"
      case quickActionsEnabled = "quickActionsEnabled"
@@ -2582,8 +3892,10 @@ index 394fb0a9..8ce96e4f 100644
 -    case quickActionModelOverrides = "quickActionModelOverrides"
 -    case quickActionPreviews = "quickActionPreviews"
      case quickActionInstructions = "quickActionInstructions"
++    case quickActionReplaceOnly = "quickActionReplaceOnly"
      case quickActionLanguage = "quickActionLanguage"
      case dictationEnabled = "dictationEnabled"
+     case dictationMode = "dictationMode"
 diff --git a/Tinycast/Features/Settings/SettingsAnchor.swift b/Tinycast/Features/Settings/SettingsAnchor.swift
 index 2e6b37db..d0d306c1 100644
 --- a/Tinycast/Features/Settings/SettingsAnchor.swift
@@ -2610,6 +3922,176 @@ index 8f39a382..f46a2c59 100644
          .init(
              .quickActionsTranslate, "Translate to",
              keywords: ["language", "locale"])
+diff --git a/Tinycast/Palette/PaletteCoordinator.swift b/Tinycast/Palette/PaletteCoordinator.swift
+index 3c3a0501..549e51d2 100644
+--- a/Tinycast/Palette/PaletteCoordinator.swift
++++ b/Tinycast/Palette/PaletteCoordinator.swift
+@@ -10,6 +10,8 @@ final class PaletteCoordinator {
+     private let menuSearch: MenuSearchSession
+     private let windowSwitch: WindowSwitchSession
+     private let windowController: PaletteWindowController
++    /// Every hide retires prepared captures, even when the same chat reopens.
++    private(set) var dismissalGeneration = 0
+     /// Features whose launcher rows are read from outside Tinycast re-read them on each open.
+     var onLauncherShown: (() -> Void)?
+     /// Screens that snapshot other apps re-read them on every open, a restored one included.
+@@ -85,7 +87,8 @@ final class PaletteCoordinator {
+ 
+     /// Shows the palette, honoring Pop to Root Search. See docs/features/palette.md#state-flow.
+     func showPalette(
+-        mode: PaletteMode, restoreAnyMode: Bool = false, seeding query: String? = nil
++        mode: PaletteMode, restoreAnyMode: Bool = false, seeding query: String? = nil,
++        takingKey: Bool = true
+     ) {
+         let preserved = windowController.consumePreservedState()
+         let restoring = preserved && (restoreAnyMode || palette.mode == mode)
+@@ -98,8 +101,14 @@ final class PaletteCoordinator {
+         if let query { palette.query = query }
+         // Before the show: `targetApp` must still name the app in front, and no row may pop in.
+         onScreenOpening?(palette.mode)
+-        windowController.show()
+-        if palette.mode == .fileSearch { fileSearch.search(palette.query, filter: palette.fileSearchFilter) }
++        if takingKey {
++            windowController.show()
++        } else {
++            windowController.showWithoutTakingKey()
++        }
++        if palette.mode == .fileSearch {
++            fileSearch.search(palette.query, filter: palette.fileSearchFilter)
++        }
+         if palette.mode == .menuSearch { menuSearch.filter(palette.query) }
+         if palette.mode == .switchWindows { windowSwitch.filter(palette.query) }
+         // Re-scan on open so an app uninstalled since the last scan drops out of the launcher.
+@@ -109,6 +118,11 @@ final class PaletteCoordinator {
+         }
+     }
+ 
++    /// Keys the already-visible palette once admitted work finishes; never summons.
++    func claimKey() {
++        windowController.claimKey()
++    }
++
+     /// Root search onto `entry` alone, for a command whose shortcut lacks values.
+     func showArguments(of entry: AppEntry, values: [String: String]) {
+         showPalette(mode: .launcher, seeding: entry.name)
+@@ -121,6 +135,7 @@ final class PaletteCoordinator {
+     }
+ 
+     func hidePalette(restoreFocus: Bool = true) {
++        dismissalGeneration += 1
+         menuSearch.reset()
+         windowSwitch.reset()
+         windowController.hide(restoreFocus: restoreFocus)
+diff --git a/Tinycast/Palette/PaletteWindowController.swift b/Tinycast/Palette/PaletteWindowController.swift
+index bdde02ef..99c93bfd 100644
+--- a/Tinycast/Palette/PaletteWindowController.swift
++++ b/Tinycast/Palette/PaletteWindowController.swift
+@@ -58,40 +58,7 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+ 
+     func show() {
+         Signposts.interval("PaletteWindowController.show") {
+-            isPoppedToRoot = false
+-            core.palette.focusToken = UUID()
+-            // Summoned over one of our own windows: there is no external paste or focus target.
+-            let frontmost = NSWorkspace.shared.frontmostApplication
+-            let ownPID = NSRunningApplication.current.processIdentifier
+-            // Kept across mode switches: a re-show while our panel holds key must not clear it.
+-            if let frontmost, frontmost.processIdentifier != ownPID {
+-                previousApp = frontmost
+-            } else if previousApp?.processIdentifier == ownPID {
+-                previousApp = nil
+-            }
+-            // Recorded even when another app is frontmost: our panels take key without activating.
+-            let key = NSApp.keyWindow
+-            // A mode switch re-shows the palette while it holds key; keep what it recorded then.
+-            if key !== panel { previousOwnWindow = key }
+-            // Once per summon, and from `previousApp`, so the label names the paste target.
+-            core.palette.pasteTarget = PasteTarget(app: previousApp)
+-            let panel = ensurePanel()
+-            // Undo a sink a modal left behind, unless one is still up.
+-            if NSApp.modalWindow == nil { panel.level = .palette }
+-            // Open disarmed: a pointer already over a row must not highlight it.
+-            core.palette.disarmHoverHighlight(pointerAt: NSEvent.mouseLocation)
+-            // Re-resolve the anchor now, then hold it so resizes never move the window.
+-            anchor = nil
+-            // Size and place before ordering front, so a compact summon never flashes.
+-            positionPanel(panel, collapsed: core.paletteCoordinator.paletteIsCollapsed)
+-            // Flush first-mount layout off-screen, so the safe-area settle isn't visible.
+-            panel.contentView?.layoutSubtreeIfNeeded()
+-            core.inputSourceSwitcher.beginSession(
+-                preferredInputSourceID: core.settings.autoSwitchInputSourceID)
+-            // Events go stale while the palette is closed, and the countdown only ticks while up.
+-            core.calendarCoordinator.paletteDidShow()
+-            core.palette.noteVisible(true)
+-            core.clipboardStore.setTextSearchActive(true)
++            let panel = prepareForShow()
+             // Non-activating, so summoning never raises our own aux windows behind it.
+             panel.makeKeyAndOrderFront(nil)
+             panel.orderFrontRegardless()
+@@ -103,6 +70,63 @@ final class PaletteWindowController: NSObject, NSWindowDelegate {
+         }
+     }
+ 
++    /// Visible but not key, so a borrowed ⌘C keeps its target while progress shows.
++    func showWithoutTakingKey() {
++        Signposts.interval("PaletteWindowController.show") {
++            prepareForShow().orderFrontRegardless()
++        }
++    }
++
++    /// Keys the already-visible palette once admitted work finishes; never summons.
++    func claimKey() {
++        guard let panel, panel.isVisible else { return }
++        panel.makeKeyAndOrderFront(nil)
++        DispatchQueue.main.async { [weak panel] in
++            guard let panel, panel.isVisible, !panel.isKeyWindow else { return }
++            panel.makeKeyAndOrderFront(nil)
++        }
++    }
++
++    private func prepareForShow() -> PalettePanel {
++        isPoppedToRoot = false
++        core.palette.focusToken = UUID()
++        // Summoned over one of our own windows: there is no external paste or focus target.
++        let frontmost = NSWorkspace.shared.frontmostApplication
++        let ownPID = NSRunningApplication.current.processIdentifier
++        // Kept across mode switches: a re-show while our panel holds key must not clear it.
++        if let frontmost, frontmost.processIdentifier != ownPID {
++            previousApp = frontmost
++        } else if previousApp?.processIdentifier == ownPID {
++            previousApp = nil
++        }
++        // Recorded even when another app is frontmost: our panels take key without activating.
++        let key = NSApp.keyWindow
++        // A mode switch re-shows the palette while it holds key; keep what it recorded then.
++        if key !== panel { previousOwnWindow = key }
++        // Once per summon, and from `previousApp`, so the label names the paste target.
++        core.palette.pasteTarget = PasteTarget(app: previousApp)
++        let panel = ensurePanel()
++        // Undo a sink a modal left behind, unless one is still up.
++        if NSApp.modalWindow == nil { panel.level = .palette }
++        // Open disarmed: a pointer already over a row must not highlight it.
++        core.palette.disarmHoverHighlight(pointerAt: NSEvent.mouseLocation)
++        // Re-resolve the anchor now, then hold it so resizes never move the window.
++        anchor = nil
++        // Size and place before ordering front, so a compact summon never flashes.
++        positionPanel(panel, collapsed: core.paletteCoordinator.paletteIsCollapsed)
++        // Flush first-mount layout off-screen, so the safe-area settle isn't visible.
++        panel.contentView?.layoutSubtreeIfNeeded()
++        core.inputSourceSwitcher.beginSession(
++            preferredInputSourceID: core.settings.autoSwitchInputSourceID)
++        // Events go stale while the palette is closed, and the countdown only ticks while up.
++        core.calendarCoordinator.paletteDidShow()
++        core.palette.noteVisible(true)
++        core.clipboardStore.setTextSearchActive(true)
++        // Only while we are on screen: a system-wide tap has no business outliving the window.
++        commandEscapeTap.enable()
++        return panel
++    }
++
+     // Isolated so teardown may touch the main-actor monitor; the block is already weak.
+     isolated deinit {
+         if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }
 diff --git a/docs/features/ai.md b/docs/features/ai.md
 index 271edeab..03af81dc 100644
 --- a/docs/features/ai.md
@@ -2724,10 +4206,10 @@ index d1f64619..654b6157 100644
  ## Notes commands
  
 diff --git a/docs/features/quick-actions.md b/docs/features/quick-actions.md
-index fd2aebce..d904a07f 100644
+index fd2aebce..bf3349a7 100644
 --- a/docs/features/quick-actions.md
 +++ b/docs/features/quick-actions.md
-@@ -1,117 +1,111 @@
+@@ -1,117 +1,141 @@
  # Quick Actions
  
 -Act on whatever text is selected, in whatever app is frontmost. Four are shipped: Fix Grammar,
@@ -2749,6 +4231,10 @@ index fd2aebce..d904a07f 100644
  
 -Quick Actions is the provider layer's second consumer. It shares the provider connections and
 -selectable Markdown renderer with AI Chat.
++Each writing action can instead be set to **Replace only**. Its reply is written back as soon as it
++finishes, and Quick AI never opens: the pill shows progress, and a failure reports in a HUD. Both
++choices sit beside each action in **Settings → Quick Actions**.
++
 +Quick Actions depend on AI Chat. With AI Chat switched off, every shortcut and launcher row does
 +nothing and says so with a HUD.
  
@@ -2775,7 +4261,12 @@ index fd2aebce..d904a07f 100644
    `QuickActionCoordinator.run(_:)`, which captures the target **before** hiding the palette. An
    external app remains the usual target; a selected passage in the Notes editor is captured directly
 -  from its text view. Hiding there rather than at each caller keeps the two paths identical.
-+  from its text view.
++  from its text view. A preview action prepares its Quick AI conversation before the read starts —
++  a fresh chat saying it is gathering the text — so the window is already visible while capture
++  blocks. It opens without taking key: the borrowed ⌘C activates the retained app, and a key
++  window would resign and dismiss itself there. When the admitted capture lands or fails, the
++  coordinator claims key for that same window. The borrowed ⌘C still posts to the retained app's
++  process, never to the palette.
  - **Enabling is consent, and it is the only place Accessibility is requested.** The toggle confirms
 -  through `DialogController` first and then calls `Permissions.ensureAccessibility()`, the pattern
 -  `SnippetCoordinator.setSnippetsEnabled` established. Everything else — a shortcut press, a
@@ -2788,18 +4279,29 @@ index fd2aebce..d904a07f 100644
 -  its own editor supplies and replaces a selected passage without Accessibility, clipboard or events.
 -  A shortcut pressed with Settings frontmost, or in a password field, does nothing and says so.
 +  along with anything raised while Secure Event Input is up. Notes is the narrow in-process exception.
-+- **Results open in Quick AI and nowhere else.** `answer` starts a new conversation in
++- **Results open in Quick AI unless the action is Replace only.** `answer` starts a new conversation in
 +  `AIChatSurfacesState.quickAI`, stages the text as one `text/plain` document, and sends the action's
 +  title as the turn. Its instructions come from `QuickActionPrompt`, or the reader's override. The turn
-+  goes through the chat's own route with no tools and no web search. The reply streams in the palette,
-+  and ⌘J hands the conversation to the AI Chat window like any other.
++  goes through the chat's own route with no tools and no web search. By default the reply streams in
++  the palette, and ⌘J hands the conversation to the AI Chat window like any other. A Replace only
++  action keeps the palette shut and shows the pill instead; the conversation is still kept in
++  history, so the reader can open it later. A prepared run reports a capture failure in that same
++  chat, so the error persists where the reader already looks; a successful capture is staged and
++  answered in the same prepared conversation.
 +- **The text is bounded where it is read, not where it is sent.** The selection or page is capped at
 +  `QuickActionRunner.maxSelectionBytes` (32 KB), the same ceiling `AIAttachmentBudget` gives a text
 +  document, so a page that fits the reader fits the request. Chat's own 8,000-character page staging is
 +  not involved.
 +- **A new run waits for an answer already in progress.** `run` refuses while `quickAI` is streaming, so
 +  a shortcut never cancels a reply the reader is still reading. A second run while text is being read
-+  is refused the same way, because two reads race for one selection.
++  is refused the same way, because two reads race for one selection. A capture that outlives its run
++  stages nothing: cancellation, a new chat, a hidden or handed-off conversation, a conflicting send
++  or attachment, or either switch going off all drop it, and a dismissed window is never reopened.
++  `QuickActionCoordinator.preparedChat` is the single predicate, read off the chat's own session,
++  staging generation, the palette's dismissal generation, transcript, attachments and streaming
++  state. Every hide moves that dismissal on, so reopening the same empty chat still drops the old
++  capture. A dropped capture also clears its gathering notice, so the next summon never explains
++  work that never happened.
  - **A browser page stands in for a missing selection only where browser context is on.** When no
 -  selection is found and the target is a supported browser, `QuickActionCoordinator` reads its
 -  active tab through `ContextBrowserRunner` — only while `ContextPolicy.canCaptureBrowser` holds,
@@ -2843,7 +4345,18 @@ index fd2aebce..d904a07f 100644
 +  tab through `ContextBrowserRunner`, only while `ContextPolicy.canCaptureBrowser` holds. The page's
 +  selection wins, else its text, capped to `maxSelectionBytes`. **A page result is never written back**:
 +  `begin` computes `writesBack = !fromPage && action.replacesSelection`, so no Replace button and no
-+  automatic replacement is offered for it, whatever the action.
++  automatic replacement is offered for it, whatever the action. The fallback runs under the same
++  progress: a preview shows its gathering notice before the tab list is read, and a Replace only run
++  trades its pill for that same prepared chat first, reporting a page failure there. Consent, browser
++  policy and the text cap are unchanged.
++- **Replace only is a per-action choice, and it needs a write-back target.** `QuickActionSettings`
++  keeps the built-in choice, and a custom action keeps its own on its record, so
++  `replacesOnly(_:)` answers for both. A page result has no selection to write into, so it opens Quick
++  AI even when its action is Replace only. The choice is excluded from settings backups, like the
++  Replace choice before it.
++- **Replace only refuses to paste into the wrong app.** A reply that finishes while another app is
++  frontmost is copied to the clipboard and reported in a HUD, never written into that app. The check
++  runs only for an external target; a note still checks its own editor and range.
 +- **Only the reply is written back, and only to where the text came from.** The target — the frontmost
 +  app or the note editor and its range — is captured when the run starts. `replaceReply` writes the last
 +  reply through `deliver`, and only while `canReplaceReply` finds it still the last message of the same
@@ -2851,10 +4364,10 @@ index fd2aebce..d904a07f 100644
 +- **Summarize never writes back.** `BuiltInQuickAction.replacesSelection` is false for it, so its
 +  reply carries no Replace button and nothing replaces the text. The answer is about the text, and
 +  replacing the text with it would destroy what the reader selected.
-+- **A custom action chooses between Preview and Replace on its record.** Preview shows the reply in
-+  Quick AI with a Replace button. Replace writes the reply back as soon as it finishes: `finishedReply`
-+  leaves the palette, then calls `deliver`. Tinycast cannot know whether an arbitrary prompt transforms
-+  the text or answers a question about it, so Preview stays the default.
++- **Quick AI or Replace only is the reader's call, and Quick AI stays the default.** A Replace only
++  reply is written by `replyEnded`, which calls `writeBack` once the turn ends. Tinycast cannot know
++  whether an arbitrary custom prompt transforms the text or answers a question about it, so a custom
++  action starts in Quick AI.
 +- **Translate uses Apple's translator and needs its language installed.** `TextTranslator` runs on
 +  device. Its reply is recorded whole with `AIChatState.record`, since the translator does not stream.
 +  A language that is supported but not downloaded raises a dialog that opens Language & Region, and
@@ -2898,24 +4411,23 @@ index fd2aebce..d904a07f 100644
 -started.
 -
 -| Action | Engine | Default result | Diff |
-+| Action | Engine | Result | Replace |
++| Action | Engine | Result, by default | Replace only |
  | --- | --- | --- | --- |
 -| Fix Grammar | provider | replaces directly | yes |
 -| Rewrite | provider | panel | yes |
 -| Translate | Apple Translation | panel | no |
 -| Summarize | provider | panel, always | no |
 -| a custom action | provider | panel | no |
-+| Fix Grammar | chat model | Quick AI | button |
-+| Rewrite | chat model | Quick AI | button |
-+| Translate | Apple Translation | Quick AI | button |
-+| Summarize | chat model | Quick AI | none — read only |
-+| a custom action, Preview | chat model | Quick AI | button |
-+| a custom action, Replace | chat model | Quick AI | written back on finish |
++| Fix Grammar | chat model | Quick AI, with a Replace button | written back at once |
++| Rewrite | chat model | Quick AI, with a Replace button | written back at once |
++| Translate | Apple Translation | Quick AI, with a Replace button | written back at once |
++| Summarize | chat model | Quick AI, read only | not offered |
++| a custom action | chat model | Quick AI, with a Replace button | written back at once |
  
 -A custom action previews by default, switchable to Replace per row: Tinycast cannot know whether an
 -arbitrary prompt transforms the text or answers a question about it, and only the second destroys what
 -it replaces. No diff, for the same reason.
-+On a page with no selection, every row keeps its result and loses its write-back.
++On a page with no selection, every row opens Quick AI and loses its write-back.
  
 -Custom instructions stay on this Mac and are excluded from settings backups, like chat's system
 -prompt, because importing them would change results without the reader seeing them first.
@@ -2924,19 +4436,20 @@ index fd2aebce..d904a07f 100644
  
  ## Custom actions
  
-@@ -120,9 +114,8 @@ prompt, because importing them would change results without the reader seeing th
+@@ -120,9 +144,9 @@ prompt, because importing them would change results without the reader seeing th
  injected directory so the harness gets a throwaway one. Name and instructions must be non-empty;
  nothing else is rejected, including a name a shipped action already uses.
  
 -**Replace / Preview rides the record.** `QuickActionSettings` keys on `BuiltInQuickAction`, which
 -cannot hold a UUID, and a parallel dictionary would outlive what it described. On the record, a delete
 -takes the choice with it.
-+**Replace / Preview rides the record.** A parallel dictionary in settings would outlive the actions it
-+described, and `BuiltInQuickAction` cannot hold a UUID. On the record, a delete takes the choice with it.
++**Quick AI / Replace only rides the record.** A custom action's choice is `previewsResult` on its
++record, so a delete takes it with it. A built-in action's choice is a list of raw values in settings,
++since `BuiltInQuickAction` has no UUID to key a record by.
  
  **`AppEntry.Kind.quickAction` is one section for both halves**, ungated in
  `VisibilityStore.allowsHotKey` because `quickActionsEnabled` is the master switch. The four keep their
-@@ -140,17 +133,9 @@ install; one that exists but will not decode sets `isAvailable` false and makes
+@@ -140,17 +164,9 @@ install; one that exists but will not decode sets `isAvailable` false and makes
  `QuicklinkStore`'s rule: authored data is reported on, never written over.
  
  **Deleting unwinds only once the record is gone.** Confirm, remove, *then* drop the binding, the
@@ -2955,7 +4468,7 @@ index fd2aebce..d904a07f 100644
  ## Translation
  
  `TextTranslator` uses Apple's translator rather than the language model: it runs on device, costs
-@@ -168,62 +153,38 @@ names is the one with no downloaded asset of its own.
+@@ -168,62 +184,40 @@ names is the one with no downloaded asset of its own.
  caught as plain `Error` and reported by what was asked rather than by matching its cases.
  
  **The picker offers Apple's own list, never the reader's preferred languages.** `supportedLanguages`
@@ -3046,11 +4559,13 @@ index fd2aebce..d904a07f 100644
 +A failed reply keeps the chat's usual `failed` state and no button. Cancelling it through Quick AI
 +behaves as cancelling any reply does.
 +
-+Quick AI has no progress pill of its own. The streaming reply is the progress.
++Quick AI has no progress pill of its own. The streaming reply is the progress. While a preview
++capture is still in flight, the empty chat says it is gathering the text. A gathering notice is
++progress, not something to fix, so the empty state offers no Configure button for it.
  
  ## Reading the selection
  
-@@ -283,39 +244,32 @@ failure handler, so automatic expansion stays silent as before.
+@@ -283,39 +277,47 @@ failure handler, so automatic expansion stays silent as before.
  ### Manual sweep
  
  - Select text in Safari, Chrome, Brave, Slack, Mail, Notes, VS Code and Terminal, press Fix Grammar,
@@ -3070,12 +4585,25 @@ index fd2aebce..d904a07f 100644
 +  in AI mode, and Replace targets the displaced app's selection, not Tinycast's own field.
 +- Summarize a long selection: the reply streams in Quick AI, has no Replace button, and leaves the
 +  text untouched.
-+- Summarize a page in a browser with no selection: the reply streams, and nothing is typed into the
-+  page.
++- Press Summarize with text selected: Quick AI opens at once saying it is gathering the text, then
++  streams the summary. The window takes key only once the text lands or fails, so a borrowed copy
++  in flight never dismisses it. With no selection in a browser it reads the page under the same notice, and
++  nothing is typed into the page.
++- Set a writing action to Replace only and run it in a browser with no selection: the pill shows
++  first, then Quick AI opens with the gathering notice, and a page failure reports there.
++- Start a preview action, then hide the palette or start a new chat before capture lands: nothing
++  is staged, sent or reported, and the window stays as the reader left it. Hiding then reopening
++  the same empty chat drops the old capture the same way, while a later run still starts.
 +- Turn AI Chat off and press a shortcut: a HUD says Quick Actions need AI Chat, and no text is read.
 +- Start a Quick Action while Quick AI is still streaming: refused with a HUD, and the reply finishes.
-+- Add a custom action in Preview mode, run it, and confirm Replace appears only after the reply.
-+  Switch it to Replace, run it again, and confirm the selection changes as soon as the reply ends.
++- Add a custom action in Quick AI mode, run it, and confirm Replace appears only after the reply.
++  Switch it to Replace only, run it again, and confirm Quick AI stays closed, the pill shows progress,
++  and the selection changes as soon as the reply ends.
++- Set Fix Grammar to Replace only and run it from a shortcut in Notes and in a browser with no
++  selection. In Notes the selection changes; in the browser Quick AI opens and nothing is typed.
++- Set Fix Grammar to Replace only, start it, then switch to another app before the reply ends.
++  Confirm the text is copied with a HUD and not pasted into the other app.
++- Set Fix Grammar to Replace only and press the pill's cancel. Confirm nothing is written.
 +- Translate into a language that has not been downloaded: a dialog names the language, and its
 +  button opens Language & Region. Nothing is written.
 +- Translate into a downloaded language: the reply appears as a finished turn, and Replace writes it.
@@ -3108,7 +4636,9 @@ index fd2aebce..d904a07f 100644
 -  their repair) and
 -  `text-diff-test` (exact chunks, coalescing, Unicode, ties, token boundaries and fast paths).
 +- Harness: `quick-action-test` (action metadata, prompt boundaries, the settings store, custom action
-+  persistence and refusal of unreadable storage).
++  persistence and refusal of unreadable storage, and the capture orchestration itself: a suspended
++  read proving Quick AI opens before capture in the same prepared chat, in-window failures, silent
++  Replace only, stale and conflicting captures dropped without a trace, and the page-text contract).
 diff --git a/docs/testing.md b/docs/testing.md
 index e6cf01e1..20ddcafa 100644
 --- a/docs/testing.md
@@ -3133,7 +4663,7 @@ index e6cf01e1..20ddcafa 100644
  fixtures. It reports wall and process CPU time as JSON for modern and legacy formats, including
  32/1,000/10,000 durable files, rejected-input controls and an uncapped-reader control that guards
 diff --git a/docs/ui.md b/docs/ui.md
-index b2200fed..57811c9c 100644
+index b2200fed..d7b61ea3 100644
 --- a/docs/ui.md
 +++ b/docs/ui.md
 @@ -76,7 +76,7 @@ Add a token rather than a magic number when introducing a new value.
@@ -3145,7 +4675,7 @@ index b2200fed..57811c9c 100644
  Support, Update, About and Notes never scale.
  
  `DesignSystem/InterfaceMetrics.swift` stores **only a scale** and derives every value from the `Theme`
-@@ -588,9 +588,9 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
+@@ -588,9 +588,10 @@ sole owner rule) and is the only presenter, so every confirmation in the app loo
    outcome lands at a glance before the sentence is read. Auto-dismisses after
    `Duration.messageHUD` (2.4s) — longer than the volume box, since a sentence needs reading time and a
    level only needs a glance — and a repeat call replaces rather than stacks.
@@ -3153,12 +4683,13 @@ index b2200fed..57811c9c 100644
 -  replace has no panel to watch the answer arrive in, so the pill says `Fixing Grammar…` in its place
 -  and the result message replaces it when the model is done. Its leading mark is a spinner rather
 +- **The same pill reports work still running**, through `showProgress(message:onCancel:)`: Translate
-+  does not stream, so the pill says `Translating…` while Apple's translator works, and its reply
-+  then appears in Quick AI. Model replies stream there and need no pill. Its leading mark is a spinner rather
++  does not stream, so the pill says `Translating…` while Apple's translator works. A Replace only
++  Quick Action shows the pill too, since Quick AI stays shut. Model replies that open Quick AI stream
++  there and need no pill. Its leading mark is a spinner rather
    than a tone, which is why `MessageHUDView.Accessory` exists — a tone says how something *went*, and
    nothing has gone anywhere yet. When `onCancel` is provided, hovering over the pill lights it up,
    turns the spinner into an `xmark`, and clicking anywhere on the pill cancels the in-flight task.
-@@ -746,7 +746,7 @@ system-drawn and a pane reads exactly as macOS System Settings does.
+@@ -746,7 +747,7 @@ system-drawn and a pane reads exactly as macOS System Settings does.
    **`FeatureSwitchSection`** (a feature's master switch plus its launcher-visibility companion),
    **`SettingsFilterField`** (the filter row above a long list), **`launcherVisibilityHelp()`**, and the
    Settings editor header, fields and surface. `ModalActionButtonStyle.swift` keeps every borderless surface's actions on one

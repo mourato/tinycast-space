@@ -9,15 +9,30 @@ Content-Transfer-Encoding: 8bit
 Confetti as a system action and as `raycast://confetti`, drawn by the new `ConfettiOverlay.swift` with `CAEmitterLayer` (plus the undocumented `plane` particle type and `drag`/`wave` behaviours the effect needs, each applied defensively). Tunable live through `confetti.*` defaults. With Reduce motion on nothing animates: a burst on screen closes and a 🎉 HUD shows instead, for the command and the link alike (as [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/9e8dd60a) does).
 
 Origin: tinycast-space 0007-confetti.patch @ ffccfc3
+Origin: tinycast-space .space/apply.sh @ ffccfc3
 ---
+ Tests/system-action-test.swift                |   2 +-
  Tinycast.xcodeproj/project.pbxproj            |   4 +
  Tinycast/App/AppCore.swift                    |   5 +
  .../SystemActions/Model/SystemAction.swift    |   4 +
  .../Service/ConfettiOverlay.swift             | 168 ++++++++++++++++++
  .../Service/SystemActionRunner.swift          |   3 +
- 5 files changed, 184 insertions(+)
+ 6 files changed, 185 insertions(+), 1 deletion(-)
  create mode 100644 Tinycast/Features/SystemActions/Service/ConfettiOverlay.swift
 
+diff --git a/Tests/system-action-test.swift b/Tests/system-action-test.swift
+index f15262f9..888a70a1 100644
+--- a/Tests/system-action-test.swift
++++ b/Tests/system-action-test.swift
+@@ -17,7 +17,7 @@ struct SystemActionTests {
+ 
+     static func main() {
+         let actions = SystemActionCatalog.all
+-        expect(actions.count == 32, "catalog contains all 32 agreed actions")
++        expect(actions.count == SystemAction.ID.allCases.count, "catalog covers the agreed actions")
+         expect(actions.map(\.id) == SystemAction.ID.allCases, "catalog covers every ID once")
+         expect(Set(actions.map { $0.name.lowercased() }).count == actions.count, "names are unique")
+         expect(actions.allSatisfy { !$0.name.isEmpty }, "names are non-empty")
 diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
 index 6fcbd6b1..44f71cc4 100644
 --- a/Tinycast.xcodeproj/project.pbxproj
