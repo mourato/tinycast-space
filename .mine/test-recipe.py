@@ -262,9 +262,18 @@ class Fixture:
         git(self.space, "branch", "-M", "main")
         write(self.space / ".space/UPSTREAM", f"{self.upstream_commit}\n")
         write(self.space / ".space/patches/0001-fixture.patch", "fixture patch\n")
+        write(self.space / ".space/patches/0002-removed.patch", "removed patch\n")
+        write(self.space / ".space/patches/0003-modified.patch", "old patch\n")
         git(self.space, "add", "-A")
-        git(self.space, "commit", "--quiet", "-m", "Space radar snapshot")
+        git(self.space, "commit", "--quiet", "-m", "Space adopted snapshot")
         self.space_commit = git(self.space, "rev-parse", "HEAD")
+        write(self.space / ".space/UPSTREAM", f"{self.upstream_latest}\n")
+        write(self.space / ".space/patches/0003-modified.patch", "new patch\n")
+        (self.space / ".space/patches/0002-removed.patch").unlink()
+        write(self.space / ".space/patches/0004-added.patch", "added patch\n")
+        git(self.space, "add", "-A")
+        git(self.space, "commit", "--quiet", "-m", "Space radar head")
+        self.space_head = git(self.space, "rev-parse", "HEAD")
 
     def _make_patch(self) -> None:
         patch_work = self.root / "patch-work"
@@ -540,18 +549,49 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
         self.assertNotEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
 
-    def test_check_space_reads_radar_without_root_mutation(self) -> None:
+    def test_check_space_reports_head_and_patch_changes_without_root_mutation(self) -> None:
+        prepared = self.fixture.run()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
         old_lock = (self.fixture.root / ".mine/sources.lock.json").read_bytes()
+        old_recipe_lock = (self.fixture.root / ".build/.recipe.lock").read_bytes()
         old_root_head = git(self.fixture.root, "rev-parse", "HEAD")
-        shutil.rmtree(self.fixture.space)
+        old_source_head = git(self.fixture.source, "rev-parse", "HEAD")
+        old_source_status = git(self.fixture.source, "status", "--porcelain")
+        old_source_fingerprint = self.fixture.source_fingerprint()
         result = self.fixture.run("check-space")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["url"], self.fixture.space.resolve().as_uri())
         self.assertEqual(report["adopted_commit"], self.fixture.space_commit)
+        self.assertEqual(report["head"], self.fixture.space_head)
+        self.assertEqual(report["upstream"], self.fixture.upstream_latest)
+        self.assertEqual(
+            report["patches"],
+            {
+                "added": [".space/patches/0004-added.patch"],
+                "modified": [".space/patches/0003-modified.patch"],
+                "removed": [".space/patches/0002-removed.patch"],
+            },
+        )
+        self.assertFalse(report["patches_truncated"])
         self.assertEqual((self.fixture.root / ".mine/sources.lock.json").read_bytes(), old_lock)
+        self.assertEqual((self.fixture.root / ".build/.recipe.lock").read_bytes(), old_recipe_lock)
         self.assertEqual(git(self.fixture.root, "rev-parse", "HEAD"), old_root_head)
-        self.assertFalse((self.fixture.root / ".build/source").exists())
+        self.assertEqual(git(self.fixture.source, "rev-parse", "HEAD"), old_source_head)
+        self.assertEqual(git(self.fixture.source, "status", "--porcelain"), old_source_status)
+        self.assertEqual(self.fixture.source_fingerprint(), old_source_fingerprint)
+
+    def test_check_space_bounds_patch_changes(self) -> None:
+        for index in range(45):
+            write(self.fixture.space / ".space/patches" / f"000{index + 10}-added.patch", "added\n")
+        git(self.fixture.space, "add", "-A")
+        git(self.fixture.space, "commit", "--quiet", "-m", "Space radar many patches")
+
+        result = self.fixture.run("check-space")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(sum(len(paths) for paths in report["patches"].values()), 40)
+        self.assertTrue(report["patches_truncated"])
 
     def test_update_conflict_preserves_lock_patch_source_and_root_state(self) -> None:
         prepared = self.fixture.run()

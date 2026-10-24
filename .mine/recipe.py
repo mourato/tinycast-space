@@ -35,6 +35,7 @@ RELEASE_PRODUCT = "Tinycast.app"
 DEBUG_PRODUCT = "Tinycast Dev.app"
 TOOL_COMMANDS = ("build", "build-debug", "install", "test", "lint")
 RECEIPT_SCHEMA = 2
+MAX_SPACE_PATCH_CHANGES = 40
 SAVE_JOURNAL_SCHEMA = 1
 SAVE_JOURNAL_STATES = {
     "prepared",
@@ -672,6 +673,11 @@ def discover_repository(workspace: Path, url: str, label: str) -> tuple[Path, st
     return repository, head
 
 
+def fetch_discovered_commit(repository: Path, commit: str, label: str, *, remote: str = "origin") -> None:
+    run_git(repository, ["fetch", "--no-tags", "--no-prune", remote, commit])
+    verify_commit(repository, commit, label)
+
+
 def fetch_discovered_tags(repository: Path) -> None:
     run_git(repository, ["fetch", "--no-prune", "origin", "refs/tags/*:refs/tags/*"])
 
@@ -820,10 +826,62 @@ def load_space_radar() -> dict[str, str]:
     return radar
 
 
+def space_recorded_upstream(repository: Path, commit: str) -> str:
+    try:
+        value = run_git(repository, ["show", f"{commit}:.space/UPSTREAM"]).strip()
+    except RecipeError:
+        fail("Space head has no readable .space/UPSTREAM")
+    return require_sha(value, "Space .space/UPSTREAM")
+
+
+def space_patch_changes(
+    repository: Path, adopted_commit: str, head: str
+) -> tuple[dict[str, list[str]], bool]:
+    raw = run_git(
+        repository,
+        [
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "-z",
+            adopted_commit,
+            head,
+            "--",
+            ".space/patches",
+        ],
+    )
+    changes = {"added": [], "modified": [], "removed": []}
+    status_names = {"A": "added", "M": "modified", "D": "removed"}
+    records = [record for record in raw.split("\0") if record]
+    if len(records) % 2:
+        fail("Space .space/patches diff has a malformed Git record")
+    pairs = zip(records[::2], records[1::2])
+    for status, path in list(pairs)[:MAX_SPACE_PATCH_CHANGES]:
+        category = status_names.get(status)
+        if category is None:
+            fail(f"Space .space/patches diff has unsupported status {status!r}")
+        changes[category].append(path)
+    return changes, len(records) > MAX_SPACE_PATCH_CHANGES
+
+
 def check_space() -> dict[str, Any]:
     ensure_build_root()
     with RecipeLock(BUILD / ".recipe.lock", "check-space"):
-        return load_space_radar()
+        radar = load_space_radar()
+        workspace = Path(tempfile.mkdtemp(prefix="tinycast-space-radar-", dir=BUILD))
+        try:
+            repository, head = discover_repository(workspace, radar["url"], "space-radar")
+            fetch_discovered_commit(repository, radar["adopted_commit"], "adopted Space commit")
+            patches, patches_truncated = space_patch_changes(repository, radar["adopted_commit"], head)
+            return {
+                **radar,
+                "head": head,
+                "upstream": space_recorded_upstream(repository, head),
+                "patches": patches,
+                "patches_truncated": patches_truncated,
+            }
+        finally:
+            remove_owned(workspace)
 
 
 def open_owned_regular(path: Path, label: str, flags: int) -> int:
