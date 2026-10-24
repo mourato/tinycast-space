@@ -1,4 +1,4 @@
-.PHONY: help status check-space sync update save install build test finish-task prune-derived
+.PHONY: help status check-space sync update save install build test finish-task prune-derived prepare recipe-test
 
 help:
 	@echo "Tinycast (mourato fork) — main = base + .mine/patches"
@@ -44,6 +44,12 @@ install:
 
 test:
 	@./Scripts/run-tests.sh
+
+prepare:
+	@python3 .mine/recipe.py prepare
+
+recipe-test:
+	@python3 .mine/test-recipe.py
 
 finish-task:
 	@./.mine/finish-task.sh
