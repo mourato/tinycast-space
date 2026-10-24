@@ -20,10 +20,10 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
  4 files changed, 32 insertions(+), 4 deletions(-)
 
 diff --git a/Tinycast/Features/Updates/Model/ReleaseFeed.swift b/Tinycast/Features/Updates/Model/ReleaseFeed.swift
-index a68d9e5a..5d28d042 100644
+index 4773a89a..2e7f5669 100644
 --- a/Tinycast/Features/Updates/Model/ReleaseFeed.swift
 +++ b/Tinycast/Features/Updates/Model/ReleaseFeed.swift
-@@ -29,6 +29,11 @@ enum ReleaseFeed {
+@@ -28,6 +28,11 @@ enum ReleaseFeed {
              .max { $0.version < $1.version }
      }
  

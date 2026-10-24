@@ -226,7 +226,7 @@ index 81862540..45979d44 100644
          // Handled at the panel: the field editor or a missing main menu eats these first.
          panel.onCommandShortcut = { [weak self] event in
 diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
-index 7d4e26df..4316899f 100644
+index 9460dd2f..e6dea167 100644
 --- a/Tinycast/Palette/RootPaletteView.swift
 +++ b/Tinycast/Palette/RootPaletteView.swift
 @@ -426,6 +426,7 @@ struct RootPaletteView: View {

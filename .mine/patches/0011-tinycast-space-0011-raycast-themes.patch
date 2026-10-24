@@ -27,8 +27,8 @@ Origin: tinycast-space .space/apply.sh @ bd9d7fe04efd117946bc588dcaf341efb201033
  .../Features/Settings/RaycastThemeCore.swift  | 260 +++++++
  .../Settings/RaycastThemeSwitching.swift      | 146 ++++
  .../Settings/SettingsSearchCatalog.swift      |   9 +
- Tinycast/Palette/RootPaletteView.swift        |   6 +-
- 17 files changed, 1724 insertions(+), 44 deletions(-)
+ Tinycast/Palette/RootPaletteView.swift        |   4 +-
+ 17 files changed, 1723 insertions(+), 43 deletions(-)
  create mode 100644 Tinycast/Features/Settings/Panes/RaycastThemeRows.swift
  create mode 100644 Tinycast/Features/Settings/RaycastThemeCatalog.swift
  create mode 100644 Tinycast/Features/Settings/RaycastThemeCommand.swift
@@ -1528,7 +1528,7 @@ index 00000000..c740982b
 +}
 diff --git a/Tinycast/Features/Settings/RaycastThemeCommand.swift b/Tinycast/Features/Settings/RaycastThemeCommand.swift
 new file mode 100644
-index 00000000..b568e94e
+index 00000000..813d0808
 --- /dev/null
 +++ b/Tinycast/Features/Settings/RaycastThemeCommand.swift
 @@ -0,0 +1,196 @@
@@ -1616,7 +1616,7 @@ index 00000000..b568e94e
 +        {
 +          "name": "tinycast-space-themes",
 +          "title": "Themes",
-+          "description": "Switch between your installed Raycast themes. Part of Tinycast Space Edition.",
++          "description": "Switch between your installed Raycast themes. Part of Tinycast.",
 +          "icon": "icon.png",
 +          "author": "tinycast-space",
 +          "categories": ["System"],
@@ -1637,7 +1637,7 @@ index 00000000..b568e94e
 +
 +    private static let script = """
 +        "use strict";
-+        // Written by Tinycast Space Edition (RaycastThemeCommand.swift) on every launch; edits are lost.
++        // Written by Tinycast (RaycastThemeCommand.swift) on every launch; edits are lost.
 +        Object.defineProperty(exports, "__esModule", { value: true });
 +        const { List, ActionPanel, Action, Icon, environment, closeMainWindow } = require("@raycast/api");
 +        const { jsx } = require("react/jsx-runtime");
@@ -2167,18 +2167,9 @@ index 12831f38..25782c52 100644
              .generalAppearance, "Interface size",
              keywords: ["text size", "font size", "scale", "zoom", "bigger", "larger", "legible"]),
 diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
-index 44608711..06e8f3f0 100644
+index 44608711..7d601142 100644
 --- a/Tinycast/Palette/RootPaletteView.swift
 +++ b/Tinycast/Palette/RootPaletteView.swift
-@@ -212,7 +212,7 @@ struct RootPaletteView: View {
-                     title: String(localized: "Changelog"),
-                     systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90"
-                 ) {
--                    if let url = URL(string: "https://github.com/abue-ammar/tinycast/releases") {
-+                    if let url = URL(string: "https://github.com/sermelipharo/tinycast-space/releases") {
-                         openURL(url)
-                     }
-                 },
 @@ -339,7 +339,7 @@ struct RootPaletteView: View {
                  )
                  // The window's frame is the size source, so the glass and clip stay matched.

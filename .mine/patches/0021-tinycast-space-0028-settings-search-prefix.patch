@@ -278,7 +278,7 @@ index 00000000..f7d77812
 +    }
 +}
 diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
-index 4316899f..9e5e5141 100644
+index e6dea167..d5bbc808 100644
 --- a/Tinycast/Palette/RootPaletteView.swift
 +++ b/Tinycast/Palette/RootPaletteView.swift
 @@ -49,6 +49,10 @@ struct RootPaletteView: View {

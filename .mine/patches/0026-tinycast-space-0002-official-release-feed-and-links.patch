@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:19 -0300
+Subject: [PATCH] tinycast-space 0002: official release feed and links
+
+The in-app updater and About link use the official Tinycast repository. About stays neutral and carries no fork branding, and the update harness covers the repository and release-page URLs.
+
+Origin: tinycast-space 0002-updater-and-links.patch @ ffccfc3
+---
+ Tests/updates-test.swift | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/Tests/updates-test.swift b/Tests/updates-test.swift
+index fe9dfa41..0ce8ddd3 100644
+--- a/Tests/updates-test.swift
++++ b/Tests/updates-test.swift
+@@ -21,6 +21,7 @@ struct UpdatesTests {
+         ordersVersions()
+         roundTripsVersionsThroughJSON()
+         derivesChannels()
++        usesOfficialRepository()
+         picksNewestForChannel()
+         picksTheZipThisMacCanRun()
+         rejectsUnusableFeeds()
+@@ -123,6 +124,21 @@ struct UpdatesTests {
+ 
+     // MARK: - ReleaseFeed
+ 
++    static func usesOfficialRepository() {
++        expect(
++            ReleaseFeed.repository == "abue-ammar/tinycast",
++            "updates use the official Tinycast repository")
++
++        let release = AvailableRelease(
++            version: AppVersion("0.3.0")!, tag: "v0.3.0", notes: "",
++            assetURL: URL(string: "https://example.invalid/a.zip")!, assetSize: 1,
++            publishedAt: nil)
++        expect(
++            ReleaseFeed.page(for: release).absoluteString
++                == "https://github.com/abue-ammar/tinycast/releases/tag/v0.3.0",
++            "release links point to the official repository")
++    }
++
+     /// Shaped like GitHub's `/releases` payload, down to the snake-cased keys.
+     static func feed(_ entries: String...) -> Data {
+         Data("[\(entries.joined(separator: ","))]".utf8)
+-- 
+2.56.0
+
