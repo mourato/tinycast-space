@@ -1,0 +1,567 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:38 -0300
+Subject: [PATCH] tinycast-space 0029: dictionary suggestions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Dictionary: a word with no definition offers up to eight spelling suggestions (`NSSpellChecker`, only touched on a miss): ↵ looks it up, ⌥↵ copies it, ⌘↵ opens it in Dictionary.app. New `dictionary-session-test`. After [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/d28e810d).
+Origin: tinycast-space 0029-dictionary-suggestions.patch @ ffccfc3
+---
+ Scripts/run-tests.sh                          |  6 ++
+ Tests/dictionary-session-test.swift           | 80 +++++++++++++++++++
+ Tinycast.xcodeproj/project.pbxproj            | 12 +++
+ .../Dictionary/Model/DictionaryResult.swift   | 38 +++++++++
+ .../Service/DictionarySession.swift           | 25 +++++-
+ .../Service/DictionarySuggestionService.swift | 33 ++++++++
+ .../Dictionary/UI/DictionaryCoordinator.swift |  9 ++-
+ .../Dictionary/UI/DictionaryScreen.swift      | 80 ++++++++++++++-----
+ .../UI/DictionarySuggestionsView.swift        | 71 ++++++++++++++++
+ 9 files changed, 328 insertions(+), 26 deletions(-)
+ create mode 100644 Tests/dictionary-session-test.swift
+ create mode 100644 Tinycast/Features/Dictionary/Model/DictionaryResult.swift
+ create mode 100644 Tinycast/Features/Dictionary/Service/DictionarySuggestionService.swift
+ create mode 100644 Tinycast/Features/Dictionary/UI/DictionarySuggestionsView.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 29fbb818..d00d4db1 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -343,6 +343,12 @@ run fallback-test          Tinycast/Features/Launcher/Model/Fallback.swift \
+                            Tinycast/Platform/LocalizedResource.swift
+ run dictionary-test        Tinycast/Features/Dictionary/Model/DictionaryEntry.swift \
+                            Tinycast/Features/Dictionary/Model/DictionaryMarkup.swift
++run dictionary-session-test Tinycast/Features/Dictionary/Model/DictionaryEntry.swift \
++                           Tinycast/Features/Dictionary/Model/DictionaryMarkup.swift \
++                           Tinycast/Features/Dictionary/Model/DictionaryResult.swift \
++                           Tinycast/Features/Dictionary/Service/DictionaryService.swift \
++                           Tinycast/Features/Dictionary/Service/DictionarySuggestionService.swift \
++                           Tinycast/Features/Dictionary/Service/DictionarySession.swift
+ run dictation-test         Tinycast/Features/Dictation/Model/DictationModel.swift Tinycast/Features/Dictation/Model/DictationIdleRelease.swift Tinycast/Features/Dictation/Model/DictationLanguage.swift Tinycast/Features/Dictation/Model/DictationTextFormatter.swift
+ run dictation-cue-test     Tinycast/Features/Dictation/Service/DictationCueRunner.swift
+ run dictation-field-test   Tinycast/Features/Dictation/Model/DictationModel.swift \
+diff --git a/Tests/dictionary-session-test.swift b/Tests/dictionary-session-test.swift
+new file mode 100644
+index 00000000..c0ca3c47
+--- /dev/null
++++ b/Tests/dictionary-session-test.swift
+@@ -0,0 +1,80 @@
++import Foundation
++
++@MainActor
++private final class LookupProbe {
++    var calls: [String] = []
++
++    func entry(_ term: String) async -> DictionaryEntry? {
++        calls.append(term)
++        return term == "mango" ? DictionaryEntry(term: term, plainText: "a fruit") : nil
++    }
++}
++
++@main
++@MainActor
++struct DictionarySessionTests {
++    static var failures = 0
++
++    static func expect(_ condition: Bool, _ message: String) {
++        if !condition { failures += 1; print("FAIL: \(message)") }
++    }
++
++    static func wait(until condition: () -> Bool) async {
++        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
++        while !condition(), ContinuousClock.now < deadline {
++            try? await Task.sleep(for: .milliseconds(5))
++        }
++        expect(condition(), "asynchronous operation finishes")
++    }
++
++    static func main() async {
++        expect(!DictionarySuggestions.accepts("a"), "single letters get no suggestions")
++        expect(!DictionarySuggestions.accepts(String(repeating: "a", count: 129)), "bounded request")
++        expect(!DictionarySuggestions.accepts("two words"), "phrases get no suggestions")
++        expect(!DictionarySuggestions.accepts("123"), "numbers get no suggestions")
++        expect(DictionarySuggestions.accepts("café"), "Unicode words are supported")
++        expect(DictionarySuggestions.accepts("can't"), "apostrophes are supported")
++        expect(
++            DictionarySuggestions.words(
++                from: [" Reconize ", " Recognize \n", "recognize", "", "recognise", "two words"],
++                for: "reconize") == ["Recognize", "recognise"],
++            "echoes, duplicates, blanks and phrases drop out; the checker's order stays")
++        expect(
++            DictionarySuggestions.words(from: (0..<20).map { "word\($0)" }, for: "query").count == 8,
++            "the list is bounded")
++
++        let probe = LookupProbe()
++        var suggestionQueries: [String] = []
++        let session = DictionarySession(
++            findEntry: { await probe.entry($0) },
++            findSuggestions: { term in
++                suggestionQueries.append(term)
++                return ["recognize", "recognise"]
++            })
++        session.lookUp("r")
++        session.lookUp(" reconize \n")
++        await wait { session.lookup?.term == "reconize" }
++        expect(probe.calls == ["reconize"], "typing is debounced and trimmed")
++        expect(session.lookup?.suggestions == ["recognize", "recognise"], "a miss publishes suggestions")
++        session.lookUp("mango")
++        await wait { session.lookup?.term == "mango" }
++        expect(session.lookup?.entry?.term == "mango", "a hit shows its definition")
++        expect(session.lookup?.suggestions == [], "a hit carries no suggestions")
++        expect(suggestionQueries == ["reconize"], "a hit never reaches the spell checker")
++
++        session.lookUp("zzzxqv")
++        session.reset()
++        try? await Task.sleep(for: .milliseconds(150))
++        expect(session.lookup == nil, "reset prevents late publication")
++
++        let empty = DictionarySession(findEntry: { _ in nil }, findSuggestions: { _ in [] })
++        empty.lookUp("zzzxqv")
++        await wait { empty.lookup?.term == "zzzxqv" }
++        expect(
++            empty.lookup?.entry == nil && empty.lookup?.suggestions == [],
++            "no definition and no candidates leave a completed empty result")
++
++        print("Dictionary session tests: \(failures) failures")
++        exit(failures == 0 ? 0 : 1)
++    }
++}
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index 8c3c1e9d..e3052f2b 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -137,6 +137,7 @@
+ 		279F586CC34205EBA8ACA892 /* CalloutPlacement.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5DFA4E0FDAC12379F2D38B5 /* CalloutPlacement.swift */; };
+ 		295AA3F6F9E005C57698201B /* ExtensionListPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA6DDE1843D16C172AAA1002 /* ExtensionListPanel.swift */; };
+ 		29AE7D39F2969F706A8038A6 /* FileSearchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 847C792F7F5F31259EB56ACC /* FileSearchScreen.swift */; };
++		29B70635C535996A8C2640A4 /* DictionarySuggestionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931932205C272F61101D8C43 /* DictionarySuggestionsView.swift */; };
+ 		2A013DE5237A6DF5A96CC2C6 /* HyperKeyConflictPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50B776C855E29FF18F696676 /* HyperKeyConflictPolicy.swift */; };
+ 		2BEBF78104855A7E0014D223 /* UnitDef.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E153308EF724D552155C4D2 /* UnitDef.swift */; };
+ 		2C8F7F5073D77EDC1070E639 /* ToolRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFEBE220187043060F7F286 /* ToolRunner.swift */; };
+@@ -175,6 +176,7 @@
+ 		33CDC9C90C19C0B87F37C7AA /* DictationTokenizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3514AC5995904AFF15855E68 /* DictationTokenizer.swift */; };
+ 		341B31B38EAE70EDFD1BA691 /* MeetingDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDBAD3F666C10A869A4EAADB /* MeetingDetailsView.swift */; };
+ 		345D1FCC2085BD0D699DD236 /* FileSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF64F5FCB3872996AE57FDBB /* FileSearchCoordinator.swift */; };
++		3572F63D41E9B13E473A8AA3 /* DictionaryResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = A461E989CE3F96489CA031EC /* DictionaryResult.swift */; };
+ 		359FBB7F7BE95911B07AE9E2 /* DictationModelDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B324E12A254BAD39A13EDD9 /* DictationModelDownloader.swift */; };
+ 		35D8AA4E6FE6FD020A56BD8A /* HIDEventSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBBE9EB084808581126AAB6B /* HIDEventSystem.swift */; };
+ 		362651FE29DD01EC4D846F5F /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F64F4362989516482853CDB /* AppSettings.swift */; };
+@@ -480,6 +482,7 @@
+ 		8B265BFDDDDAFCC45B35BDCB /* ExtensionPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936C0D68CC32D90E590F712C /* ExtensionPickerField.swift */; };
+ 		8BC02EA99DA8526DBA1204D0 /* AIToolRounds.swift in Sources */ = {isa = PBXBuildFile; fileRef = 552EF9B38ABA9443D4FDE5E4 /* AIToolRounds.swift */; };
+ 		8BCE48437E9621D7B0220378 /* WindowSwitchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 369115AB459927FE90BCBEB5 /* WindowSwitchScreen.swift */; };
++		8CA324E30166A8001103D730 /* DictionarySuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B07A602EE726F5A2BF19445 /* DictionarySuggestionService.swift */; };
+ 		8CBFE88D227E88521E4A3326 /* RoomPickerScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5458F77141FFCA909AFA4C /* RoomPickerScreen.swift */; };
+ 		8CC7A4A5D4205843219A81C8 /* CustomCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF0880635E294D9DF55BAADA /* CustomCommand.swift */; };
+ 		8CFF2D2BF36F60659C8570A3 /* SettingsPaneScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F7C8CBD0AA75D016DBFC06 /* SettingsPaneScanner.swift */; };
+@@ -1114,6 +1117,7 @@
+ 		3A5D8DD69E6E38D96B13D1A6 /* WindowLayoutPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowLayoutPlan.swift; sourceTree = "<group>"; };
+ 		3A97F816CB516A9203224A17 /* DictationAudioChunks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationAudioChunks.swift; sourceTree = "<group>"; };
+ 		3AA3385A84985A52E2DA3596 /* Quicklink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Quicklink.swift; sourceTree = "<group>"; };
++		3B07A602EE726F5A2BF19445 /* DictionarySuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionarySuggestionService.swift; sourceTree = "<group>"; };
+ 		3BA9F5F7226AD5A91835AF5C /* LaunchAtLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLogin.swift; sourceTree = "<group>"; };
+ 		3C021D578082B4FE98D27CAC /* SpaceSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceSwitcher.swift; sourceTree = "<group>"; };
+ 		3C504229760FFFFA9D8A7799 /* SettingsHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHistory.swift; sourceTree = "<group>"; };
+@@ -1399,6 +1403,7 @@
+ 		92AF20F1007F7F3DC1013C2A /* CalloutShape.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalloutShape.swift; sourceTree = "<group>"; };
+ 		92B4495E56754B05B5F3551D /* CalcPercent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalcPercent.swift; sourceTree = "<group>"; };
+ 		92C3FC7FD77C74762B72637B /* ExtensionStorePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStorePanel.swift; sourceTree = "<group>"; };
++		931932205C272F61101D8C43 /* DictionarySuggestionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionarySuggestionsView.swift; sourceTree = "<group>"; };
+ 		934A79BF0F9B66225E5C38CE /* LauncherItemsTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherItemsTable.swift; sourceTree = "<group>"; };
+ 		934DBE501F116131DC1BF5CE /* CalcExpressionParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalcExpressionParser.swift; sourceTree = "<group>"; };
+ 		936C0D68CC32D90E590F712C /* ExtensionPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionPickerField.swift; sourceTree = "<group>"; };
+@@ -1460,6 +1465,7 @@
+ 		A2BB93BC8E1694F14B0194AA /* HyperKeySettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HyperKeySettingsSection.swift; sourceTree = "<group>"; };
+ 		A379CB384B76FF70AC72E235 /* AppleShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleShortcut.swift; sourceTree = "<group>"; };
+ 		A4618E5608C3E4F7D1E911F1 /* MCPOAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthService.swift; sourceTree = "<group>"; };
++		A461E989CE3F96489CA031EC /* DictionaryResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionaryResult.swift; sourceTree = "<group>"; };
+ 		A4942C19E48EF6DECD2D303D /* FileSearchMediaPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSearchMediaPlayer.swift; sourceTree = "<group>"; };
+ 		A4B1949D20DAEA3F80649D17 /* WindowCycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCycle.swift; sourceTree = "<group>"; };
+ 		A5873BB8728FD8BC5D256A21 /* CameraCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCoordinator.swift; sourceTree = "<group>"; };
+@@ -2835,6 +2841,7 @@
+ 			children = (
+ 				732AEAA3A5C5DE559B739295 /* DictionaryService.swift */,
+ 				53E2A503ABA6A28E229C6FD6 /* DictionarySession.swift */,
++				3B07A602EE726F5A2BF19445 /* DictionarySuggestionService.swift */,
+ 			);
+ 			path = Service;
+ 			sourceTree = "<group>";
+@@ -3056,6 +3063,7 @@
+ 				B7DE05BCC5E8CD91E8B0A26E /* DictionaryCoordinator.swift */,
+ 				65BCE97EB19D934F786DFAA0 /* DictionaryEntryView.swift */,
+ 				1447366E9AD0C934A7050EB4 /* DictionaryScreen.swift */,
++				931932205C272F61101D8C43 /* DictionarySuggestionsView.swift */,
+ 			);
+ 			path = UI;
+ 			sourceTree = "<group>";
+@@ -3400,6 +3408,7 @@
+ 			children = (
+ 				E01F745C8C21DF1290E2169C /* DictionaryEntry.swift */,
+ 				B7F46DBF8D46FE35742C4D36 /* DictionaryMarkup.swift */,
++				A461E989CE3F96489CA031EC /* DictionaryResult.swift */,
+ 			);
+ 			path = Model;
+ 			sourceTree = "<group>";
+@@ -4256,9 +4265,12 @@
+ 				D37EEAAC8153880548E909C4 /* DictionaryEntry.swift in Sources */,
+ 				AB778D7CE5D7B6B91A4B996F /* DictionaryEntryView.swift in Sources */,
+ 				A90D2DC5B401D0F7E5BD3235 /* DictionaryMarkup.swift in Sources */,
++				3572F63D41E9B13E473A8AA3 /* DictionaryResult.swift in Sources */,
+ 				AEF27CACA736D81B31C5E6BE /* DictionaryScreen.swift in Sources */,
+ 				05A237890B4BD21EE91D8090 /* DictionaryService.swift in Sources */,
+ 				BD0C138940A1B20828610D05 /* DictionarySession.swift in Sources */,
++				8CA324E30166A8001103D730 /* DictionarySuggestionService.swift in Sources */,
++				29B70635C535996A8C2640A4 /* DictionarySuggestionsView.swift in Sources */,
+ 				48F5623110FDD1FC69CEAF7A /* DisabledApplicationsSection.swift in Sources */,
+ 				A1F267E9D9914DB60DEEE0AD /* DoubleTapDetector.swift in Sources */,
+ 				DFB25A4CDD35071B745F2EF9 /* DoubleTapModifier.swift in Sources */,
+diff --git a/Tinycast/Features/Dictionary/Model/DictionaryResult.swift b/Tinycast/Features/Dictionary/Model/DictionaryResult.swift
+new file mode 100644
+index 00000000..d5a55b32
+--- /dev/null
++++ b/Tinycast/Features/Dictionary/Model/DictionaryResult.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++/// What the dictionary screen lists: the one entry, or the spellings offered when there is none.
++enum DictionaryResult: Identifiable, Sendable {
++    case definition(DictionaryEntry)
++    case suggestion(String)
++
++    var id: String {
++        switch self {
++        case .definition(let entry): entry.term
++        case .suggestion(let word): word
++        }
++    }
++}
++
++enum DictionarySuggestions {
++    static let limit = 8
++
++    /// Single words only: a phrase or a number has no spelling to correct.
++    static func accepts(_ term: String) -> Bool {
++        (2...128).contains(term.utf16.count)
++            && !term.contains(where: \.isWhitespace)
++            && term.unicodeScalars.contains(where: CharacterSet.letters.contains)
++    }
++
++    /// The checker's order is its ranking, so this only drops echoes, duplicates and phrases.
++    static func words(from candidates: [String], for term: String) -> [String] {
++        var seen: Set<String> = [term.lowercased()]
++        var words: [String] = []
++        for candidate in candidates {
++            let word = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
++            guard accepts(word), seen.insert(word.lowercased()).inserted else { continue }
++            words.append(word)
++            if words.count == limit { break }
++        }
++        return words
++    }
++}
+diff --git a/Tinycast/Features/Dictionary/Service/DictionarySession.swift b/Tinycast/Features/Dictionary/Service/DictionarySession.swift
+index 049748dd..509a1749 100644
+--- a/Tinycast/Features/Dictionary/Service/DictionarySession.swift
++++ b/Tinycast/Features/Dictionary/Service/DictionarySession.swift
+@@ -8,16 +8,31 @@ final class DictionarySession {
+         let term: String
+         /// Nil when no enabled dictionary knows the term.
+         let entry: DictionaryEntry?
++        /// Spellings to try instead, asked for only when `entry` is nil.
++        let suggestions: [String]
+     }
+ 
+     /// The last answered lookup; it stays up while the next term resolves, so typing never blanks.
+     private(set) var lookup: Lookup?
+     @ObservationIgnored private var term = ""
+     @ObservationIgnored private var task: Task<Void, Never>?
++    @ObservationIgnored private let findEntry: @Sendable (String) async -> DictionaryEntry?
++    @ObservationIgnored private let findSuggestions: @MainActor (String) async -> [String]
+ 
+     /// Coalesces a burst of keystrokes into the lookup for the word they settle on.
+     private static let debounce = Duration.milliseconds(90)
+ 
++    init(
++        findEntry: @escaping @Sendable (String) async -> DictionaryEntry? = { term in
++            await Task.detached(priority: .userInitiated) { DictionaryService.entry(for: term) }.value
++        },
++        findSuggestions: @escaping @MainActor (String) async -> [String] =
++            DictionarySuggestionService.words
++    ) {
++        self.findEntry = findEntry
++        self.findSuggestions = findSuggestions
++    }
++
+     func lookUp(_ query: String) {
+         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard term != self.term else { return }
+@@ -27,14 +42,16 @@ final class DictionarySession {
+             lookup = nil
+             return
+         }
++        let findEntry = findEntry
++        let findSuggestions = findSuggestions
+         task = Task { [weak self] in
+             try? await Task.sleep(for: Self.debounce)
+             guard !Task.isCancelled else { return }
+-            let entry = await Task.detached(priority: .userInitiated) {
+-                DictionaryService.entry(for: term)
+-            }.value
++            let entry = await findEntry(term)
+             guard !Task.isCancelled else { return }
+-            self?.lookup = Lookup(term: term, entry: entry)
++            let suggestions = entry == nil ? await findSuggestions(term) : []
++            guard !Task.isCancelled, let self, self.term == term else { return }
++            lookup = Lookup(term: term, entry: entry, suggestions: suggestions)
+         }
+     }
+ 
+diff --git a/Tinycast/Features/Dictionary/Service/DictionarySuggestionService.swift b/Tinycast/Features/Dictionary/Service/DictionarySuggestionService.swift
+new file mode 100644
+index 00000000..2f50c444
+--- /dev/null
++++ b/Tinycast/Features/Dictionary/Service/DictionarySuggestionService.swift
+@@ -0,0 +1,33 @@
++import AppKit
++
++/// Spelling candidates for a term the dictionaries lack. The checker is first touched here, on a
++/// miss, so a launch or a lookup that succeeds never loads it.
++@MainActor
++enum DictionarySuggestionService {
++    static func words(for term: String) async -> [String] {
++        guard DictionarySuggestions.accepts(term), !Task.isCancelled else { return [] }
++        let tag = NSSpellChecker.uniqueSpellDocumentTag()
++        let range = NSRange(location: 0, length: term.utf16.count)
++        let stream = AsyncStream<[String]>(bufferingPolicy: .bufferingNewest(1)) { continuation in
++            continuation.onTermination = { @Sendable _ in
++                Task { @MainActor in NSSpellChecker.shared.closeSpellDocument(withTag: tag) }
++            }
++            // AppKit calls back off-main, so the completion must not inherit main-actor isolation.
++            NSSpellChecker.shared.requestCandidates(
++                forSelectedRange: range, in: term,
++                types: NSTextCheckingResult.CheckingType.correction.rawValue,
++                options: nil, inSpellDocumentWithTag: tag
++            ) { @Sendable _, candidates in
++                let words = candidates.compactMap { candidate in
++                    candidate.range == range ? candidate.replacementString : nil
++                }
++                continuation.yield(DictionarySuggestions.words(from: words, for: term))
++                continuation.finish()
++            }
++        }
++        for await words in stream {
++            return Task.isCancelled ? [] : words
++        }
++        return []
++    }
++}
+diff --git a/Tinycast/Features/Dictionary/UI/DictionaryCoordinator.swift b/Tinycast/Features/Dictionary/UI/DictionaryCoordinator.swift
+index 576cd063..1e9baadd 100644
+--- a/Tinycast/Features/Dictionary/UI/DictionaryCoordinator.swift
++++ b/Tinycast/Features/Dictionary/UI/DictionaryCoordinator.swift
+@@ -19,9 +19,14 @@ final class DictionaryCoordinator {
+         Paster.copyPlainText(entry.text)
+     }
+ 
++    func copyWord(_ word: String) {
++        paletteCoordinator.hidePalette(restoreFocus: false)
++        Paster.copyPlainText(word)
++    }
++
+     /// Dictionary.app shows the full entry, with every dictionary the reader has enabled.
+-    func openInDictionary(_ entry: DictionaryEntry) {
+-        guard let term = entry.term.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed),
++    func openInDictionary(_ word: String) {
++        guard let term = word.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed),
+             let url = URL(string: "dict://" + term)
+         else { return }
+         paletteCoordinator.hidePalette(restoreFocus: false)
+diff --git a/Tinycast/Features/Dictionary/UI/DictionaryScreen.swift b/Tinycast/Features/Dictionary/UI/DictionaryScreen.swift
+index 5c45ed64..2c964a7c 100644
+--- a/Tinycast/Features/Dictionary/UI/DictionaryScreen.swift
++++ b/Tinycast/Features/Dictionary/UI/DictionaryScreen.swift
+@@ -11,43 +11,83 @@ struct DictionaryScreen: PaletteScreen {
+     /// The page on screen: it stays up while the next term resolves, and ↵ acts on what is shown.
+     private var entry: DictionaryEntry? { session.lookup?.entry }
+ 
+-    /// The one entry, so the footer and ⌘K act on it exactly as on a selected row.
+-    var rows: [DictionaryEntry] { entry.map { [$0] } ?? [] }
++    /// The one entry, or the spellings offered in its place, so the footer and ⌘K act on the
++    /// selection exactly as on a row.
++    var rows: [DictionaryResult] {
++        if let entry { return [.definition(entry)] }
++        return (session.lookup?.suggestions ?? []).map(DictionaryResult.suggestion)
++    }
++
++    var primaryActionTitle: String {
++        entry == nil ? String(localized: "Look Up") : String(localized: "Copy Definition")
++    }
+ 
+-    var primaryActionTitle: String { String(localized: "Copy Definition") }
++    private func result(at selection: Int) -> DictionaryResult? {
++        let rows = rows
++        return rows.indices.contains(selection) ? rows[selection] : nil
++    }
+ 
+     func actions(at selection: Int) -> PopoverMenuContent? {
+-        guard let entry else { return nil }
+-        return PopoverMenuContent(
+-            header: entry.term,
+-            items: [
++        guard let result = result(at: selection) else { return nil }
++        var items = [
++            PopoverMenuItem(
++                title: primaryActionTitle,
++                systemImage: entry == nil ? "text.magnifyingglass" : "doc.on.doc", shortcut: "↵"
++            ) {
++                activate(result)
++            }
++        ]
++        if case .suggestion(let word) = result {
++            items.append(
+                 PopoverMenuItem(
+-                    title: String(localized: "Copy Definition"), systemImage: "doc.on.doc", shortcut: "↵"
++                    title: String(localized: "Copy"), systemImage: "doc.on.doc", shortcut: "⌥↵"
+                 ) {
+-                    core.dictionaryCoordinator.copy(entry)
+-                },
+-                PopoverMenuItem(
+-                    title: String(localized: "Open in Dictionary"), systemImage: "book", shortcut: "⌘↵"
+-                ) {
+-                    core.dictionaryCoordinator.openInDictionary(entry)
+-                }
+-            ])
++                    core.dictionaryCoordinator.copyWord(word)
++                })
++        }
++        items.append(
++            PopoverMenuItem(
++                title: String(localized: "Open in Dictionary"), systemImage: "book", shortcut: "⌘↵"
++            ) {
++                core.dictionaryCoordinator.openInDictionary(result.id)
++            })
++        return PopoverMenuContent(header: result.id, items: items)
+     }
+ 
+     func activate(at selection: Int) {
+-        guard let entry else { return }
+-        core.dictionaryCoordinator.copy(entry)
++        guard let result = result(at: selection) else { return }
++        activate(result)
++    }
++
++    private func activate(_ result: DictionaryResult) {
++        switch result {
++        case .definition(let entry): core.dictionaryCoordinator.copy(entry)
++        case .suggestion(let word): vm.rewriteQuery(word)
++        }
+     }
+ 
+     func secondary(at selection: Int) -> Bool {
+-        guard let entry else { return false }
+-        core.dictionaryCoordinator.openInDictionary(entry)
++        guard let result = result(at: selection) else { return false }
++        core.dictionaryCoordinator.openInDictionary(result.id)
++        return true
++    }
++
++    /// ⌥↵ copies a suggested word; a shown definition has only ↵ to copy.
++    func pasteKeepingWindowOpen(at selection: Int) -> Bool {
++        guard case .suggestion(let word)? = result(at: selection) else { return false }
++        core.dictionaryCoordinator.copyWord(word)
+         return true
+     }
+ 
+     func body(selection: Int, scroll: ScrollIntent) -> AnyView {
+         if term.isEmpty { return AnyView(EmptyResults(text: String(localized: "Type a word to define"))) }
+         if let entry { return AnyView(DictionaryEntryView(entry: entry)) }
++        if !rows.isEmpty {
++            return AnyView(
++                DictionarySuggestionsView(
++                    words: rows.map(\.id), selection: selection, scroll: scroll,
++                    onActivate: { activate(.suggestion($0)) }))
++        }
+         if session.lookup?.term == term {
+             return AnyView(EmptyResults(text: String(localized: "No definition found")))
+         }
+diff --git a/Tinycast/Features/Dictionary/UI/DictionarySuggestionsView.swift b/Tinycast/Features/Dictionary/UI/DictionarySuggestionsView.swift
+new file mode 100644
+index 00000000..940667ea
+--- /dev/null
++++ b/Tinycast/Features/Dictionary/UI/DictionarySuggestionsView.swift
+@@ -0,0 +1,71 @@
++import SwiftUI
++
++/// The spellings offered when a word has no definition.
++struct DictionarySuggestionsView: View {
++    @Environment(\.metrics) private var metrics
++    let words: [String]
++    let selection: Int
++    let scroll: ScrollIntent
++    let onActivate: (String) -> Void
++
++    private var selectedWord: String? {
++        words.indices.contains(selection) ? words[selection] : nil
++    }
++
++    var body: some View {
++        ScrollViewReader { proxy in
++            ScrollView {
++                LazyVStack(spacing: 0) {
++                    SectionHeader(title: String(localized: "Suggestions"), isFirst: true)
++                    ForEach(words, id: \.self) { word in
++                        DictionarySuggestionRow(word: word, selected: word == selectedWord)
++                            .selectionFrame(word == selectedWord)
++                            .contentShape(Rectangle())
++                            .onTapGesture { onActivate(word) }
++                    }
++                }
++                .padding(.horizontal, metrics.spacing.md)
++                .padding(.top, metrics.spacing.xs)
++                .padding(.bottom, metrics.spacing.md)
++                .hideNativeScrollers()
++                .scrollOriginAnchor()
++            }
++            .edgeDissolve()
++            .thinScrollbar()
++            .scrollFollowsSelection(
++                scroll, row: selectedWord, atOrigin: selection == 0, proxy: proxy)
++        }
++    }
++}
++
++private struct DictionarySuggestionRow: View {
++    @Environment(\.metrics) private var metrics
++    let word: String
++    let selected: Bool
++    @State private var hovered = false
++
++    private var fill: Color {
++        if selected { return Theme.Colors.selection }
++        if hovered { return Theme.Colors.rowHover }
++        return .clear
++    }
++
++    var body: some View {
++        IconCache.observeStyle()
++        return HStack(spacing: metrics.spacing.lg) {
++            Image(nsImage: IconCache.symbolIcon(named: "book"))
++                .resizable()
++                .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
++            Text(word)
++                .font(metrics.typography.rowTitle)
++                .lineLimit(1)
++            Spacer(minLength: metrics.spacing.md)
++        }
++        .padding(.horizontal, metrics.spacing.md)
++        .padding(.vertical, metrics.spacing.sm)
++        .background(
++            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous).fill(fill)
++        )
++        .armedHover($hovered)
++    }
++}
+-- 
+2.56.0
+

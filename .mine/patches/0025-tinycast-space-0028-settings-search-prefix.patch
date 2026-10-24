@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:37 -0300
+Subject: [PATCH] tinycast-space 0028: settings search prefix
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`?` or `?text` in the launcher searches Tinycast's own settings through upstream's `SettingsSearchCatalog` (new `SettingsSearchScreen.swift`): a bare `?` lists the panes, ↵ opens Settings at the pane or row, ⌘1–⌘9 open the Nth row, and File Search stays out of it. After [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/f337e4ea).
+
+Origin: tinycast-space 0028-settings-search-prefix.patch @ ffccfc3
+---
+ Tests/settings-history-test.swift             |  24 +++
+ Tinycast.xcodeproj/project.pbxproj            |   4 +
+ .../FileSearch/UI/FileSearchCoordinator.swift |   4 +-
+ .../Settings/SettingsSearchCatalog.swift      |   8 +
+ .../Settings/SettingsSearchScreen.swift       | 140 ++++++++++++++++++
+ Tinycast/Palette/RootPaletteView.swift        |   4 +
+ 6 files changed, 183 insertions(+), 1 deletion(-)
+ create mode 100644 Tinycast/Features/Settings/SettingsSearchScreen.swift
+
+diff --git a/Tests/settings-history-test.swift b/Tests/settings-history-test.swift
+index a402bded..dd854989 100644
+--- a/Tests/settings-history-test.swift
++++ b/Tests/settings-history-test.swift
+@@ -30,6 +30,8 @@ struct SettingsHistoryTests {
+         catalogFindsKnownRows()
+         catalogRanksTitlesFirst()
+         catalogAnchorsMatchTheirPane()
++        scopeBareQueryBrowsesPanes()
++        scopeSearchFindsRows()
+         revealingRecordsANewRequestEachTime()
+         flashOutlivesThePaneThatLitIt()
+ 
+@@ -182,6 +184,28 @@ struct SettingsHistoryTests {
+             "and an unmatched query returns nothing")
+     }
+ 
++    /// A bare `?` browses every pane once, so the scope is useful before typing.
++    static func scopeBareQueryBrowsesPanes() {
++        let panes = SettingsSearchCatalog.scopeResults(for: "")
++        expect(
++            panes.count == SettingsTab.allCases.count
++                && Set(panes.map(\.tab)) == Set(SettingsTab.allCases),
++            "a bare scope lists every pane exactly once")
++        expect(panes.allSatisfy { $0.target == nil }, "and every row opens its pane")
++        expect(
++            SettingsSearchCatalog.scopeResults(for: "   ").count == panes.count,
++            "and whitespace alone still browses")
++    }
++
++    /// `?text` searches rows and panes through the same ranking as Settings search.
++    static func scopeSearchFindsRows() {
++        let found = SettingsSearchCatalog.scopeResults(for: "extensions")
++        expect(found.first?.tab == .extensions, "a scoped search lands on the pane")
++        expect(
++            SettingsSearchCatalog.scopeResults(for: "nothing here matches at all").isEmpty,
++            "and an unmatched scope returns nothing")
++    }
++
+     // MARK: - Revealing a section
+ 
+     /// Picking the same result twice has to scroll and pulse again, not compare equal and do nothing.
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index f51e73c1..8c3c1e9d 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -357,6 +357,7 @@
+ 		6318EE7BB3E3AA6EF9C49115 /* RoomLayoutEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08BFAE12F7EC9C75E523FD9D /* RoomLayoutEngine.swift */; };
+ 		633DCA2F00A274C375EB4423 /* LauncherRankingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EDB1EEB97CC5F6B0B81FFD6 /* LauncherRankingStore.swift */; };
+ 		63731BC19179EB89D495A390 /* NoteRevealPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7D0725CF7068879F86F0AA /* NoteRevealPolicy.swift */; };
++		6456A1F6C0CEA0169D5F60FD /* SettingsSearchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20C3A353BBAAB282EA0A48EC /* SettingsSearchScreen.swift */; };
+ 		648D442C0C716DB622511436 /* AIChatWindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37A4A767EB3BD7219675B1A0 /* AIChatWindowChrome.swift */; };
+ 		64AD2324BDA6293464C98913 /* EmojiCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45EB979ECD44738BCD9E2F90 /* EmojiCoordinator.swift */; };
+ 		6527B404C220924885C070B3 /* AppWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9979DED5579535D1F0A32DBF /* AppWindowController.swift */; };
+@@ -1010,6 +1011,7 @@
+ 		201FCD08ACA933378876385B /* ClipboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardStore.swift; sourceTree = "<group>"; };
+ 		2069789D62057E302322AFDB /* MeetingRowParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingRowParts.swift; sourceTree = "<group>"; };
+ 		209D951FDD587A040F1F76F3 /* PaletteWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaletteWindowController.swift; sourceTree = "<group>"; };
++		20C3A353BBAAB282EA0A48EC /* SettingsSearchScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSearchScreen.swift; sourceTree = "<group>"; };
+ 		220CECFE780E8BE18FAE0A1C /* ExtensionGridLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionGridLayout.swift; sourceTree = "<group>"; };
+ 		222F9EE432F608B5C907E7C2 /* MCPOAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuth.swift; sourceTree = "<group>"; };
+ 		22701685D1187235DA195F3B /* LauncherOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherOrder.swift; sourceTree = "<group>"; };
+@@ -3602,6 +3604,7 @@
+ 				68952539C0BD045BA175CBB6 /* SettingsRootView.swift */,
+ 				CC407C844BE73916C6C526F1 /* SettingsScrollTarget.swift */,
+ 				B580FD584B516AB666F1C81E /* SettingsSearchCatalog.swift */,
++				20C3A353BBAAB282EA0A48EC /* SettingsSearchScreen.swift */,
+ 				03D29ADBBE565419B1E98281 /* SettingsSidebarView.swift */,
+ 				4AA61A2FAF4E49E466DA8F37 /* SettingsTab.swift */,
+ 				F3CE1A1626264322E8A1192E /* SettingsWindowChrome.swift */,
+@@ -4710,6 +4713,7 @@
+ 				CFB516312C4694DDFD99DBCA /* SettingsRootView.swift in Sources */,
+ 				3D00EF47CECC95BAEDD372FA /* SettingsScrollTarget.swift in Sources */,
+ 				B83D909972DFFC37E2FB1304 /* SettingsSearchCatalog.swift in Sources */,
++				6456A1F6C0CEA0169D5F60FD /* SettingsSearchScreen.swift in Sources */,
+ 				1CA10DE219BAB97BFC29E54A /* SettingsSidebarView.swift in Sources */,
+ 				26DB736F18280E1BE6C6B8BE /* SettingsTab.swift in Sources */,
+ 				23F808ECC9100FFCBE5DA0F7 /* SettingsWindowChrome.swift in Sources */,
+diff --git a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+index 7da29632..4588fab0 100644
+--- a/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
++++ b/Tinycast/Features/FileSearch/UI/FileSearchCoordinator.swift
+@@ -51,7 +51,9 @@ final class FileSearchCoordinator {
+ 
+     /// Borrows the screen's session, so Search Files then opens on the request already answered.
+     func searchFromLauncher(_ query: String) {
+-        guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query) else {
++        guard showsFilesInLauncher, FileSearchQuery.answersLauncher(query),
++            SettingsSearchScreen.scope(of: query) == nil  // tinycast-space
++        else {
+             session.cancel()
+             return
+         }
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index 25782c52..b0af3f72 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -58,6 +58,14 @@ enum SettingsSearchCatalog {
+         var isEmpty: Bool { terms.isEmpty }
+     }
+ 
++    /// Launcher `?` scope: a bare `?` browses every pane, `?text` searches rows and panes.
++    static func scopeResults(for scoped: String, limit: Int = 50) -> [SettingsSearchEntry] {
++        guard !scoped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return entries.filter { $0.target == nil }
++        }
++        return results(for: scoped, limit: limit)
++    }
++
+     static func results(for raw: String, limit: Int = 50) -> [SettingsSearchEntry] {
+         let query = Query(raw)
+         guard !query.isEmpty else { return [] }
+diff --git a/Tinycast/Features/Settings/SettingsSearchScreen.swift b/Tinycast/Features/Settings/SettingsSearchScreen.swift
+new file mode 100644
+index 00000000..f7d77812
+--- /dev/null
++++ b/Tinycast/Features/Settings/SettingsSearchScreen.swift
+@@ -0,0 +1,140 @@
++import SwiftUI
++
++// tinycast-space: the launcher's `?` scope searches Tinycast's own Settings.
++/// A leading `?` turns root search into a search over Settings; the mode stays launcher, so Esc,
++/// history and the footer keep working.
++struct SettingsSearchScreen: PaletteScreen {
++    let core: AppCore
++    let vm: PaletteState
++    let openActions: () -> Void
++
++    /// What follows a leading `?`, or nil when the query is not scoped to settings.
++    static func scope(of query: String) -> String? {
++        guard query.first == "?" else { return nil }
++        return String(query.dropFirst())
++    }
++
++    var rows: [SettingsSearchEntry] {
++        SettingsSearchCatalog.scopeResults(for: Self.scope(of: vm.query) ?? "")
++    }
++
++    var primaryActionTitle: String { String(localized: "Open in Settings") }
++
++    private func entry(at selection: Int) -> SettingsSearchEntry? {
++        let rows = rows
++        return rows.indices.contains(selection) ? rows[selection] : nil
++    }
++
++    func hasActions(at selection: Int) -> Bool { false }
++
++    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
++        guard case .favoriteSlot(let index) = shortcut else { return false }
++        let rows = rows
++        guard index < LauncherList.numberedResultLimit, rows.indices.contains(index) else {
++            return false
++        }
++        open(rows[index])
++        return true
++    }
++
++    func activate(at selection: Int) {
++        guard let entry = entry(at: selection) else { return }
++        open(entry)
++    }
++
++    /// One row opens one place.
++    func secondary(at selection: Int) -> Bool { false }
++
++    private func open(_ entry: SettingsSearchEntry) {
++        core.paletteCoordinator.hidePalette(restoreFocus: false)
++        core.settingsCoordinator.showSettings(tab: entry.tab, revealing: entry.target)
++    }
++
++    func body(selection: Int, scroll: ScrollIntent) -> AnyView {
++        let rows = rows
++        guard !rows.isEmpty else {
++            return AnyView(EmptyResults(text: String(localized: "No results")))
++        }
++        let selectedID = rows.indices.contains(selection) ? rows[selection].id : nil
++        return AnyView(
++            ScrollViewReader { proxy in
++                ScrollView {
++                    LazyVStack(spacing: 0) {
++                        ForEach(Array(rows.enumerated()), id: \.element.id) { offset, entry in
++                            SettingsSearchScreenRow(
++                                entry: entry, selected: entry.id == selectedID,
++                                slot: offset < LauncherList.numberedResultLimit
++                                    ? FavoriteSlots.digit(at: offset) : nil
++                            )
++                            .selectionFrame(entry.id == selectedID)
++                            .contentShape(Rectangle())
++                            .onRowClick(
++                                select: { vm.selection = offset },
++                                activate: { open(entry) })
++                        }
++                    }
++                    .padding(.horizontal, metrics.spacing.md)
++                    .padding(.top, metrics.spacing.xs)
++                    .padding(.bottom, metrics.spacing.md)
++                    .hideNativeScrollers()
++                    .scrollOriginAnchor()
++                }
++                .edgeDissolve()
++                .thinScrollbar()
++                .scrollFollowsSelection(
++                    scroll, row: selectedID, atOrigin: selection == 0, proxy: proxy)
++            }
++        )
++    }
++
++    private var metrics: InterfaceMetrics { core.settings.interfaceSize.metrics }
++}
++
++private struct SettingsSearchScreenRow: View {
++    @Environment(\.metrics) private var metrics
++    let entry: SettingsSearchEntry
++    let selected: Bool
++    /// This row's ⌘-digit, or nil past the ninth.
++    let slot: Character?
++    @Environment(PaletteState.self) private var palette
++    @State private var hovered = false
++
++    private var fill: Color {
++        if selected { return Theme.Colors.selection }
++        if hovered { return Theme.Colors.rowHover }
++        return .clear
++    }
++
++    var body: some View {
++        HStack(spacing: metrics.spacing.lg) {
++            SettingsTabIcon(
++                systemImage: entry.tab.systemImage, tint: .accentColor,
++                size: metrics.size.resultRowIcon)
++            VStack(alignment: .leading, spacing: metrics.spacing.xxs) {
++                Text(entry.title)
++                    .font(metrics.typography.rowTitle)
++                    .lineLimit(1)
++                    .truncationMode(.tail)
++                Text(entry.breadcrumb)
++                    .font(metrics.typography.rowTrailing)
++                    .foregroundStyle(.secondary)
++                    .lineLimit(1)
++                    .truncationMode(.middle)
++            }
++            Spacer(minLength: 0)
++            if let slot, palette.commandHeld {
++                HStack(spacing: metrics.spacing.xxs) {
++                    KeyCapChip(text: "⌘", style: .outline)
++                    KeyCapChip(text: String(slot), style: .outline)
++                }
++            }
++        }
++        .padding(.horizontal, metrics.spacing.md)
++        .padding(.vertical, metrics.spacing.sm)
++        .background(
++            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
++                .fill(fill)
++        )
++        .armedHover($hovered)
++    }
++}
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index 7d4e26df..996ad2e6 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -49,6 +49,10 @@ struct RootPaletteView: View {
+     private var screen: any PaletteScreen {
+         switch vm.mode {
+         case .launcher:
++            // tinycast-space: a leading `?` scopes root search to Tinycast's settings.
++            if SettingsSearchScreen.scope(of: vm.query) != nil {
++                return SettingsSearchScreen(core: core, vm: vm, openActions: openActions)
++            }
+             return LauncherScreen(
+                 appIndex: appIndex, favorites: favorites, visibility: visibility,
+                 currencyRates: currencyRates, core: core, vm: vm, running: selectionIsRunning,
+-- 
+2.56.0
+

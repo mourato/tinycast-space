@@ -1,0 +1,185 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:37 -0300
+Subject: [PATCH] tinycast-space 0025: faster lists and launch
+
+`DateBucket.Boundaries` resolves Today, Yesterday, this week and this month once per list instead of per row (Clipboard History, Calculator history, AI Chat history and sidebar); the launch-at-login status, an XPC round trip of ~40 ms, is read off the main thread at launch, and a write cancels that read. Two parts of [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/de308447); its palette prewarm is left out, since it moves the open palette's memory into idle.
+
+Origin: tinycast-space 0025-faster-lists-and-launch.patch @ ffccfc3
+---
+ .../Features/AI/UI/AIChatSidebarView.swift    |  3 +-
+ Tinycast/Features/AI/UI/ChatHistoryView.swift |  3 +-
+ .../Calculator/UI/CalculatorHistoryView.swift |  3 +-
+ .../Features/Clipboard/UI/ClipboardView.swift | 42 +++++++++++++------
+ Tinycast/Features/Settings/AppSettings.swift  | 17 +++++++-
+ Tinycast/Platform/LaunchAtLogin.swift         |  3 +-
+ 6 files changed, 53 insertions(+), 18 deletions(-)
+
+diff --git a/Tinycast/Features/AI/UI/AIChatSidebarView.swift b/Tinycast/Features/AI/UI/AIChatSidebarView.swift
+index 125d2924..cd496b04 100644
+--- a/Tinycast/Features/AI/UI/AIChatSidebarView.swift
++++ b/Tinycast/Features/AI/UI/AIChatSidebarView.swift
+@@ -21,11 +21,12 @@ struct AIChatSidebarView: View {
+     /// Recency order already groups each day together, so a bucket only ever opens once.
+     private var sections: [ChatSection] {
+         var sections: [ChatSection] = []
++        let buckets = DateBucket.Boundaries()
+         for conversation in history.search(query).pinnedFirst {
+             let title =
+                 conversation.isPinned
+                 ? String(localized: "ai-pinned-conversations", defaultValue: "Pinned")
+-                : DateBucket(for: conversation.updatedAt).title
++                : buckets.bucket(for: conversation.updatedAt).title
+             if sections.last?.title == title {
+                 sections[sections.count - 1].conversations.append(conversation)
+             } else {
+diff --git a/Tinycast/Features/AI/UI/ChatHistoryView.swift b/Tinycast/Features/AI/UI/ChatHistoryView.swift
+index 00078552..aae21a0f 100644
+--- a/Tinycast/Features/AI/UI/ChatHistoryView.swift
++++ b/Tinycast/Features/AI/UI/ChatHistoryView.swift
+@@ -29,8 +29,9 @@ struct ChatHistoryList: View {
+     private var rows: [Row] {
+         var rows: [Row] = []
+         var currentBucket: DateBucket?
++        let buckets = DateBucket.Boundaries()
+         for conversation in results {
+-            let bucket = DateBucket(for: conversation.updatedAt)
++            let bucket = buckets.bucket(for: conversation.updatedAt)
+             if bucket != currentBucket {
+                 rows.append(.header(bucket.title))
+                 currentBucket = bucket
+diff --git a/Tinycast/Features/Calculator/UI/CalculatorHistoryView.swift b/Tinycast/Features/Calculator/UI/CalculatorHistoryView.swift
+index 9216b1d0..8ab23773 100644
+--- a/Tinycast/Features/Calculator/UI/CalculatorHistoryView.swift
++++ b/Tinycast/Features/Calculator/UI/CalculatorHistoryView.swift
+@@ -44,8 +44,9 @@ struct CalculatorHistoryList: View {
+         var rows: [Row] = []
+         if let calc { rows = [.header(String(localized: "Calculator")), .calc(calc)] }
+         var currentBucket: DateBucket?
++        let buckets = DateBucket.Boundaries()
+         for entry in results {
+-            let bucket = DateBucket(for: entry.createdAt)
++            let bucket = buckets.bucket(for: entry.createdAt)
+             if bucket != currentBucket {
+                 rows.append(.header(bucket.title))
+                 currentBucket = bucket
+diff --git a/Tinycast/Features/Clipboard/UI/ClipboardView.swift b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
+index a6f9ec51..05ff0dd8 100644
+--- a/Tinycast/Features/Clipboard/UI/ClipboardView.swift
++++ b/Tinycast/Features/Clipboard/UI/ClipboardView.swift
+@@ -37,8 +37,10 @@ struct ClipboardList: View {
+         var rows: [Row] = []
+         var currentTitle: String?
+         var pinnedSlot = 0
++        let buckets = DateBucket.Boundaries()
+         for item in results {
+-            let title = item.isPinned ? String(localized: "Pinned") : DateBucket(for: item.createdAt).title
++            let title =
++                item.isPinned ? String(localized: "Pinned") : buckets.bucket(for: item.createdAt).title
+             if title != currentTitle {
+                 rows.append(.header(title))
+                 currentTitle = title
+@@ -109,17 +111,33 @@ enum DateBucket: Int {
+         }
+     }
+ 
+-    init(for date: Date, now: Date = Date(), calendar: Calendar = .current) {
+-        if calendar.isDateInToday(date) {
+-            self = .today
+-        } else if calendar.isDateInYesterday(date) {
+-            self = .yesterday
+-        } else if calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear) {
+-            self = .thisWeek
+-        } else if calendar.isDate(date, equalTo: now, toGranularity: .month) {
+-            self = .thisMonth
+-        } else {
+-            self = .earlier
++    /// Resolved once per list; asking the calendar per row costs ~5 ms on a 1,000-entry history.
++    struct Boundaries {
++        private let today: DateInterval?
++        private let yesterday: DateInterval?
++        private let week: DateInterval?
++        private let month: DateInterval?
++
++        init(now: Date = Date(), calendar: Calendar = .current) {
++            today = calendar.dateInterval(of: .day, for: now)
++            yesterday = calendar.date(byAdding: .day, value: -1, to: now)
++                .flatMap { calendar.dateInterval(of: .day, for: $0) }
++            week = calendar.dateInterval(of: .weekOfYear, for: now)
++            month = calendar.dateInterval(of: .month, for: now)
++        }
++
++        func bucket(for date: Date) -> DateBucket {
++            if Self.date(date, isIn: today) { return .today }
++            if Self.date(date, isIn: yesterday) { return .yesterday }
++            if Self.date(date, isIn: week) { return .thisWeek }
++            if Self.date(date, isIn: month) { return .thisMonth }
++            return .earlier
++        }
++
++        /// Half-open, as the calendar's own day test is: `DateInterval.contains` takes in the end.
++        private static func date(_ date: Date, isIn interval: DateInterval?) -> Bool {
++            guard let interval else { return false }
++            return interval.start <= date && date < interval.end
+         }
+     }
+ }
+diff --git a/Tinycast/Features/Settings/AppSettings.swift b/Tinycast/Features/Settings/AppSettings.swift
+index 1f32d6c0..8b41c3e2 100644
+--- a/Tinycast/Features/Settings/AppSettings.swift
++++ b/Tinycast/Features/Settings/AppSettings.swift
+@@ -158,8 +158,17 @@ final class AppSettings {
+     }
+ 
+     var launchAtLogin: Bool {
+-        didSet { LaunchAtLogin.set(launchAtLogin) }
++        get { loginItemEnabled }
++        set {
++            loginItemRead?.cancel()
++            loginItemEnabled = newValue
++            LaunchAtLogin.set(newValue)
++        }
+     }
++    /// As SMAppService last reported it; its XPC answer takes ~40 ms, so launch reads it off main.
++    private var loginItemEnabled = false
++    /// Cancelled by a write, so a status read still in flight cannot undo the user's choice.
++    @ObservationIgnored private var loginItemRead: Task<Void, Never>?
+ 
+     /// The launcher icon's visibility; dragging the icon out of the menu bar turns it off.
+     var showInMenuBar: Bool {
+@@ -693,7 +702,6 @@ final class AppSettings {
+         clipboardDefaultAction =
+             defaults.string(forKey: Key.clipboardDefaultAction.rawValue)
+             .flatMap(ClipboardDefaultAction.init) ?? .paste
+-        launchAtLogin = LaunchAtLogin.isEnabled
+         showInMenuBar =
+             defaults.object(forKey: Key.showInMenuBar.rawValue) == nil
+             || defaults.bool(forKey: Key.showInMenuBar.rawValue)
+@@ -897,5 +905,10 @@ final class AppSettings {
+             defaults.object(forKey: Key.supportReminders.rawValue) == nil
+             || defaults.bool(forKey: Key.supportReminders.rawValue)
+         settingsFileEnabled = defaults.bool(forKey: Key.settingsFileEnabled.rawValue)
++        loginItemRead = Task { [weak self] in
++            let enabled = await LaunchAtLogin.isEnabled()
++            guard !Task.isCancelled else { return }
++            self?.loginItemEnabled = enabled
++        }
+     }
+ }
+diff --git a/Tinycast/Platform/LaunchAtLogin.swift b/Tinycast/Platform/LaunchAtLogin.swift
+index f21dbece..4a5807d3 100644
+--- a/Tinycast/Platform/LaunchAtLogin.swift
++++ b/Tinycast/Platform/LaunchAtLogin.swift
+@@ -1,7 +1,8 @@
+ import ServiceManagement
+ 
+ enum LaunchAtLogin {
+-    static var isEnabled: Bool {
++    /// The status is an XPC round trip (~40 ms), so callers read it off the main thread.
++    @concurrent static func isEnabled() async -> Bool {
+         SMAppService.mainApp.status == .enabled
+     }
+ 
+-- 
+2.56.0
+

@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:23 -0300
+Subject: [PATCH] tinycast-space 0005: external hyper glyph
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Settings → General → Hyper Key: with Hyper Key set to None, "Show ✦ for another app's Hyper key" collapses the Hyper chord to ✦ anyway (for Karabiner/Hyperkey-style remappers) and keeps Include Shift editable.
+
+Origin: tinycast-space 0005-external-hyper-glyph.patch @ ffccfc3
+---
+ Tinycast/App/AppCore.swift                            |  5 ++++-
+ .../HotKeys/Settings/HyperKeySettingsSection.swift    | 11 ++++++++++-
+ .../Features/Settings/SettingsSearchCatalog.swift     |  3 +++
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index 97e52bbe..d41a131f 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -421,7 +421,10 @@ final class AppCore {
+                 return appIndex.isCommandEnabled(id)
+             }
+             KeyShortcut.displayedHyperChord = { [settings] in
+-                guard settings.hyperKey != .none else { return nil }
++                // tinycast-space: another app can own the Hyper key and still want the ✦ glyph.
++                guard settings.hyperKey != .none
++                    || UserDefaults.standard.bool(forKey: "spaceHyperGlyphWithoutRemap")
++                else { return nil }
+                 return KeyShortcut.hyperChord(includesShift: settings.hyperKeyIncludesShift)
+             }
+             SystemActionRunner.onAsyncFailure = { [weak self] id, failure in
+diff --git a/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift b/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift
+index 189dca0b..3ea46657 100644
+--- a/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift
++++ b/Tinycast/Features/HotKeys/Settings/HyperKeySettingsSection.swift
+@@ -4,6 +4,8 @@ struct HyperKeySettingsSection: View {
+     @Environment(AppCore.self) private var core
+     @Environment(AppSettings.self) private var settings
+     @State private var diagnostics: HyperKeyDiagnostics?
++    /// tinycast-space: show ✦ for the Hyper chord while another app does the remapping.
++    @AppStorage("spaceHyperGlyphWithoutRemap") private var hyperGlyphWithoutRemap = false
+ 
+     private var manager: HyperKeyManager { core.hyperKey }
+ 
+@@ -61,11 +63,18 @@ struct HyperKeySettingsSection: View {
+                 }
+             }
+ 
++            if settings.hyperKey == .none {
++                Toggle(isOn: $hyperGlyphWithoutRemap) {
++                    SettingsRowTitle(.generalHyperKey, "Show ✦ for another app's Hyper key")
++                    Text("Shortcuts using the whole Hyper chord read as ✦ instead of its modifiers.")
++                }
++            }
++
+             Toggle(isOn: $settings.hyperKeyIncludesShift) {
+                 SettingsRowTitle(.generalHyperKey, "Include Shift (⇧)")
+             }
+             // Flipping it re-points recorded chords, so it needs a chord to mean.
+-            .settingsEnabled(settings.hyperKey != .none)
++            .settingsEnabled(settings.hyperKey != .none || hyperGlyphWithoutRemap)
+ 
+             if settings.hyperKey.supportsSecureInputCompatibility {
+                 Toggle(isOn: $settings.hyperKeySecureInputCompatibility) {
+diff --git a/Tinycast/Features/Settings/SettingsSearchCatalog.swift b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+index ac1377dd..12831f38 100644
+--- a/Tinycast/Features/Settings/SettingsSearchCatalog.swift
++++ b/Tinycast/Features/Settings/SettingsSearchCatalog.swift
+@@ -164,6 +164,9 @@ enum SettingsSearchCatalog {
+         .init(
+             .generalHyperKey, "Quick Press",
+             keywords: ["tap", "escape", "single press"]),
++        .init(
++            .generalHyperKey, "Show ✦ for another app's Hyper key",
++            keywords: ["glyph", "karabiner", "hyperkey", "external", "modifier"]),
+         .init(
+             .generalHyperKey, "Include Shift (⇧)",
+             keywords: ["modifier", "chord"]),
+-- 
+2.56.0
+

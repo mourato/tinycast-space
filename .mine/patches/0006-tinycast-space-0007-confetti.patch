@@ -1,0 +1,292 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:24 -0300
+Subject: [PATCH] tinycast-space 0007: confetti
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Confetti as a system action and as `raycast://confetti`, drawn by the new `ConfettiOverlay.swift` with `CAEmitterLayer` (plus the undocumented `plane` particle type and `drag`/`wave` behaviours the effect needs, each applied defensively). Tunable live through `confetti.*` defaults. With Reduce motion on nothing animates: a burst on screen closes and a 🎉 HUD shows instead, for the command and the link alike (as [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/9e8dd60a) does).
+
+Origin: tinycast-space 0007-confetti.patch @ ffccfc3
+---
+ Tinycast.xcodeproj/project.pbxproj            |   4 +
+ Tinycast/App/AppCore.swift                    |   5 +
+ .../SystemActions/Model/SystemAction.swift    |   4 +
+ .../Service/ConfettiOverlay.swift             | 168 ++++++++++++++++++
+ .../Service/SystemActionRunner.swift          |   3 +
+ 5 files changed, 184 insertions(+)
+ create mode 100644 Tinycast/Features/SystemActions/Service/ConfettiOverlay.swift
+
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index 6fcbd6b1..44f71cc4 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -461,6 +461,7 @@
+ 		867B82EDC8A12BBC51592786 /* Tooltip.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD4CE330F75BC5FE5EAD99E /* Tooltip.swift */; };
+ 		8696DC1B16B6618D22F804D5 /* AIChatState.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC662BDA6856590DCF96B94 /* AIChatState.swift */; };
+ 		86B4D01867E8C18479A4FDB5 /* MathSymbolCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6194BC8452745726E8572C0 /* MathSymbolCatalog.swift */; };
++		86C2B6030D986CA00D67DA29 /* ConfettiOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF89F6F4A1A1C76AFCAD58A3 /* ConfettiOverlay.swift */; };
+ 		86C36C0885D5820E70184CF6 /* PaletteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C004F2C2EFDD340A73C6AB02 /* PaletteCoordinator.swift */; };
+ 		87D15A2E23279764DDD1A40D /* SyntaxStructuredLexers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 823F8F6B9EAAD17DD1062137 /* SyntaxStructuredLexers.swift */; };
+ 		8855C67C7EE196E3F9EDE778 /* KeyCapChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BA06E4CC7E8D40E3285F16 /* KeyCapChip.swift */; };
+@@ -1645,6 +1646,7 @@
+ 		DE0EFB95551AD217589092E4 /* DictationDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationDestination.swift; sourceTree = "<group>"; };
+ 		DE1A2CE5E4D5F10346B5F6F3 /* EmojiGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmojiGridView.swift; sourceTree = "<group>"; };
+ 		DF0880635E294D9DF55BAADA /* CustomCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomCommand.swift; sourceTree = "<group>"; };
++		DF89F6F4A1A1C76AFCAD58A3 /* ConfettiOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfettiOverlay.swift; sourceTree = "<group>"; };
+ 		DFE5D670CFC618B2EAFA0868 /* LauncherSuggestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSuggestions.swift; sourceTree = "<group>"; };
+ 		E01F745C8C21DF1290E2169C /* DictionaryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionaryEntry.swift; sourceTree = "<group>"; };
+ 		E03A52EBF08AD5C44953DBDC /* FilePreviewStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewStage.swift; sourceTree = "<group>"; };
+@@ -2109,6 +2111,7 @@
+ 		29CBDB9EE90AB60433ED2A68 /* Service */ = {
+ 			isa = PBXGroup;
+ 			children = (
++				DF89F6F4A1A1C76AFCAD58A3 /* ConfettiOverlay.swift */,
+ 				63AEA7984BF00BEDCB7F8EEE /* SystemActionFailure.swift */,
+ 				2AEDBB526AB2C0406D8226D5 /* SystemActionRunner.swift */,
+ 				8A620ADCF5605E82F103968A /* SystemActionRunner+Microphone.swift */,
+@@ -4176,6 +4179,7 @@
+ 				C45CCAE9AE2D3BCAC2BF80BE /* CommandOutputView.swift in Sources */,
+ 				4640C7CC8DCA6E6FA49394A8 /* CommandsSettingsView.swift in Sources */,
+ 				1545F0D79421A893EA104C3A /* CompactFavoritesRow.swift in Sources */,
++				86C2B6030D986CA00D67DA29 /* ConfettiOverlay.swift in Sources */,
+ 				A024F68213FEB918BEF31255 /* CountryZoneData.generated.swift in Sources */,
+ 				2EBB42C7EB17F37628765B17 /* CurrencyData.generated.swift in Sources */,
+ 				5A91C58340D02ED0939BCAE2 /* CurrencyFeed.swift in Sources */,
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index d41a131f..506a6573 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -483,6 +483,11 @@ final class AppCore {
+     }
+ 
+     func handleOpenURL(_ url: URL) {
++        // tinycast-space: the link extensions fire when a timer or task finishes.
++        if ConfettiOverlay.claims(url) {
++            if !ConfettiOverlay.fire() { showMessage("🎉") }
++            return
++        }
+         guard ExtensionDeepLink.claims(url) else { return }
+         guard let route = ExtensionDeepLink.route(url: url) else {
+             paletteCoordinator.showPalette(mode: .launcher, restoreAnyMode: true)
+diff --git a/Tinycast/Features/SystemActions/Model/SystemAction.swift b/Tinycast/Features/SystemActions/Model/SystemAction.swift
+index 24dc7932..adbd9b8a 100644
+--- a/Tinycast/Features/SystemActions/Model/SystemAction.swift
++++ b/Tinycast/Features/SystemActions/Model/SystemAction.swift
+@@ -9,6 +9,8 @@ struct SystemAction: Identifiable, Hashable, Sendable {
+         case shutDown = "shut-down"
+         case logOut = "log-out"
+         case showScreenSaver = "show-screen-saver"
++        /// tinycast-space: Raycast's Confetti. See ConfettiOverlay.
++        case confetti
+         case playPause = "play-pause"
+         case nextTrack = "next-track"
+         case previousTrack = "previous-track"
+@@ -85,6 +87,7 @@ enum SystemActionCatalog {
+         case .shutDown: return "Shut Down"
+         case .logOut: return "Log Out"
+         case .showScreenSaver: return "Show Screen Saver"
++        case .confetti: return "Confetti"  // tinycast-space
+         case .playPause: return "Play / Pause"
+         case .nextTrack: return "Next Track"
+         case .previousTrack: return "Previous Track"
+@@ -122,6 +125,7 @@ enum SystemActionCatalog {
+         case .shutDown: return "power"
+         case .logOut: return "rectangle.portrait.and.arrow.right"
+         case .showScreenSaver: return "rectangle.inset.filled"
++        case .confetti: return "party.popper"  // tinycast-space
+         case .playPause: return "playpause"
+         case .nextTrack: return "forward.end"
+         case .previousTrack: return "backward.end"
+diff --git a/Tinycast/Features/SystemActions/Service/ConfettiOverlay.swift b/Tinycast/Features/SystemActions/Service/ConfettiOverlay.swift
+new file mode 100644
+index 00000000..179a08d0
+--- /dev/null
++++ b/Tinycast/Features/SystemActions/Service/ConfettiOverlay.swift
+@@ -0,0 +1,168 @@
++import AppKit
++import CoreImage
++import QuartzCore
++
++/// tinycast-space: Raycast's Confetti — the system action, and what `raycast://confetti` fires, so an
++/// extension celebrating a finished timer or task looks the same here as it does in Raycast.
++///
++/// Two cannons from the bottom corners, one short burst, then the pieces fall under gravity, as
++/// Raycast's and Messages' do. A click-through panel per screen, above everything, closing itself.
++@MainActor
++enum ConfettiOverlay {
++    private static var panels: [NSPanel] = []
++    /// Every number below can be overridden live, without a rebuild:
++    /// `defaults write com.tinycast.app confetti.velocity 2600`, then fire again.
++    private static func tuned(_ key: String, _ fallback: Double) -> Double {
++        let defaults = UserDefaults.standard
++        guard defaults.object(forKey: "confetti." + key) != nil else { return fallback }
++        return defaults.double(forKey: "confetti." + key)
++    }
++    private static let colors: [NSColor] = [
++        .systemRed, .systemOrange, .systemYellow, .systemGreen, .systemBlue, .systemPink,
++        .systemPurple
++    ]
++
++    /// Fires on the screen the pointer is on — one cannon per bottom corner. False when Reduce
++    /// Motion is on: nothing animates and a burst already up is closed, so the caller shows a HUD.
++    @discardableResult
++    static func fire() -> Bool {
++        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
++            panels.forEach { $0.orderOut(nil) }
++            panels.removeAll()
++            return false
++        }
++        let pointer = NSEvent.mouseLocation
++        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) })
++            ?? NSScreen.main
++        else { return true }
++        present(on: screen)
++        return true
++    }
++
++    /// True for `raycast://confetti` and `tinycast://confetti`, in any capitalisation.
++    static func claims(_ url: URL) -> Bool {
++        guard let scheme = url.scheme?.lowercased(),
++            ["raycast", "tinycast", "com.raycast", "raycastinternal"].contains(scheme)
++        else { return false }
++        let path = (url.host ?? "") + url.path
++        return path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased() == "confetti"
++    }
++
++    private static func present(on screen: NSScreen) {
++        let panel = NSPanel(
++            contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
++            backing: .buffered, defer: false)
++        panel.backgroundColor = .clear
++        panel.isOpaque = false
++        panel.hasShadow = false
++        panel.ignoresMouseEvents = true
++        panel.hidesOnDeactivate = false
++        panel.level = .screenSaver
++        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
++
++        let view = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
++        view.wantsLayer = true
++        panel.contentView = view
++        guard let root = view.layer else { return }
++
++        let inset = tuned("cannonInset", 0)
++        let cannons = [
++            cannon(at: CGPoint(x: inset, y: 10), direction: .pi / 180 * tuned("cannonAngleDegrees", 90), in: root.bounds),
++            cannon(at: CGPoint(x: root.bounds.width - inset, y: 10), direction: .pi - .pi / 180 * tuned("cannonAngleDegrees", 90), in: root.bounds)
++        ]
++        cannons.forEach(root.addSublayer)
++        panel.orderFrontRegardless()
++        panels.append(panel)
++
++        Task { @MainActor in
++            // A single burst: the cannons fire for a moment, then only gravity is left to watch.
++            try? await Task.sleep(for: .milliseconds(Int(tuned("burstMs", 520))))
++            CATransaction.begin()
++            CATransaction.setDisableActions(true)
++            cannons.forEach { $0.birthRate = 0 }
++            CATransaction.commit()
++            try? await Task.sleep(for: .milliseconds(Int(tuned("tailMs", 3300))))
++            panel.orderOut(nil)
++            panels.removeAll { $0 === panel }
++        }
++    }
++
++    private static func cannon(at position: CGPoint, direction: CGFloat, in bounds: CGRect) -> CAEmitterLayer {
++        let emitter = CAEmitterLayer()
++        emitter.frame = bounds
++        emitter.emitterPosition = position
++        emitter.emitterShape = .point
++        emitter.emitterSize = .zero
++        emitter.renderMode = .unordered
++        emitter.beginTime = CACurrentMediaTime()
++        // Air, not a vacuum: drag brakes the burst into a float, and a slow wave makes it flutter.
++        // Both are undocumented Core Animation behaviours — absent, the confetti simply arcs.
++        let behaviors = [
++            behavior("drag") { $0.setValue(tuned("drag", 1.95), forKey: "drag") },
++            behavior("wave") {
++                $0.setValue(CIVector(x: tuned("waveX", 600), y: tuned("waveY", 600), z: 0), forKey: "force")
++                $0.setValue(tuned("waveFrequency", 7), forKey: "frequency")
++            }
++        ].compactMap { $0 }
++        if !behaviors.isEmpty { emitter.setValue(behaviors, forKey: "emitterBehaviors") }
++        emitter.emitterCells = colors.enumerated().map { index, color in
++            cell(color, flat: index.isMultiple(of: 2), direction: direction)
++        }
++        return emitter
++    }
++
++    /// One `CAEmitterBehavior`, built through the runtime because the class is not in the headers.
++    private static func behavior(_ type: String, _ configure: (NSObject) -> Void) -> NSObject? {
++        guard let klass = NSClassFromString("CAEmitterBehavior") as? NSObject.Type else { return nil }
++        let selector = NSSelectorFromString("behaviorWithType:")
++        guard klass.responds(to: selector),
++            let value = klass.perform(selector, with: type)?.takeUnretainedValue() as? NSObject
++        else { return nil }
++        value.setValue(type, forKey: "name")
++        configure(value)
++        return value
++    }
++
++    private static func cell(_ color: NSColor, flat: Bool, direction: CGFloat) -> CAEmitterCell {
++        let cell = CAEmitterCell()
++        cell.contents = piece(color, size: flat ? CGSize(width: 12, height: 7) : CGSize(width: 8, height: 5))
++        cell.birthRate = Float(tuned("birthRate", 100))
++        cell.lifetime = Float(tuned("lifetime", 4.1))
++        cell.lifetimeRange = Float(tuned("lifetimeRange", 1.1))
++        cell.velocity = tuned("velocity", 2800)
++        cell.velocityRange = tuned("velocityRange", 2700)
++        cell.emissionLongitude = direction
++        cell.emissionRange = .pi / 180 * tuned("emissionRangeDegrees", 90)
++        // Negative Y pulls down in layer coordinates: the arc, then the fall.
++        cell.yAcceleration = -tuned("gravity", 2000)
++        cell.spin = tuned("spin", 3)
++        cell.spinRange = tuned("spinRange", 8)
++        cell.scale = tuned("scale", 0.75)
++        cell.scaleRange = tuned("scaleRange", 1.25)
++        cell.alphaSpeed = Float(-tuned("fade", 0.3))
++        // Undocumented, and the whole difference between paper and spinning squares: a "plane"
++        // particle tumbles through three axes instead of rotating flat. Ignored if it ever goes away.
++        cell.setValue("plane", forKey: "particleType")
++        cell.setValue(Double.pi, forKey: "orientationRange")
++        cell.setValue(Double.pi / 2, forKey: "orientationLongitude")
++        cell.setValue(Double.pi / 2, forKey: "orientationLatitude")
++        return cell
++    }
++
++    /// Drawn once per colour and size rather than shipped as an asset.
++    private static func piece(_ color: NSColor, size: CGSize) -> CGImage? {
++        let width = Int(size.width * 2), height = Int(size.height * 2)
++        guard let context = CGContext(
++            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
++            space: CGColorSpaceCreateDeviceRGB(),
++            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
++        else { return nil }
++        context.setFillColor((color.usingColorSpace(.deviceRGB) ?? .white).cgColor)
++        context.addPath(
++            CGPath(
++                roundedRect: CGRect(x: 0, y: 0, width: width, height: height),
++                cornerWidth: 3, cornerHeight: 3, transform: nil))
++        context.fillPath()
++        return context.makeImage()
++    }
++}
+diff --git a/Tinycast/Features/SystemActions/Service/SystemActionRunner.swift b/Tinycast/Features/SystemActions/Service/SystemActionRunner.swift
+index 153cd4d9..08577741 100644
+--- a/Tinycast/Features/SystemActions/Service/SystemActionRunner.swift
++++ b/Tinycast/Features/SystemActions/Service/SystemActionRunner.swift
+@@ -45,6 +45,9 @@ enum SystemActionRunner {
+                 "tell application \"System Events\" to shut down with state saving preference")
+         case .logOut:
+             try await runAppleScript("tell application \"System Events\" to log out")
++        // tinycast-space: Raycast's Confetti; the overlay closes itself.
++        case .confetti:
++            if !ConfettiOverlay.fire() { return SystemActionFeedback("🎉") }
+         case .showScreenSaver:
+             let url = URL(fileURLWithPath: "/System/Library/CoreServices/ScreenSaverEngine.app")
+             guard FileManager.default.fileExists(atPath: url.path) else {
+-- 
+2.56.0
+

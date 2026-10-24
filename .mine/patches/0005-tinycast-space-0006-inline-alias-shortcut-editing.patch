@@ -1,0 +1,289 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:24 -0300
+Subject: [PATCH] tinycast-space 0006: inline alias shortcut editing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+⌘K on a launcher entry gains *Change Alias* and *Change Shortcut* rows that edit in place (extension commands included). Ported from [jhasubhash/tinycast](https://github.com/jhasubhash/tinycast/commit/f509d005) (AGPL-3.0); everything lives in the new `InlineEntryEditor.swift`, the rest is one-line hooks marked `tinycast-space`. `apply.sh` regenerates `project.pbxproj` with XcodeGen for the added file instead of patching it.
+
+Origin: tinycast-space 0006-inline-alias-shortcut-editing.patch @ ffccfc3
+---
+ Tinycast.xcodeproj/project.pbxproj            |   4 +
+ Tinycast/DesignSystem/PopoverMenu.swift       |   5 +
+ .../Features/Launcher/UI/AppActionsMenu.swift |   1 +
+ .../Launcher/UI/InlineEntryEditor.swift       | 132 ++++++++++++++++++
+ Tinycast/Palette/MenuPanel.swift              |   2 +
+ Tinycast/Palette/PaletteScreen.swift          |   3 +
+ Tinycast/Palette/RootPaletteView.swift        |   3 +
+ 7 files changed, 150 insertions(+)
+ create mode 100644 Tinycast/Features/Launcher/UI/InlineEntryEditor.swift
+
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index 4660486e..6fcbd6b1 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -743,6 +743,7 @@
+ 		E0C0746AD3C7E2FED3C50374 /* WindowActionMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1E7B96668721F12170CD72 /* WindowActionMemory.swift */; };
+ 		E0C75F1DD4F879772C04F8CA /* WindowLayoutNumberField.swift in Sources */ = {isa = PBXBuildFile; fileRef = D245764DB29BFEEB47A024A1 /* WindowLayoutNumberField.swift */; };
+ 		E1A4472391E5AD3EE828202E /* RedactedText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BEA1E122A8139A21E646FE2 /* RedactedText.swift */; };
++		E218C19350B9F974D4F30AED /* InlineEntryEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71FCCFC38FDA579D4D0565AA /* InlineEntryEditor.swift */; };
+ 		E268D74F0DEFFA598E2D02AA /* OnboardingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE6972F177922B1EB8831735 /* OnboardingCard.swift */; };
+ 		E29056264B57A3F0EC5F5698 /* SupportCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97986EE62AE844FFCCD27449 /* SupportCoordinator.swift */; };
+ 		E29CF7293742DDCAE030682C /* SupportReminderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE1ED405A53ECA5DED66AA1 /* SupportReminderStore.swift */; };
+@@ -1269,6 +1270,7 @@
+ 		6FF6DBC407666868DCE27C22 /* RoomRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomRunner.swift; sourceTree = "<group>"; };
+ 		709C3F8952A500267E1D8242 /* ModifierTapMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModifierTapMonitor.swift; sourceTree = "<group>"; };
+ 		70F987A185161E857B7A030B /* PaletteShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaletteShortcut.swift; sourceTree = "<group>"; };
++		71FCCFC38FDA579D4D0565AA /* InlineEntryEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineEntryEditor.swift; sourceTree = "<group>"; };
+ 		72DF1178CD8AD726AC6F9874 /* CalculatorCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorCardView.swift; sourceTree = "<group>"; };
+ 		72F0F0DDA5FC1F6ED59E73E9 /* DoubleTapModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoubleTapModifier.swift; sourceTree = "<group>"; };
+ 		730BF08D764698989DF963A0 /* MenuSearchShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuSearchShortcut.swift; sourceTree = "<group>"; };
+@@ -2219,6 +2221,7 @@
+ 				950ED06E696547AAEFC9FA9A /* CompactFavoritesRow.swift */,
+ 				E9AEDF156B61DD90C5ADA8FA /* FallbackActionsMenu.swift */,
+ 				901C92BDC35B5E26BA8BA4AA /* FallbackCoordinator.swift */,
++				71FCCFC38FDA579D4D0565AA /* InlineEntryEditor.swift */,
+ 				858E08BB313EC330C2D5E50C /* LauncherCoordinator.swift */,
+ 				132C5A534C02305C1A29CC74 /* LauncherList.swift */,
+ 				B97A8C3E88FEBCBBEADF415B /* LauncherScreen.swift */,
+@@ -4394,6 +4397,7 @@
+ 				47C49821CF6CFABB1B7410E1 /* InjectableTextView.swift in Sources */,
+ 				30AF44B8B075FFB9080A686D /* InjectionTarget.swift in Sources */,
+ 				9E70D827FD1745DDAA2BC921 /* InlineArgumentFields.swift in Sources */,
++				E218C19350B9F974D4F30AED /* InlineEntryEditor.swift in Sources */,
+ 				0A086C5452FD9FCE68AF4E46 /* InputSourceSwitcher.swift in Sources */,
+ 				6D241F01F4BB98AAE1720330 /* InstalledAI.swift in Sources */,
+ 				FD9797BBEB6ADB0661AC4177 /* InstalledAIEnvironmentKeychain.swift in Sources */,
+diff --git a/Tinycast/DesignSystem/PopoverMenu.swift b/Tinycast/DesignSystem/PopoverMenu.swift
+index d9866b77..c1961b77 100644
+--- a/Tinycast/DesignSystem/PopoverMenu.swift
++++ b/Tinycast/DesignSystem/PopoverMenu.swift
+@@ -26,6 +26,10 @@ struct PopoverMenuItem {
+     /// A value the row states rather than a chord it runs — what a "Copy as" row copies.
+     var detail: String?
+     var isDestructive: Bool = false
++    /// tinycast-space: a control drawn where the shortcut caps would be — an inline editor.
++    var trailingAccessory: (@MainActor @Sendable () -> AnyView)?
++    /// tinycast-space: activating the row edits it in place instead of closing the menu.
++    var keepsMenuOpen = false
+     let action: () -> Void
+ 
+     /// What the keyboard and pointer may land on; a loading or disabled row only states itself.
+@@ -387,6 +391,7 @@ private struct PopoverMenuRow: View {
+                     .foregroundStyle(item.isDestructive ? Color.red : Color.primary)
+                     .lineLimit(1)
+                 Spacer(minLength: metrics.spacing.sm)
++                if let accessory = item.trailingAccessory { accessory() }  // tinycast-space
+                 if let detail = item.detail {
+                     Text(detail)
+                         // Smaller than the title it trails: a stated value, not a second label.
+diff --git a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+index b532293b..c5b74659 100644
+--- a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
++++ b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+@@ -65,6 +65,7 @@ enum AppActionsMenu {
+                 PopoverMenuItem(
+                     title: title, systemImage: "eye.slash", shortcut: "⇧⌘H", action: onHideFromSearch))
+         }
++        items += InlineEntryEditor.menuItems(for: app, core: core)  // tinycast-space
+         if running, app.kind == .application {
+             items.append(
+                 PopoverMenuItem(
+diff --git a/Tinycast/Features/Launcher/UI/InlineEntryEditor.swift b/Tinycast/Features/Launcher/UI/InlineEntryEditor.swift
+new file mode 100644
+index 00000000..a7d90290
+--- /dev/null
++++ b/Tinycast/Features/Launcher/UI/InlineEntryEditor.swift
+@@ -0,0 +1,132 @@
++import AppKit
++import Carbon.HIToolbox
++import SwiftUI
++
++/// tinycast-space: edit a launcher entry's alias and shortcut in place, from its own ⌘K menu.
++/// Ported from jhasubhash/tinycast (f509d005, AGPL-3.0) and reshaped so everything but a few one-line
++/// hooks lives in this file: the menu rows, the alias draft, and the keys typed while it is open.
++@MainActor
++@Observable
++final class InlineEntryEditor {
++    static let shared = InlineEntryEditor()
++
++    /// The alias key being edited on its ⌘K row, or nil.
++    private(set) var aliasKey: String?
++    /// What is typed while `aliasKey` is set; the row reads it live.
++    private(set) var aliasDraft = ""
++    @ObservationIgnored private weak var core: AppCore?
++
++    private init() {}
++
++    /// The rows an entry's ⌘K menu gains. Query-driven commands have no alias or shortcut to own.
++    static func menuItems(for app: AppEntry, core: AppCore) -> [PopoverMenuItem] {
++        guard !CommandCatalog.isQueryDriven(app) else { return [] }
++        let key = app.preferenceKey
++        var alias = PopoverMenuItem(
++            title: "Change Alias", systemImage: "character.cursor.ibeam", startsSection: true
++        ) {
++            shared.beginAlias(key: key, core: core)
++        }
++        alias.trailingAccessory = { AnyView(MenuAliasBox(key: key)) }
++        alias.keepsMenuOpen = true
++        var items = [alias]
++        if let action = hotKeyAction(for: app) {
++            var shortcut = PopoverMenuItem(title: "Change Shortcut", systemImage: "command") {
++                shared.end()
++                core.hotKeys.recordingAction = action
++            }
++            shortcut.trailingAccessory = { AnyView(ShortcutRecorder(action: action)) }
++            shortcut.keepsMenuOpen = true
++            items.append(shortcut)
++        }
++        return items
++    }
++
++    /// `AppEntry.hotKeyAction` leaves extension commands out; their binding is keyed by entry ID.
++    static func hotKeyAction(for app: AppEntry) -> HotKeyAction? {
++        if let action = app.hotKeyAction { return action }
++        return app.kind == .extensionCommand ? .extensionCommand(entryID: app.id) : nil
++    }
++
++    /// Seeds the draft with the saved alias; ↵ commits it, Esc drops it.
++    private func beginAlias(key: String, core: AppCore) {
++        core.hotKeys.recordingAction = nil
++        self.core = core
++        aliasDraft = core.aliases.alias(for: key) ?? ""
++        aliasKey = key
++    }
++
++    /// Ends any inline edit: called when a row switches editors and when the menu closes.
++    func end(stoppingRecordingIn core: AppCore? = nil) {
++        aliasKey = nil
++        aliasDraft = ""
++        core?.hotKeys.recordingAction = nil
++    }
++
++    /// `MenuPanel`'s key hook: while an alias is being edited, every plain key belongs to its draft,
++    /// ahead of the menu's own search field.
++    static func handleMenuKey(_ event: NSEvent) -> Bool {
++        shared.handle(event)
++    }
++
++    private func handle(_ event: NSEvent) -> Bool {
++        guard let key = aliasKey, let core,
++            event.modifierFlags.isDisjoint(with: [.command, .control])
++        else { return false }
++        switch Int(event.keyCode) {
++        case kVK_Escape:
++            end()
++        case kVK_Return, kVK_ANSI_KeypadEnter:
++            core.aliases.setAlias(aliasDraft, for: key)
++            end()
++        case kVK_Delete:
++            if !aliasDraft.isEmpty { aliasDraft.removeLast() }
++        default:
++            let printable = (event.characters ?? "").unicodeScalars.filter {
++                $0.value >= 0x20 && $0.value != 0x7F && !(0xF700...0xF8FF).contains($0.value)
++            }
++            if !printable.isEmpty { aliasDraft += String(String.UnicodeScalarView(printable)) }
++        }
++        return true
++    }
++}
++
++/// The saved alias, or the live draft with a caret while its row is being edited.
++private struct MenuAliasBox: View {
++    let key: String
++    @Environment(\.metrics) private var metrics
++    @Environment(AliasStore.self) private var aliases
++    private var editor: InlineEntryEditor { .shared }
++
++    private var editing: Bool { editor.aliasKey == key }
++    private var value: String { editing ? editor.aliasDraft : (aliases.alias(for: key) ?? "") }
++
++    var body: some View {
++        HStack(spacing: 1) {
++            Text(value.isEmpty ? "Add Alias" : value)
++                .font(metrics.typography.keyCap)
++                .foregroundStyle(textColor)
++                .lineLimit(1)
++                .truncationMode(.tail)
++            if editing {
++                RoundedRectangle(cornerRadius: 0.5)
++                    .fill(Theme.Colors.textSecondary)
++                    .frame(width: 1.5, height: metrics.scaled(12))
++            }
++        }
++        .frame(width: metrics.scaled(112), height: metrics.scaled(20))
++        .background(
++            RoundedRectangle(cornerRadius: metrics.radius.menuRow, style: .continuous)
++                .fill(Theme.Colors.cardFill))
++        .overlay(
++            RoundedRectangle(cornerRadius: metrics.radius.menuRow, style: .continuous)
++                .strokeBorder(
++                    editing ? Theme.Colors.textTertiary : Theme.Colors.cardStroke, lineWidth: 1))
++    }
++
++    /// Faded until the row is being edited, so it reads as settled once ↵ commits.
++    private var textColor: Color {
++        if value.isEmpty { return Theme.Colors.textTertiary }
++        return editing ? Theme.Colors.textPrimary : Theme.Colors.textSecondary
++    }
++}
+diff --git a/Tinycast/Palette/MenuPanel.swift b/Tinycast/Palette/MenuPanel.swift
+index c02a2e46..c8890ddf 100644
+--- a/Tinycast/Palette/MenuPanel.swift
++++ b/Tinycast/Palette/MenuPanel.swift
+@@ -33,6 +33,8 @@ final class MenuPanel: NSPanel, AnimatedPanel {
+             paletteState?.noteCommandHeld(event.modifierFlags.contains(.command))
+         default: break
+         }
++        // tinycast-space: an inline alias editor on a row takes the typing first.
++        if event.type == .keyDown, InlineEntryEditor.handleMenuKey(event) { return }
+         if event.type == .keyDown, onKeyDown?(event) == true {
+             return
+         }
+diff --git a/Tinycast/Palette/PaletteScreen.swift b/Tinycast/Palette/PaletteScreen.swift
+index d9aed7b5..4645e3e9 100644
+--- a/Tinycast/Palette/PaletteScreen.swift
++++ b/Tinycast/Palette/PaletteScreen.swift
+@@ -19,6 +19,8 @@ typealias MenuPanelClipPath =
+     let view: (MenuPanelCorner) -> AnyView
+     /// Bounds-checked by the caller against `rowCount`, so a row index is always one this menu has.
+     let activate: (Int) -> Void
++    /// tinycast-space: true when activating the row edits it in place, so the menu stays up.
++    var keepsOpen: (Int) -> Bool = { _ in false }
+ 
+     init(
+         rowCount: Int, preferredSelection: Int? = nil,
+@@ -59,6 +61,7 @@ typealias MenuPanelClipPath =
+                     attachedRadius: metrics.size.menuButton / 2
+                 ).path(in: bounds).cgPath
+             })
++        keepsOpen = { popover.items[$0].keepsMenuOpen }  // tinycast-space
+     }
+ }
+ 
+diff --git a/Tinycast/Palette/RootPaletteView.swift b/Tinycast/Palette/RootPaletteView.swift
+index fd4143ae..7f8d82a6 100644
+--- a/Tinycast/Palette/RootPaletteView.swift
++++ b/Tinycast/Palette/RootPaletteView.swift
+@@ -1105,6 +1105,7 @@ struct RootPaletteView: View {
+         vm.menuQuery = ""
+         // Stated here rather than mirrored later: the window delegate reads it during this turn.
+         vm.menuOpen = false
++        InlineEntryEditor.shared.end(stoppingRecordingIn: core)  // tinycast-space
+     }
+ 
+     private func openInputOptions(
+@@ -1333,6 +1334,8 @@ struct RootPaletteView: View {
+     private func activateMenuItem(_ index: Int) {
+         guard let content = menuContent, (0..<content.rowCount).contains(index) else { return }
+         guard content.isSelectable(index) else { return }
++        // tinycast-space: a row that edits in place keeps its menu up. See InlineEntryEditor.
++        if content.keepsOpen(index) { return content.activate(index) }
+         // Close first: an action opening a window must find the palette key, or nothing hides it.
+         closeMenus()
+         // A mouse click on a row takes the caret with it; menus close back into the field.
+-- 
+2.56.0
+

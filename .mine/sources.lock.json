@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "original_reference_revision": "4e889cc9b263a4a8cb35b8a33992182e27717dc2",
   "upstream": {
     "url": "https://github.com/abue-ammar/tinycast.git",
@@ -7,15 +7,12 @@
     "release_tag": "v0.12.2-beta.125",
     "release_version": "0.12.2-beta.125"
   },
-  "space": {
-    "url": "https://github.com/mourato/tinycast-space.git",
-    "update_url": "https://github.com/sermelipharo/tinycast-space.git",
-    "commit": "ffccfc3dac1af79c7a4b82a94e8227510ca4ca89",
-    "source_paths": [".space", ".github/workflows"]
-  },
   "expected_source": {
     "fingerprint": "sha256:1f9781e76348ed52fd1333f55f9772a15f57fd4d26c0595cc40721353fa369d3",
     "record_format": "git-ls-tree-z-v1",
-    "excluded_paths": [".mine/", "Makefile"]
+    "excluded_paths": [
+      ".mine/",
+      "Makefile"
+    ]
   }
 }

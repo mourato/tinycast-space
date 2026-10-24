@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:37 -0300
+Subject: [PATCH] tinycast-space 0026: update check errors
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A failed *Check for Updates* reports the check and its cause — offline or another URL error, GitHub's rate limit (429, or 403 with `X-RateLimit-Remaining: 0` / `Retry-After`), or the HTTP status — instead of a failed download (`UpdateFailure.checkFailed`, `check()` throws); a check already running says so. The message half of [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/0fee6712).
+
+Origin: tinycast-space 0026-update-check-errors.patch @ ffccfc3
+---
+ Scripts/run-tests.sh                          |  1 +
+ Tests/update-check-test.swift                 | 63 ++++++++++++++++---
+ .../Updates/Service/UpdateCheckStore.swift    | 56 +++++++++++++----
+ .../Updates/Service/UpdateFailure.swift       |  5 ++
+ .../Updates/UI/UpdateCoordinator.swift        | 13 ++--
+ .../Updates/UI/UpdateWindowView.swift         |  1 +
+ 6 files changed, 114 insertions(+), 25 deletions(-)
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index 53fba69e..29fbb818 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -722,6 +722,7 @@ run updates-test           Tinycast/Features/Updates/Model/*.swift \
+                            Tinycast/Features/Updates/Service/BundleSignature.swift
+ run update-check-test      Tinycast/Features/Updates/Model/*.swift \
+                            Tinycast/Features/Updates/Service/UpdateCheckStore.swift \
++                           Tinycast/Features/Updates/Service/UpdateFailure.swift \
+                            Tinycast/Platform/AppPaths.swift
+ run support-test           Tinycast/Features/Support/Model/*.swift
+ run ai-provider-test       Tinycast/Features/Settings/AppSettingsKey.swift \
+diff --git a/Tests/update-check-test.swift b/Tests/update-check-test.swift
+index d2f5838e..87cfff27 100644
+--- a/Tests/update-check-test.swift
++++ b/Tests/update-check-test.swift
+@@ -9,6 +9,8 @@ struct UpdateCheckTests {
+     static func main() async throws {
+         try await stopsBeforeFirstCheck()
+         try await cancelsAndRestarts()
++        try await reportsWhyTheCheckFailed()
++        classifiesRateLimits()
+         try reportsInstalledVersionOnce()
+         print("\(passes) passed, \(failures) failed")
+         if failures > 0 { exit(1) }
+@@ -70,11 +72,11 @@ struct UpdateCheckTests {
+         expect(offers == 1, "restarting never repeats an announcement already shown")
+ 
+         store.stop()
+-        let manual = Task { await store.check() }
++        let manual = Task { try await store.check() }
+         await waitUntil { fixture.requests == 3 }
+         store.stop()
+         fixture.respond(feed(version: "1.3.0"))
+-        let answered = await manual.value
++        let answered = (try? await manual.value) != nil
+         expect(answered, "manual checking still works with automatic checking stopped")
+         expect(!fixture.wasCancelled, "stopping the pump does not cancel a manual check")
+         expect(store.update?.version == AppVersion("1.3.0"), "manual checking receives a newer release")
+@@ -107,6 +109,46 @@ struct UpdateCheckTests {
+         expect(afterwards.takeInstalledVersion() == nil, "and clears the record")
+     }
+ 
++    static func classifiesRateLimits() {
++        let limited = UpdateFailure.checkFailed("GitHub is limiting requests from this network.")
++        func failure(_ status: Int, _ headers: [String: String] = [:], body: String = "") -> UpdateFailure {
++            let response = HTTPURLResponse(
++                url: URL(string: "https://api.github.com")!, statusCode: status, httpVersion: nil,
++                headerFields: headers)
++            return UpdateCheckStore.failure(for: response, body: Data(body.utf8))
++        }
++        expect(failure(403, ["X-RateLimit-Remaining": "0"]) == limited, "an exhausted quota is a limit")
++        expect(failure(429) == limited, "429 is a limit")
++        expect(failure(403, ["Retry-After": "60"]) == limited, "Retry-After marks a secondary limit")
++        expect(
++            failure(403, body: #"{"message":"You have exceeded a secondary rate limit."}"#) == limited,
++            "the secondary-limit message marks a limit")
++        expect(
++            failure(403, ["X-RateLimit-Remaining": "12"]) == .checkFailed("The server answered 403."),
++            "an ordinary forbidden response is reported by status")
++        expect(failure(502) == .checkFailed("The server answered 502."), "a server error reports status")
++    }
++
++    static func reportsWhyTheCheckFailed() async throws {
++        let file = makeFile()
++        defer { try? FileManager.default.removeItem(at: file) }
++        try seedCache(at: file)
++        let fixture = FetchFixture()
++        let store = makeStore(file: file, fixture: fixture)
++
++        let manual = Task { try await store.check() }
++        await waitUntil { fixture.requests == 1 }
++        fixture.fail(UpdateFailure.checkFailed("offline"))
++        do {
++            try await manual.value
++            expect(false, "a failed check throws")
++        } catch {
++            expect(error as? UpdateFailure == .checkFailed("offline"), "the check reports its reason")
++        }
++        expect(!store.isChecking, "a failed check is no longer in flight")
++        expect(store.latest?.version == AppVersion("1.1.0"), "a failed check keeps the cached release")
++    }
++
+     static func seedCache(at file: URL) throws {
+         guard
+             let release = ReleaseFeed.newest(
+@@ -124,7 +166,7 @@ struct UpdateCheckTests {
+     ) -> UpdateCheckStore {
+         UpdateCheckStore(
+             channel: .stable, runningVersion: running, fileURL: file,
+-            fetch: { await fixture.fetch() })
++            fetch: { try await fixture.fetch() })
+     }
+ 
+     static func makeFile() -> URL {
+@@ -163,13 +205,12 @@ struct UpdateCheckTests {
+     final class FetchFixture {
+         var requests = 0
+         var wasCancelled = false
+-        private var response: CheckedContinuation<Data?, Never>?
++        private var response: CheckedContinuation<Data, any Error>?
+ 
+-        func fetch() async -> Data? {
++        func fetch() async throws -> Data {
+             requests += 1
+-            let data = await withCheckedContinuation { response = $0 }
+-            wasCancelled = Task.isCancelled
+-            return data
++            defer { wasCancelled = Task.isCancelled }
++            return try await withCheckedThrowingContinuation { response = $0 }
+         }
+ 
+         func respond(_ data: Data) {
+@@ -177,5 +218,11 @@ struct UpdateCheckTests {
+             response = nil
+             pending?.resume(returning: data)
+         }
++
++        func fail(_ error: any Error) {
++            let pending = response
++            response = nil
++            pending?.resume(throwing: error)
++        }
+     }
+ }
+diff --git a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
+index a8bbd24e..d6c31356 100644
+--- a/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
++++ b/Tinycast/Features/Updates/Service/UpdateCheckStore.swift
+@@ -28,7 +28,7 @@ final class UpdateCheckStore {
+     @ObservationIgnored var onUpdateAvailable: (@MainActor (AvailableRelease) -> Bool)?
+ 
+     private let fileURL: URL
+-    @ObservationIgnored private let fetch: @Sendable () async -> Data?
++    @ObservationIgnored private let fetch: @Sendable () async throws -> Data
+     private var skippedVersion: AppVersion?
+     private var installedVersion: AppVersion?
+     /// At most one uninvited appearance per version per launch.
+@@ -41,7 +41,7 @@ final class UpdateCheckStore {
+         runningVersion: AppVersion? = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+             .flatMap(AppVersion.init),
+         fileURL: URL = AppPaths.caches().appendingPathComponent("update-check.json"),
+-        fetch: @escaping @Sendable () async -> Data? = UpdateCheckStore.body
++        fetch: @escaping @Sendable () async throws -> Data = UpdateCheckStore.body
+     ) {
+         self.channel = channel
+         self.runningVersion = runningVersion
+@@ -90,17 +90,19 @@ final class UpdateCheckStore {
+         withheldRetries = 0
+     }
+ 
+-    /// The manual path: ignores freshness, and reports whether GitHub actually answered.
+-    @discardableResult
+-    func check() async -> Bool {
+-        guard channel.updatesItself, !isChecking else { return false }
++    /// The manual path: ignores freshness, and throws why GitHub did not answer.
++    func check() async throws {
++        guard channel.updatesItself else { return }
++        guard !isChecking else {
++            throw UpdateFailure.checkFailed(String(localized: "Another check is still running."))
++        }
+         isChecking = true
+         defer { isChecking = false }
+-        guard let data = await fetch(), !Task.isCancelled else { return false }
++        let data = try await fetch()
++        try Task.checkCancellation()
+         latest = ReleaseFeed.newest(from: data, channel: channel, architecture: .current)
+         lastCheckedAt = Date()
+         persist()
+-        return true
+     }
+ 
+     /// Dismissing a version is what stops it asking again; a later one still will.
+@@ -127,7 +129,12 @@ final class UpdateCheckStore {
+         let age = max(0, lastCheckedAt.map { Date().timeIntervalSince($0) } ?? .infinity)
+         var wait = Self.refreshInterval - age
+         if wait <= 0 {
+-            wait = await check() ? Self.refreshInterval : Self.retryInterval
++            do {
++                try await check()
++                wait = Self.refreshInterval
++            } catch {
++                wait = Self.retryInterval
++            }
+         }
+         if announce() {
+             withheldRetries = 0
+@@ -170,15 +177,38 @@ final class UpdateCheckStore {
+         return URLSession(configuration: config)
+     }()
+ 
+-    private nonisolated static func body() async -> Data? {
++    private nonisolated static func body() async throws -> Data {
+         var request = URLRequest(url: endpoint, timeoutInterval: 20)
+         // GitHub rejects an API request carrying no User-Agent outright.
+         request.setValue("Tinycast", forHTTPHeaderField: "User-Agent")
+         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+-        guard let (data, response) = try? await session.data(for: request),
+-            let http = response as? HTTPURLResponse, http.statusCode == 200
+-        else { return nil }
++        let data: Data
++        let response: URLResponse
++        do {
++            (data, response) = try await session.data(for: request)
++        } catch is CancellationError {
++            throw CancellationError()
++        } catch {
++            throw UpdateFailure.checkFailed(error.localizedDescription)
++        }
++        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
++            throw failure(for: response as? HTTPURLResponse, body: data)
++        }
+         return data
+     }
++
++    nonisolated static func failure(for response: HTTPURLResponse?, body: Data) -> UpdateFailure {
++        let status = response?.statusCode ?? 0
++        // Unauthenticated, the API allows 60 requests an hour per address, shared by the network.
++        let exhausted = response?.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0"
++        // A secondary limit answers 403 with quota left, flagged only by Retry-After or its message.
++        let secondary =
++            response?.value(forHTTPHeaderField: "Retry-After") != nil
++            || String(bytes: body, encoding: .utf8)?.localizedStandardContains("rate limit") == true
++        if status == 429 || (status == 403 && (exhausted || secondary)) {
++            return .checkFailed(String(localized: "GitHub is limiting requests from this network."))
++        }
++        return .checkFailed(String(localized: "The server answered \(status)."))
++    }
+ }
+diff --git a/Tinycast/Features/Updates/Service/UpdateFailure.swift b/Tinycast/Features/Updates/Service/UpdateFailure.swift
+index 3ba1f062..4cd96e9f 100644
+--- a/Tinycast/Features/Updates/Service/UpdateFailure.swift
++++ b/Tinycast/Features/Updates/Service/UpdateFailure.swift
+@@ -1,6 +1,7 @@
+ import Foundation
+ 
+ enum UpdateFailure: LocalizedError, Equatable {
++    case checkFailed(String)
+     case downloadFailed(String)
+     case extractFailed(String)
+     case noAppInArchive
+@@ -12,6 +13,8 @@ enum UpdateFailure: LocalizedError, Equatable {
+ 
+     var errorDescription: String? {
+         switch self {
++        case .checkFailed(let detail):
++            return String(localized: "Tinycast could not check for updates. \(detail)")
+         case .downloadFailed(let detail):
+             return String(localized: "The download did not finish. \(detail)")
+         case .extractFailed(let detail):
+@@ -49,6 +52,8 @@ enum UpdateFailure: LocalizedError, Equatable {
+                     """)
+         case .quarantined:
+             return String(localized: "Nothing was installed.")
++        case .checkFailed:
++            return String(localized: "Try again in a few minutes.")
+         default:
+             return nil
+         }
+diff --git a/Tinycast/Features/Updates/UI/UpdateCoordinator.swift b/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
+index 8a77d0a5..7ead406f 100644
+--- a/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
++++ b/Tinycast/Features/Updates/UI/UpdateCoordinator.swift
+@@ -75,14 +75,19 @@ final class UpdateCoordinator {
+         present()
+         Task { [weak self] in
+             guard let self else { return }
+-            let answered = await store.check()
++            var failure: UpdateFailure?
++            do {
++                try await store.check()
++            } catch {
++                failure = error as? UpdateFailure ?? .checkFailed(error.localizedDescription)
++            }
+             guard case .checking = stage else { return }
+             if let release = store.update {
+                 stage = .available(release)
+-            } else if answered {
+-                stage = .upToDate
++            } else if let failure {
++                stage = .failed(failure)
+             } else {
+-                stage = .failed(.downloadFailed(String(localized: "Tinycast could not reach GitHub.")))
++                stage = .upToDate
+             }
+         }
+     }
+diff --git a/Tinycast/Features/Updates/UI/UpdateWindowView.swift b/Tinycast/Features/Updates/UI/UpdateWindowView.swift
+index 73d7900d..035738a4 100644
+--- a/Tinycast/Features/Updates/UI/UpdateWindowView.swift
++++ b/Tinycast/Features/Updates/UI/UpdateWindowView.swift
+@@ -74,6 +74,7 @@ struct UpdateWindowView: View {
+             return String(
+                 localized: "\(Bundle.main.appDisplayName) \(release.version.description) is available")
+         case .readyToRelaunch: return String(localized: "Update installed")
++        case .failed(.checkFailed): return String(localized: "Could not check for updates")
+         case .failed: return String(localized: "Update failed")
+         }
+     }
+-- 
+2.56.0
+

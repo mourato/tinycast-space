@@ -1,0 +1,352 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tinycast Recipe <recipe@localhost>
+Date: Sat, 24 Oct 2026 12:45:32 -0300
+Subject: [PATCH] tinycast-space 0018: entry deeplinks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`tinycast://open?id=<percent-encoded AppEntry.id>` runs a launcher entry through `LauncherCoordinator.launch`, as Return does (snippets expand at the caret instead); unknown ids show a HUD. Routed in `AppCore.handleOpenURL` after confetti and themes. Every entry's ⌘K menu gets *Copy Deeplink* (extension commands copy `tinycast://extensions/<owner>/<ext>/<cmd>`). No `arguments` are read, meetings and query-driven commands get no link, and system actions keep their confirmations. New `EntryDeepLink.swift`, `EntryDeepLinkActions.swift`, `entry-deeplink-test`. Declined upstream (#1005). A link that activated Tinycast first hands focus back (`NSApp.deactivate()`, then up to 500 ms for another app to come forward; no observer), so window commands, snippets and paste act on the app the link came from (after [mSarheed/pipcast](https://github.com/mSarheed/pipcast/commit/b82afd94)).
+
+Origin: tinycast-space 0018-entry-deeplinks.patch @ ffccfc3
+---
+ Scripts/run-tests.sh                          |  1 +
+ Tests/entry-deeplink-test.swift               | 80 +++++++++++++++++++
+ Tinycast.xcodeproj/project.pbxproj            |  8 ++
+ Tinycast/App/AppCore.swift                    |  2 +
+ .../Launcher/Model/EntryDeepLink.swift        | 51 ++++++++++++
+ .../Features/Launcher/UI/AppActionsMenu.swift |  1 +
+ .../Launcher/UI/EntryDeepLinkActions.swift    | 78 ++++++++++++++++++
+ 7 files changed, 221 insertions(+)
+ create mode 100644 Tests/entry-deeplink-test.swift
+ create mode 100644 Tinycast/Features/Launcher/Model/EntryDeepLink.swift
+ create mode 100644 Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift
+
+diff --git a/Scripts/run-tests.sh b/Scripts/run-tests.sh
+index ea20838d..b638ebfc 100755
+--- a/Scripts/run-tests.sh
++++ b/Scripts/run-tests.sh
+@@ -128,6 +128,7 @@ run app-name-test          Tinycast/Platform/AppDisplayName.swift \
+                            Tinycast/Platform/BundleLocalization.swift \
+                            $L/SearchRelevance.swift
+ run favorites-test         $L/FavoriteSlots.swift
++run entry-deeplink-test   $L/EntryDeepLink.swift
+ run app-installation-test  $L/SearchRelevance.swift $L/ScriptRomanization.swift \
+                            $L/LauncherMatch.swift $L/EntryNaming.swift $L/LauncherOrder.swift \
+                            $L/LauncherRankingStore.swift $L/LauncherSuggestions.swift $L/SearchScopes.swift \
+diff --git a/Tests/entry-deeplink-test.swift b/Tests/entry-deeplink-test.swift
+new file mode 100644
+index 00000000..054fcfbe
+--- /dev/null
++++ b/Tests/entry-deeplink-test.swift
+@@ -0,0 +1,80 @@
++import Foundation
++
++@main
++struct EntryDeepLinkTest {
++    static func main() async {
++        var failures = 0
++        func check(_ description: String, _ condition: @autoclosure () -> Bool) {
++            if condition() {
++                print("PASS  \(description)")
++            } else {
++                print("FAIL  \(description)")
++                failures += 1
++            }
++        }
++
++        let ids = [
++            "command:clipboard-history", "system-action:empty-trash",
++            "window-command:left-half", "quicklink:4F2B0B9A-1111-2222-3333-444455556666",
++            "/Applications/Visual Studio Code & Co+.app", "/System/Applications/Café ☕.app",
++            "extension:raycast/spotify?x=1#frag",
++        ]
++        for id in ids {
++            let url = EntryDeepLink.url(forEntryID: id)
++            check("round-trips \(id)", url.flatMap(EntryDeepLink.entryID(from:)) == id)
++            check("is one query item for \(id)", url?.absoluteString.filter { $0 == "?" }.count == 1)
++        }
++        check(
++            "format",
++            EntryDeepLink.url(forEntryID: "command:clipboard-history")?.absoluteString
++                == "tinycast://open?id=command%3Aclipboard-history")
++        check(
++            "scheme and host are case-insensitive",
++            EntryDeepLink.entryID(from: URL(string: "TinyCast://OPEN?id=command%3Asearch-emoji")!)
++                == "command:search-emoji")
++        check(
++            "an empty id is no link",
++            EntryDeepLink.entryID(from: URL(string: "tinycast://open?id=")!) == nil)
++        check(
++            "a missing id is no link",
++            EntryDeepLink.entryID(from: URL(string: "tinycast://open")!) == nil)
++        check(
++            "another host is no link",
++            EntryDeepLink.entryID(from: URL(string: "tinycast://quicklink?id=x")!) == nil)
++        check(
++            "another scheme is no link",
++            EntryDeepLink.entryID(from: URL(string: "raycast://open?id=x")!) == nil)
++        check(
++            "extension link mirrors raycast's shape",
++            EntryDeepLink.extensionURL(owner: "raycast", slug: "spotify-player", command: "search")?
++                .absoluteString == "tinycast://extensions/raycast/spotify-player/search")
++        check(
++            "a scoped extension name keeps its last part",
++            EntryDeepLink.extensionURL(owner: "o", slug: "o/ext", command: "c")?.absoluteString
++                == "tinycast://extensions/o/ext/c")
++        check(
++            "an empty part builds no extension link",
++            EntryDeepLink.extensionURL(owner: "", slug: "e", command: "c") == nil)
++
++        var polls = 0
++        let met = await EntryDeepLink.waitUntil(timeout: .milliseconds(500)) {
++            polls += 1
++            return polls >= 3
++        }
++        check("waitUntil returns once the condition holds", met && polls == 3)
++        let started = ContinuousClock.now
++        let timedOut = await EntryDeepLink.waitUntil(timeout: .milliseconds(60)) { false }
++        check(
++            "waitUntil gives up at the timeout",
++            !timedOut && ContinuousClock.now - started < .milliseconds(400))
++        let cancelled = Task { @MainActor in
++            await EntryDeepLink.waitUntil(timeout: .seconds(5)) { false }
++        }
++        cancelled.cancel()
++        let cancelledResult = await cancelled.value
++        check("waitUntil ends when cancelled", !cancelledResult)
++
++        print(failures == 0 ? "\nALL PASSED" : "\n\(failures) FAILED")
++        exit(failures == 0 ? 0 : 1)
++    }
++}
+diff --git a/Tinycast.xcodeproj/project.pbxproj b/Tinycast.xcodeproj/project.pbxproj
+index 366c8382..f51e73c1 100644
+--- a/Tinycast.xcodeproj/project.pbxproj
++++ b/Tinycast.xcodeproj/project.pbxproj
+@@ -729,6 +729,7 @@
+ 		DB6B294B3D15B0AABCE5427E /* PaletteScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445B0374FD5D74DBE23243CD /* PaletteScreen.swift */; };
+ 		DB6DD4D14260500D36E18315 /* HotKeySettingsFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D56AE79EFBE8B3D79CAF6A4 /* HotKeySettingsFile.swift */; };
+ 		DC0295A12EF56EF4C8378623 /* WindowCycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B1949D20DAEA3F80649D17 /* WindowCycle.swift */; };
++		DC5D1AE573992C5EDAE3A59A /* EntryDeepLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD6E3A2CB96CCCF0978C1EE /* EntryDeepLink.swift */; };
+ 		DCAC5BBB64C93F559B25E6FD /* ExtensionAnimatedImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFBF31AF26A4786B234ABB64 /* ExtensionAnimatedImage.swift */; };
+ 		DD0A7B02D15113A3D8712413 /* ExtensionListKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90C7C0B97C4745B8F94C4B /* ExtensionListKey.swift */; };
+ 		DD0DE9D16B0BAA8126EE9DB6 /* SettingsAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C41B7D28CD2AF8AD14DA6FC3 /* SettingsAnchor.swift */; };
+@@ -753,6 +754,7 @@
+ 		E29056264B57A3F0EC5F5698 /* SupportCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97986EE62AE844FFCCD27449 /* SupportCoordinator.swift */; };
+ 		E29CF7293742DDCAE030682C /* SupportReminderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE1ED405A53ECA5DED66AA1 /* SupportReminderStore.swift */; };
+ 		E2AF601BD4C24721B2D61B69 /* DictationAudioDucker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24386713685FB65FB46A5516 /* DictationAudioDucker.swift */; };
++		E2D695E517E71083E4E4D718 /* EntryDeepLinkActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1075B83571C88AC2DEFFDF05 /* EntryDeepLinkActions.swift */; };
+ 		E448C90CF3076440A4FA2CE4 /* RaycastQuicklinkImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EA21DCF61666DB736D5B82 /* RaycastQuicklinkImport.swift */; };
+ 		E457BC709D195B8F5D0C2A79 /* UninstallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B6DAC3B9FF387367C3FAB4 /* UninstallSession.swift */; };
+ 		E49FB7938D8D22AB09AE1D23 /* ExtensionMenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8AB48A3C8B78B04CBFF36B /* ExtensionMenuBarController.swift */; };
+@@ -957,6 +959,7 @@
+ 		102B53830D247FAE19479BCA /* ThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailCache.swift; sourceTree = "<group>"; };
+ 		1037A76A7501EA4BCCD545B5 /* CustomCommandListScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomCommandListScreen.swift; sourceTree = "<group>"; };
+ 		106F9FEF3F0C36E0C5686DA7 /* AIRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIRequest.swift; sourceTree = "<group>"; };
++		1075B83571C88AC2DEFFDF05 /* EntryDeepLinkActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryDeepLinkActions.swift; sourceTree = "<group>"; };
+ 		1095A5EC0F5CE50ADB8C5D03 /* RoomParking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomParking.swift; sourceTree = "<group>"; };
+ 		10A05EA2484C7E9EC8B05A69 /* MCPOAuthHTTP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthHTTP.swift; sourceTree = "<group>"; };
+ 		112551581ECF83B53D405334 /* BackupSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupSettingsView.swift; sourceTree = "<group>"; };
+@@ -1367,6 +1370,7 @@
+ 		8C39345D0335ACA895133ABD /* IconStyleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconStyleMonitor.swift; sourceTree = "<group>"; };
+ 		8C85F2A621F5474766E80BFB /* CustomCommandListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomCommandListView.swift; sourceTree = "<group>"; };
+ 		8CBD6D8BC6951A482BDF6169 /* SettingsCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCoordinator.swift; sourceTree = "<group>"; };
++		8CD6E3A2CB96CCCF0978C1EE /* EntryDeepLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryDeepLink.swift; sourceTree = "<group>"; };
+ 		8CD7591D273A6484DD48018A /* RaycastImportReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RaycastImportReader.swift; sourceTree = "<group>"; };
+ 		8D0371F4748011D45C185444 /* TextTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextTranslator.swift; sourceTree = "<group>"; };
+ 		8D7D18BE38D2CD54CE6AB6DC /* ClipboardTextExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardTextExtractor.swift; sourceTree = "<group>"; };
+@@ -2232,6 +2236,7 @@
+ 				90E23F92F4B4DEEE55077C7C /* AppIconView.swift */,
+ 				D763A801000029271E4CADA4 /* ColorCard.swift */,
+ 				950ED06E696547AAEFC9FA9A /* CompactFavoritesRow.swift */,
++				1075B83571C88AC2DEFFDF05 /* EntryDeepLinkActions.swift */,
+ 				E9AEDF156B61DD90C5ADA8FA /* FallbackActionsMenu.swift */,
+ 				901C92BDC35B5E26BA8BA4AA /* FallbackCoordinator.swift */,
+ 				71FCCFC38FDA579D4D0565AA /* InlineEntryEditor.swift */,
+@@ -3659,6 +3664,7 @@
+ 			children = (
+ 				5F0A68B2040582996EFBA877 /* CommandCatalog.swift */,
+ 				164CB3E1BB5B7D87AF8E7023 /* CommandID.swift */,
++				8CD6E3A2CB96CCCF0978C1EE /* EntryDeepLink.swift */,
+ 				B07F172974DA662EBE25422E /* EntryNaming.swift */,
+ 				0437C802C1F3E33E8532A7E3 /* Fallback.swift */,
+ 				3FE591549F24AE554C13CD0C /* FavoriteSlots.swift */,
+@@ -4263,6 +4269,8 @@
+ 				614DAAC9331F9C1DE4D76F0D /* EmojiScreen.swift in Sources */,
+ 				0C1CACEF014462D3F581CE54 /* EmojiSettingsView.swift in Sources */,
+ 				E99765A5038912C283973F8F /* EmptyResults.swift in Sources */,
++				DC5D1AE573992C5EDAE3A59A /* EntryDeepLink.swift in Sources */,
++				E2D695E517E71083E4E4D718 /* EntryDeepLinkActions.swift in Sources */,
+ 				017FB0EDDC9AF28ED81EA6A8 /* EntryIconView.swift in Sources */,
+ 				0FD2528627DE63DC9C6B8793 /* EntryNaming.swift in Sources */,
+ 				2E9641057A7B1FE1446BD14D /* EscapeKeyBehavior.swift in Sources */,
+diff --git a/Tinycast/App/AppCore.swift b/Tinycast/App/AppCore.swift
+index 2e1d550e..996428f6 100644
+--- a/Tinycast/App/AppCore.swift
++++ b/Tinycast/App/AppCore.swift
+@@ -491,6 +491,8 @@ final class AppCore {
+         }
+         // tinycast-space: a theme link — ray.so, Raycast's Theme Studio, or the Theme command.
+         if SpaceTheme.handle(url, in: self) { return }
++        // tinycast-space: `tinycast://open?id=…`, any launcher entry by its id.
++        if EntryDeepLinkActions.handle(url, in: self) { return }
+         guard ExtensionDeepLink.claims(url) else { return }
+         guard let route = ExtensionDeepLink.route(url: url) else {
+             paletteCoordinator.showPalette(mode: .launcher, restoreAnyMode: true)
+diff --git a/Tinycast/Features/Launcher/Model/EntryDeepLink.swift b/Tinycast/Features/Launcher/Model/EntryDeepLink.swift
+new file mode 100644
+index 00000000..ca34e520
+--- /dev/null
++++ b/Tinycast/Features/Launcher/Model/EntryDeepLink.swift
+@@ -0,0 +1,51 @@
++import Foundation
++
++/// tinycast-space: `tinycast://open?id=<entry id>` runs one launcher entry, and `tinycast://extensions/…`
++/// (Raycast's own link shape) runs an extension command. The id is the entry's stable `AppEntry.id`;
++/// it is only ever looked up among the entries the launcher already lists, never executed as content.
++enum EntryDeepLink {
++    static let scheme = "tinycast"
++    static let host = "open"
++
++    /// Everything but unreserved characters, so an id's `/`, `&`, `+` and `:` survive a round trip.
++    private static let unreserved = CharacterSet(
++        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
++
++    static func url(forEntryID id: String) -> URL? {
++        guard let encoded = id.addingPercentEncoding(withAllowedCharacters: unreserved) else {
++            return nil
++        }
++        return URL(string: "\(scheme)://\(host)?id=\(encoded)")
++    }
++
++    /// The entry id of an `open` link, or nil for any other URL.
++    static func entryID(from url: URL) -> String? {
++        guard url.scheme?.lowercased() == scheme, url.host?.lowercased() == host,
++            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
++            let id = items.first(where: { $0.name == "id" })?.value, !id.isEmpty
++        else { return nil }
++        return id
++    }
++
++    /// `owner` and `slug` are the manifest's store handle and name; a scoped name keeps its last part.
++    static func extensionURL(owner: String, slug: String, command: String) -> URL? {
++        let parts = [owner, slug.split(separator: "/").last.map(String.init) ?? slug, command]
++        let encoded = parts.compactMap { $0.addingPercentEncoding(withAllowedCharacters: unreserved) }
++        guard encoded.count == 3, !parts.contains(where: \.isEmpty) else { return nil }
++        return URL(string: "\(scheme)://extensions/" + encoded.joined(separator: "/"))
++    }
++
++    /// Polls until `condition` holds or `timeout` passes; false on timeout, or when cancelled.
++    @MainActor
++    static func waitUntil(
++        timeout: Duration, interval: Duration = .milliseconds(10), _ condition: @MainActor () -> Bool
++    ) async -> Bool {
++        let deadline = ContinuousClock.now + timeout
++        while !condition() {
++            guard ContinuousClock.now < deadline,
++                (try? await Task.sleep(for: interval)) != nil
++            else { return false }
++        }
++        return !Task.isCancelled
++    }
++}
+diff --git a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+index c5b74659..dad71c2c 100644
+--- a/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
++++ b/Tinycast/Features/Launcher/UI/AppActionsMenu.swift
+@@ -66,6 +66,7 @@ enum AppActionsMenu {
+                     title: title, systemImage: "eye.slash", shortcut: "⇧⌘H", action: onHideFromSearch))
+         }
+         items += InlineEntryEditor.menuItems(for: app, core: core)  // tinycast-space
++        items += EntryDeepLinkActions.menuItems(for: app, core: core)  // tinycast-space
+         if running, app.kind == .application {
+             items.append(
+                 PopoverMenuItem(
+diff --git a/Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift b/Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift
+new file mode 100644
+index 00000000..d3b12d5a
+--- /dev/null
++++ b/Tinycast/Features/Launcher/UI/EntryDeepLinkActions.swift
+@@ -0,0 +1,78 @@
++import AppKit
++
++/// tinycast-space: opens an entry's `tinycast://open` link and offers its "Copy Deeplink" row.
++@MainActor
++enum EntryDeepLinkActions {
++    /// A newer link replaces one still waiting for focus.
++    private static var pendingLaunch: Task<Void, Never>?
++
++    /// Claims `tinycast://open` links. Always true for one, so a stale id never falls through to
++    /// the extension router and opens the launcher.
++    static func handle(_ url: URL, in core: AppCore) -> Bool {
++        guard url.scheme?.lowercased() == EntryDeepLink.scheme,
++            url.host?.lowercased() == EntryDeepLink.host
++        else { return false }
++        guard let id = EntryDeepLink.entryID(from: url),
++            let entry = core.appIndex.apps.first(where: { $0.id == id }),
++            isLinkable(entry)
++        else {
++            core.showMessage("No launcher entry for this link", tone: .danger)
++            return true
++        }
++        pendingLaunch?.cancel()
++        // Opening the link activated us, and every target-driven action (window commands, snippets,
++        // paste) reads the frontmost app, so give focus back before running.
++        guard NSApp.isActive, !core.paletteCoordinator.isVisible else {
++            run(entry, in: core)
++            return true
++        }
++        NSApp.deactivate()
++        pendingLaunch = Task {
++            // Best effort: past the limit it still runs, against whatever is in front.
++            _ = await EntryDeepLink.waitUntil(timeout: .milliseconds(500)) {
++                !NSApp.isActive
++                    && NSWorkspace.shared.frontmostApplication?.processIdentifier
++                        != ProcessInfo.processInfo.processIdentifier
++            }
++            guard !Task.isCancelled else { return }
++            run(entry, in: core)
++        }
++        return true
++    }
++
++    private static func run(_ entry: AppEntry, in core: AppCore) {
++        // A snippet pastes where the caret is, which a hidden palette must work out itself.
++        if entry.kind == .snippet, let snippetID = StoredSnippet.id(fromEntryID: entry.id) {
++            core.snippetCoordinator.expandSnippetFromHotKey(id: snippetID)
++        } else {
++            core.launcherCoordinator.launch(entry)
++        }
++    }
++
++    /// Query-driven rows answer typed text and meetings are today's events; neither has a stable link.
++    static func isLinkable(_ entry: AppEntry) -> Bool {
++        entry.kind != .meeting && !CommandCatalog.isQueryDriven(entry)
++    }
++
++    static func link(for entry: AppEntry, core: AppCore) -> URL? {
++        guard isLinkable(entry) else { return nil }
++        if entry.kind == .extensionCommand {
++            guard let (owner, command) = core.extensions.resolve(entry) else { return nil }
++            return EntryDeepLink.extensionURL(
++                owner: owner.manifest.storeHandle, slug: owner.manifest.name, command: command.name)
++        }
++        return EntryDeepLink.url(forEntryID: entry.id)
++    }
++
++    static func menuItems(for entry: AppEntry, core: AppCore) -> [PopoverMenuItem] {
++        guard let url = link(for: entry, core: core) else { return [] }
++        return [
++            PopoverMenuItem(title: "Copy Deeplink", systemImage: "link") {
++                core.paletteCoordinator.hidePalette(restoreFocus: false)
++                core.showMessage(
++                    Paster.copyPlainText(url.absoluteString)
++                        ? "Deeplink copied" : "Couldn’t copy deeplink")
++            }
++        ]
++    }
++}
+-- 
+2.56.0
+
