@@ -1325,6 +1325,13 @@ class RecipeTests(unittest.TestCase):
         self.assertTrue((self.fixture.source / "uncommitted.txt").exists())
 
         (self.fixture.source / "uncommitted.txt").unlink()
+        write(self.fixture.source / "staged-only.txt", "do not export\n")
+        git(self.fixture.source, "add", "staged-only.txt")
+        staged = self.fixture.run("save")
+        self.assertFailsWith(staged, "uncommitted, untracked")
+        git(self.fixture.source, "reset", "--quiet", "HEAD", "--", "staged-only.txt")
+        (self.fixture.source / "staged-only.txt").unlink()
+
         source_head = self.fixture.commit_source("committed.txt", "committed\n", "committed source edit")
         patch = self.fixture.root / ".mine/patches/0001-fork-patch.patch"
         original = patch.read_text()

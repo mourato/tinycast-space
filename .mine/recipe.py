@@ -503,7 +503,7 @@ def inspect_existing(
                 fail(f"generated source HEAD is outside source-only lineage: {head}")
             ensure_rewrite_backup(source, receipt["managed_tip"])
             refs = [line for line in run_git(source, ["for-each-ref", "--format=%(refname)"]).splitlines() if line]
-    unreachable = run_git(source, ["fsck", "--no-reflogs", "--unreachable", "HEAD", *refs], check=False).strip()
+    unreachable = run_git(source, ["fsck", "--no-reflogs", "--unreachable", "--cache", "HEAD", *refs], check=False).strip()
     if any(line.startswith(("unreachable commit ", "unreachable tree ", "unreachable tag ")) for line in unreachable.splitlines()):
         fail("generated source has unreachable Git objects that may contain unexported work")
     if head is None:
