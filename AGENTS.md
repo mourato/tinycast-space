@@ -9,6 +9,10 @@ The root `Makefile` is the command authority. Run its targets from the repositor
 `make build-debug`. Run `make help` for the list. Do not call `.mine/recipe.py` directly except where a
 doc names it.
 
+Integrate a task worktree only with this project's `make finish-task`
+([.mine/README.md](.mine/README.md#integration)), never the global agent-config
+`ready-task` or `finish-task`.
+
 ## Where a change goes
 
 | Change | Where | How |
