@@ -20,8 +20,6 @@ files.
   Commands write them, so every change to them shows in a reviewable diff.
 - **One owner per fact.** Each pin, command behaviour, and invariant has one
   home. A second copy drifts, and the two copies can then disagree.
-- **The `Makefile` as the command surface.** Every operation runs through one
-  target, so every agent and editor runs it the same way.
 
 ## Glossary
 
@@ -78,8 +76,7 @@ Before calling work done, walk this list and say which entries applied:
 
 ## Working here
 
-Run every command through the `Makefile` from the repository root, for example
-`make build-debug`. Run `make help` for the list. Do not call `.mine/recipe.py`
+Run targets from the repository root, for example `make build-debug`. Run `make help` for the list. Do not call `.mine/recipe.py`
 directly except where a doc names it. Each kind of change has one place to go:
 
 - **Recipe tooling, docs, editor config, `Makefile`, `.github/`:** root, as an
@@ -98,8 +95,6 @@ Read before you start:
 
 - Before a change to lifecycle, artifacts, or validation, read
   [docs/agents/project-workflow.md](docs/agents/project-workflow.md).
-- Before a review of recipe changes, read
-  [CODING_STANDARDS.md](CODING_STANDARDS.md).
 - Before a command, a pin update, or a save recovery, read
   [.mine/README.md](.mine/README.md).
 
@@ -139,8 +134,7 @@ any change to these owners.
 
 ## Verifying
 
-Each gate proves the change it covers. Report every result, including failures,
-with the exact output line.
+Each gate proves the change it covers.
 
 - Docs, `.vscode/`, `.github/`, `Makefile` help text: read the links and paths,
   parse each JSON file, and run `git diff --check`.
