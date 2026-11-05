@@ -4,6 +4,15 @@ Review rules for changes to this repository. They add to the shared standards at
 `${AGENT_CONFIG_HOME:-$HOME/.agents}/core/standards/CODING_STANDARDS.md`. Product Swift rules live in
 `.build/source/docs/standards.md`, after `make prepare`.
 
+## Review focus
+
+- Failure here: anything that can delete `.build/source`, a
+  `.source-backup-*` directory, or a save journal.
+- Failure here: a lock or patch change that did not come from a command.
+- Skip: `.build/` outputs such as DerivedData and logs.
+- Needs a person: `.mine/sources.lock.json`, `.mine/patches/`, and any
+  removal command in `recipe.py`.
+
 ## Review rules
 
 - **The Makefile is the command authority.** Docs and editor tasks call `make` targets. They do not
